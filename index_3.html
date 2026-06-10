@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gridiron Pro — Sign In</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0d0b; --panel:#11161a; --panel2:#0d1114; --line:rgba(232,239,230,0.10);
+    --chalk:#e8efe6; --muted:rgba(232,239,230,0.55); --faint:rgba(232,239,230,0.32);
+    --green:#4ade80; --cyan:#7dd3fc; --amber:#fbbf24; --red:#f87171;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      repeating-linear-gradient(90deg, rgba(232,239,230,0.025) 0 1px, transparent 1px 64px),
+      radial-gradient(120% 80% at 50% -10%, #0f1712 0%, var(--bg) 60%);
+    color:var(--chalk); font-family:'Inter',system-ui,sans-serif;
+    display:flex; align-items:flex-start; justify-content:center; padding:32px 16px; min-height:100%;
+  }
+  .wrap{width:100%;max-width:760px}
+  .brand{display:flex;align-items:baseline;gap:10px;justify-content:center;margin-bottom:22px}
+  .brand h1{font-family:'Bebas Neue',sans-serif;font-size:46px;letter-spacing:0.06em;margin:0;line-height:0.9;
+    position:relative;color:var(--chalk)}
+  .brand h1::after{content:"";position:absolute;left:0;right:0;bottom:-7px;height:3px;border-radius:2px;
+    background:linear-gradient(90deg,var(--green),var(--cyan));opacity:0.8}
+  .brand .sub{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.22em;color:var(--amber);text-transform:uppercase}
+  .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:14px;
+    padding:24px 22px;box-shadow:0 24px 60px rgba(0,0,0,0.45)}
+  .tabs{display:flex;gap:6px;margin-bottom:18px}
+  .tab{flex:1;padding:9px 0;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--muted);
+    font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:0.1em;cursor:pointer}
+  .tab.on{border-color:rgba(125,211,252,0.5);background:rgba(125,211,252,0.12);color:var(--cyan)}
+  label{display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.1em;color:var(--faint);
+    text-transform:uppercase;margin:13px 0 5px}
+  input,select{width:100%;padding:11px 12px;border-radius:8px;border:1px solid var(--line);background:#0a0e0c;color:var(--chalk);
+    font-size:15px;font-family:'Inter',sans-serif;outline:none}
+  input:focus,select:focus{border-color:rgba(74,222,128,0.6);box-shadow:0 0 0 3px rgba(74,222,128,0.12)}
+  .code-input{font-family:'JetBrains Mono',monospace;letter-spacing:0.18em;text-transform:uppercase}
+  .btn{width:100%;margin-top:18px;padding:12px;border-radius:9px;border:none;cursor:pointer;
+    font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:0.08em;
+    background:linear-gradient(90deg,var(--green),#22c55e);color:#06140b}
+  .btn:disabled{opacity:0.5;cursor:default}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--muted)}
+  .hint{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);line-height:1.6;margin-top:14px}
+  .msg{margin-top:14px;padding:10px 12px;border-radius:8px;font-size:13px;line-height:1.5}
+  .msg.err{background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.35);color:#fecaca}
+  .msg.ok{background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.35);color:#bbf7d0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .pill{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;
+    padding:3px 9px;border-radius:20px;border:1px solid var(--line)}
+  .pill.admin{color:var(--amber);border-color:rgba(251,191,36,0.4);background:rgba(251,191,36,0.1)}
+  .pill.coadmin{color:#c4b5fd;border-color:rgba(167,139,250,0.4);background:rgba(167,139,250,0.1)}
+  .pill.coach{color:var(--cyan);border-color:rgba(125,211,252,0.4);background:rgba(125,211,252,0.1)}
+  .pill.player{color:var(--green);border-color:rgba(74,222,128,0.4);background:rgba(74,222,128,0.1)}
+  .sec{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.14em;color:var(--faint);
+    text-transform:uppercase;margin:0 0 12px}
+  .member{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+  .codebox{display:flex;align-items:center;gap:10px;margin-top:12px;padding:12px;border-radius:9px;
+    background:rgba(125,211,252,0.07);border:1px dashed rgba(125,211,252,0.4)}
+  .codebox code{font-family:'JetBrains Mono',monospace;font-size:22px;letter-spacing:0.16em;color:var(--cyan)}
+  .mini{padding:6px 11px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--muted);
+    cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px}
+  .mini:hover{color:var(--chalk);border-color:rgba(232,239,230,0.25)}
+  .mini.danger{color:var(--red);border-color:rgba(248,113,113,0.3)}
+  .field-note{margin-top:18px;padding:16px;border-radius:11px;border:1px dashed var(--line);
+    text-align:center;color:var(--muted);font-size:13px;line-height:1.6}
+  a{color:var(--cyan)}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// You do NOT need to edit this file. The site asks for your Supabase keys on
+// screen the first time and remembers them on your device. (If you'd rather
+// hard-code them you still can — paste between the quotes below — it's optional.)
+const SUPABASE_URL = "PASTE_YOUR_PROJECT_URL_HERE";
+const SUPABASE_ANON_KEY = "PASTE_YOUR_ANON_PUBLIC_KEY_HERE";
+
+function storedKeys() {
+  const hardUrl = SUPABASE_URL.includes("PASTE") ? "" : SUPABASE_URL.trim();
+  const hardKey = SUPABASE_ANON_KEY.includes("PASTE") ? "" : SUPABASE_ANON_KEY.trim();
+  return {
+    url: (localStorage.getItem("gp_sb_url") || hardUrl || "").replace(/\/+$/, ""),
+    key: localStorage.getItem("gp_sb_key") || hardKey || "",
+  };
+}
+let db = null; // the Supabase client — created once we have keys
+
+const ROLE_LABEL = { admin:"Admin", coadmin:"Co-Admin", coach:"Coach", player:"Player" };
+
+function friendlyError(e) {
+  const m = (e && e.message) || String(e || "");
+  if (/failed to fetch|networkerror|load failed|fetch/i.test(m))
+    return "Can't reach your Supabase project. Click \u201cchange backend\u201d at the bottom and re-check the Project URL (Settings \u2192 API), and make sure the project isn't paused.";
+  return m;
+}
+
+function RolePill({ role }) {
+  return <span className={"pill " + role}>{ROLE_LABEL[role] || role}</span>;
+}
+
+// ── One-time backend connection — paste keys here instead of in the file ────
+function ConnectScreen({ onSaved }) {
+  const [url, setUrl] = useState("");
+  const [key, setKey] = useState("");
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const u = url.trim().replace(/\/+$/, "");
+    const k = key.trim();
+    if (!/^https:\/\/[^ ]+\.[^ ]+/.test(u)) { setErr("Paste the Project URL from Settings → API — it looks like https://xxxxxxxx.supabase.co (not the dashboard link in your browser bar)."); return; }
+    if (k.length < 30) { setErr("That anon key looks too short — copy the whole 'anon public' key."); return; }
+    setBusy(true); setErr(null);
+    try {
+      const res = await fetch(u + "/auth/v1/settings", { headers: { apikey: k } });
+      if (res.status === 401 || res.status === 403) { setBusy(false); setErr("Reached your project, but the key was rejected. Re-copy the 'anon public' key (not the service_role key)."); return; }
+      if (!res.ok) { setBusy(false); setErr("Got an unexpected response from that URL. Double-check the Project URL, and that the project is active (not paused)."); return; }
+    } catch (_) {
+      setBusy(false);
+      setErr("Couldn't reach that URL. Make sure it's the Project URL from Settings → API (https://xxxx.supabase.co — not the dashboard link), your project isn't paused, and you're on the deployed site, not the .html file on your computer.");
+      return;
+    }
+    localStorage.setItem("gp_sb_url", u);
+    localStorage.setItem("gp_sb_key", k);
+    setBusy(false);
+    onSaved({ url: u, key: k });
+  };
+  return (
+    <div className="card">
+      <p className="sec">Connect to your backend</p>
+      <div style={{color:"var(--muted)",fontSize:13,lineHeight:1.65,marginBottom:2}}>
+        One-time setup, right here — no file editing. In Supabase, open
+        <b> Project Settings → API</b> and copy these two values in.
+      </div>
+      <label>Project URL</label>
+      <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxxxxxx.supabase.co" autoCapitalize="off" autoCorrect="off" spellCheck="false" />
+      <label>anon public key</label>
+      <input value={key} onChange={e=>setKey(e.target.value)} placeholder="eyJhbGciOi… (long key)" autoCapitalize="off" autoCorrect="off" spellCheck="false" onKeyDown={e=>e.key==="Enter"&&save()} />
+      <button className="btn" disabled={busy} onClick={save}>{busy ? "Testing connection…" : "Connect"}</button>
+      {err && <div className="msg err">{err}</div>}
+      <div className="hint">Saved on this device only. Both values are safe to use here — your data is protected by the database rules, not by hiding the key.</div>
+    </div>
+  );
+}
+
+// ── Sign in / sign up ──────────────────────────────────────────────────────
+function AuthScreen() {
+  const [mode, setMode] = useState("login"); // 'login' | 'signup'
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null); // {type, text}
+
+  const submit = async () => {
+    setMsg(null);
+    if (!email || !pass) { setMsg({type:"err", text:"Enter your email and password."}); return; }
+    if (mode === "signup" && !code.trim()) { setMsg({type:"err", text:"Enter the access code your coach gave you."}); return; }
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        const { data, error } = await db.auth.signUp({ email: email.trim(), password: pass });
+        if (error) throw error;
+        // Stash the code so it still works after an email-confirmation round trip.
+        localStorage.setItem("gp_pending_code", code.trim().toUpperCase());
+        localStorage.setItem("gp_pending_name", name.trim());
+        if (data.session) {
+          // Confirmation is off → we're already in; the app will redeem the code.
+          setMsg({type:"ok", text:"Account created. Setting up your team…"});
+        } else {
+          setMsg({type:"ok", text:"Account created. Check your email to confirm, then come back and log in — your code is saved."});
+        }
+      } else {
+        const { error } = await db.auth.signInWithPassword({ email: email.trim(), password: pass });
+        if (error) throw error;
+      }
+    } catch (e) {
+      setMsg({type:"err", text: friendlyError(e)});
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="card">
+      <div className="tabs">
+        <button className={"tab" + (mode==="login"?" on":"")} onClick={()=>{setMode("login");setMsg(null);}}>Log In</button>
+        <button className={"tab" + (mode==="signup"?" on":"")} onClick={()=>{setMode("signup");setMsg(null);}}>Sign Up</button>
+      </div>
+
+      <label>Email</label>
+      <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="coach@school.edu" autoComplete="email" />
+
+      <label>Password</label>
+      <input type="password" value={pass} onChange={e=>setPass(e.target.value)} placeholder="••••••••" autoComplete={mode==="signup"?"new-password":"current-password"} onKeyDown={e=>e.key==="Enter"&&mode==="login"&&submit()} />
+
+      {mode === "signup" && <>
+        <label>Your name <span style={{color:"var(--faint)"}}>(shown to your team)</span></label>
+        <input value={name} onChange={e=>setName(e.target.value)} placeholder="Coach Last Name" />
+        <label>Access code</label>
+        <input className="code-input" value={code} onChange={e=>setCode(e.target.value)} placeholder="ABCD1234" />
+      </>}
+
+      <button className="btn" disabled={busy} onClick={submit}>
+        {busy ? "Working…" : (mode === "login" ? "Log In" : "Create Account")}
+      </button>
+
+      {msg && <div className={"msg " + msg.type}>{msg.text}</div>}
+
+      <div className="hint">
+        {mode === "login"
+          ? "First time here? Switch to Sign Up — you'll need the access code your team admin sent you."
+          : "No code yet? Ask your team's admin to generate one for you. New school setting things up? Use your founder code."}
+      </div>
+    </div>
+  );
+}
+
+// ── Logged in, but not on a team yet ────────────────────────────────────────
+function JoinTeam({ displayName, onJoined }) {
+  const [code, setCode] = useState("");
+  const [name, setName] = useState(displayName || "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const join = async () => {
+    if (!code.trim()) { setMsg({type:"err", text:"Enter your access code."}); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const { error } = await db.rpc("redeem_code", { p_code: code.trim().toUpperCase(), p_display: name.trim() || null });
+      if (error) throw error;
+      localStorage.removeItem("gp_pending_code");
+      localStorage.removeItem("gp_pending_name");
+      onJoined();
+    } catch (e) {
+      setMsg({type:"err", text: friendlyError(e)});
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="card">
+      <p className="sec">Join your team</p>
+      <div style={{color:"var(--muted)",fontSize:13,lineHeight:1.6,marginBottom:6}}>
+        You're signed in. Enter the access code from your team's admin to get into your playbook.
+      </div>
+      <label>Your name</label>
+      <input value={name} onChange={e=>setName(e.target.value)} placeholder="Coach Last Name" />
+      <label>Access code</label>
+      <input className="code-input" value={code} onChange={e=>setCode(e.target.value)} placeholder="ABCD1234" onKeyDown={e=>e.key==="Enter"&&join()} />
+      <button className="btn" disabled={busy} onClick={join}>{busy ? "Joining…" : "Join Team"}</button>
+      {msg && <div className={"msg " + msg.type}>{msg.text}</div>}
+      <button className="btn ghost" style={{marginTop:10}} onClick={()=>db.auth.signOut()}>Log out</button>
+    </div>
+  );
+}
+
+// ── Admin/co-admin: make invite codes ───────────────────────────────────────
+function InvitePanel({ teamId }) {
+  const [role, setRole] = useState("player");
+  const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState(null);
+  const [err, setErr] = useState(null);
+
+  const make = async () => {
+    setBusy(true); setErr(null); setCode(null);
+    try {
+      const { data, error } = await db.rpc("generate_code", { p_team: teamId, p_role: role, p_max_uses: 1 });
+      if (error) throw error;
+      setCode(data);
+    } catch (e) { setErr(friendlyError(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{marginTop:20}}>
+      <p className="sec">Invite someone</p>
+      <div className="row">
+        <select value={role} onChange={e=>setRole(e.target.value)} style={{flex:1,minWidth:140}}>
+          <option value="player">Player — view only</option>
+          <option value="coach">Coach — can edit</option>
+          <option value="coadmin">Co-Admin — full control</option>
+        </select>
+        <button className="mini" style={{padding:"10px 16px"}} disabled={busy} onClick={make}>{busy?"…":"Create code"}</button>
+      </div>
+      {code && (
+        <div className="codebox">
+          <code>{code}</code>
+          <button className="mini" onClick={()=>navigator.clipboard && navigator.clipboard.writeText(code)}>Copy</button>
+          <span style={{fontSize:11,color:"var(--muted)"}}>Single use — share it with one person.</span>
+        </div>
+      )}
+      {err && <div className="msg err">{err}</div>}
+    </div>
+  );
+}
+
+// ── The team roster ─────────────────────────────────────────────────────────
+function Roster({ teamId, myRole, myUserId }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState(null);
+  const canManage = myRole === "admin" || myRole === "coadmin";
+
+  const load = useCallback(async () => {
+    const { data, error } = await db.from("memberships")
+      .select("user_id, role, display_name, created_at")
+      .eq("team_id", teamId).order("created_at");
+    if (error) setErr(error.message); else setRows(data || []);
+  }, [teamId]);
+  useEffect(() => { load(); }, [load]);
+
+  const changeRole = async (uid, newRole) => {
+    setErr(null);
+    const { error } = await db.from("memberships").update({ role: newRole }).eq("team_id", teamId).eq("user_id", uid);
+    if (error) setErr(error.message); else load();
+  };
+  const remove = async (uid) => {
+    setErr(null);
+    const { error } = await db.from("memberships").delete().eq("team_id", teamId).eq("user_id", uid);
+    if (error) setErr(error.message); else load();
+  };
+
+  if (rows === null) return <div style={{color:"var(--faint)",fontSize:13,marginTop:8}}>Loading roster…</div>;
+  return (
+    <div style={{marginTop:20}}>
+      <p className="sec">Roster — {rows.length} {rows.length===1?"person":"people"}</p>
+      {rows.map(m => {
+        const isMe = m.user_id === myUserId;
+        const isAdmin = m.role === "admin";
+        // A co-admin can manage everyone except the admin. The admin can manage all.
+        const mayEdit = canManage && !isMe && !(isAdmin && myRole !== "admin");
+        return (
+          <div className="member" key={m.user_id}>
+            <div>
+              <div style={{fontWeight:600}}>{m.display_name || "Unnamed"}{isMe && <span style={{color:"var(--faint)",fontWeight:400}}> · you</span>}</div>
+            </div>
+            <div className="row" style={{gap:8}}>
+              {mayEdit ? (
+                <select value={m.role} onChange={e=>changeRole(m.user_id, e.target.value)} style={{padding:"5px 8px",fontSize:12}}>
+                  <option value="player">Player</option>
+                  <option value="coach">Coach</option>
+                  <option value="coadmin">Co-Admin</option>
+                </select>
+              ) : <RolePill role={m.role} />}
+              {mayEdit && <button className="mini danger" onClick={()=>remove(m.user_id)}>Remove</button>}
+            </div>
+          </div>
+        );
+      })}
+      {err && <div className="msg err">{err}</div>}
+    </div>
+  );
+}
+
+// ── Signed in + on a team ────────────────────────────────────────────────────
+function Dashboard({ session, memberships, active, setActive, reload }) {
+  const m = memberships[active];
+  const canManage = m.role === "admin" || m.role === "coadmin";
+  return (
+    <div className="card">
+      <div className="row" style={{justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,letterSpacing:"0.04em",lineHeight:1}}>{m.teams?.name || "My Team"}</div>
+          <div className="row" style={{gap:8,marginTop:7}}>
+            <RolePill role={m.role} />
+            <span style={{fontSize:12,color:"var(--faint)"}}>{session.user.email}</span>
+          </div>
+        </div>
+        <button className="mini" onClick={()=>db.auth.signOut()}>Log out</button>
+      </div>
+
+      {memberships.length > 1 && (
+        <div style={{marginTop:14}}>
+          <label>Team</label>
+          <select value={active} onChange={e=>setActive(Number(e.target.value))}>
+            {memberships.map((mm, i) => <option key={mm.team_id} value={i}>{mm.teams?.name} — {ROLE_LABEL[mm.role]}</option>)}
+          </select>
+        </div>
+      )}
+
+      {canManage && <InvitePanel teamId={m.team_id} />}
+      <Roster teamId={m.team_id} myRole={m.role} myUserId={session.user.id} />
+
+      <div className="field-note">
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:"0.05em",color:"var(--chalk)"}}>Playbook coming next</div>
+        Step 2 drops the full field editor in right here, reading and writing this team's
+        private library. {m.role === "player" ? "You'll have view-only access (no exports)." : "You'll be able to edit and export."}
+      </div>
+    </div>
+  );
+}
+
+// ── Root ──────────────────────────────────────────────────────────────────
+function App() {
+  const [keys, setKeys] = useState(storedKeys);
+  const configured = !!(keys.url && keys.key);
+  const [session, setSession] = useState(undefined);   // undefined = checking
+  const [memberships, setMemberships] = useState(undefined);
+  const [active, setActive] = useState(0);
+
+  const loadMemberships = useCallback(async (sess) => {
+    if (!sess) { setMemberships(undefined); return; }
+    const { data } = await db.from("memberships")
+      .select("team_id, role, display_name, teams(name)")
+      .order("created_at");
+    let list = data || [];
+    // Auto-redeem a code saved during sign-up (covers the email-confirm gap).
+    if (list.length === 0) {
+      const pending = localStorage.getItem("gp_pending_code");
+      if (pending) {
+        try {
+          await db.rpc("redeem_code", { p_code: pending, p_display: localStorage.getItem("gp_pending_name") || null });
+          localStorage.removeItem("gp_pending_code"); localStorage.removeItem("gp_pending_name");
+          const re = await db.from("memberships").select("team_id, role, display_name, teams(name)").order("created_at");
+          list = re.data || [];
+        } catch (_) { /* bad/used code → JoinTeam screen handles it */ }
+      }
+    }
+    setMemberships(list);
+    setActive(0);
+  }, []);
+
+  useEffect(() => {
+    if (!configured) { setSession(null); setMemberships(undefined); return; }
+    if (!db) { try { db = supabase.createClient(keys.url, keys.key); } catch (_) { setSession(null); return; } }
+    db.auth.getSession().then(({ data }) => { setSession(data.session); loadMemberships(data.session); });
+    const { data: sub } = db.auth.onAuthStateChange((_e, sess) => { setSession(sess); loadMemberships(sess); });
+    return () => sub.subscription.unsubscribe();
+  }, [configured, keys, loadMemberships]);
+
+  return (
+    <div className="wrap">
+      <div className="brand">
+        <h1>GRIDIRON</h1>
+        <span className="sub">Pro · Cloud</span>
+      </div>
+
+      {!configured ? (
+        <ConnectScreen onSaved={setKeys} />
+      ) : session === undefined || (session && memberships === undefined) ? (
+        <div className="card"><div style={{color:"var(--faint)",fontSize:13}}>Loading…</div></div>
+      ) : !session ? (
+        <AuthScreen />
+      ) : memberships.length === 0 ? (
+        <JoinTeam displayName={session.user.user_metadata?.name} onJoined={()=>loadMemberships(session)} />
+      ) : (
+        <Dashboard session={session} memberships={memberships} active={active} setActive={setActive} reload={()=>loadMemberships(session)} />
+      )}
+
+      <div style={{textAlign:"center",marginTop:18,fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:"var(--faint)",letterSpacing:"0.08em"}}>
+        Your team's data is private to your team.
+        {configured && <> · <a href="#" style={{color:"var(--faint)"}} onClick={e=>{e.preventDefault(); if(window.confirm("Disconnect this backend on this device? You'll re-enter your Supabase keys.")){ localStorage.removeItem("gp_sb_url"); localStorage.removeItem("gp_sb_key"); db=null; setKeys({url:"",key:""}); setSession(undefined); setMemberships(undefined);} }}>change backend</a></>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
