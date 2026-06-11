@@ -3837,20 +3837,15 @@ function PlaybookApp() {
         const range = getFieldViewRange(newView, offset);
         const bandCenter = (range.yStart + range.yEnd) / 2;
         if (modeChange) {
-            let minY = Infinity, maxY = -Infinity;
-            const acc = (y) => { if (y < minY)
-                minY = y; if (y > maxY)
-                maxY = y; };
-            (players || []).forEach(p => acc(p.y));
-            (routes || []).forEach(r => (r.points || []).forEach(pt => acc(pt.y)));
-            (coverages || []).forEach(z => { if (z && z.ctype === "zone" && typeof z.y === "number") {
-                acc(z.y);
-                acc(z.y + (z.h || 0));
-            } });
-            if (minY === Infinity) {
-                minY = maxY = losY;
-            }
-            const dy = bandCenter - (minY + maxY) / 2;
+            // Anchor the LOS at a fixed spot in the new view rather than centering the
+            // play: 10 yards up from the bottom edge for every view, except Goal Line
+            // which sits the LOS on the 2-yard line just before the end zone. The whole
+            // play (LOS + every player, route point and zone) shifts as one rigid group,
+            // so nobody crosses the LOS and horizontal spacing is never touched.
+            const targetLos = (newView === "goalline")
+                ? (EZ + 2 * YARD)
+                : (range.yEnd - 10 * YARD);
+            const dy = targetLos - losY;
             if (Math.abs(dy) > 0.01) {
                 setLosY(losY + dy);
                 setPlayers(prev => prev.map(p => ({ ...p, y: p.y + dy })));
@@ -4059,11 +4054,9 @@ function PlaybookApp() {
         const { vbX, vbY, vbW, vbH } = computeViewBox();
         let x = vbX + (cx - rect.left) * (vbW / rect.width);
         let y = vbY + (cy - rect.top) * (vbH / rect.height);
-        // Inverse-apply the content scale (anchored at BALL_X / losY) so edit
-        // handlers always see natural play coords, regardless of view.
+        // Content scales vertically only (anchored at the LOS), so undo just Y.
         const s = contentScaleRef.current;
         if (s !== 1 && s > 0) {
-            x = (x - BALL_X) / s + BALL_X;
             y = (y - losY) / s + losY;
         }
         return { x, y };
@@ -9964,7 +9957,7 @@ function PlaybookApp() {
                                         React.createElement("ellipse", { cx: ballX, cy: losY, rx: 7, ry: 5, fill: "#8B4513", stroke: draggingBall ? "#fde68a" : "#daa520", strokeWidth: "2" }),
                                         React.createElement("line", { x1: ballX - 6, y1: losY, x2: ballX + 6, y2: losY, stroke: "#f5deb3", strokeWidth: "0.8", pointerEvents: "none" }),
                                         React.createElement("line", { x1: ballX, y1: losY - 4, x2: ballX, y2: losY + 4, stroke: "#f5deb3", strokeWidth: "0.8", pointerEvents: "none" })))),
-                                React.createElement("g", { transform: contentScale === 1 ? undefined : `translate(${BALL_X} ${losY}) scale(${contentScale}) translate(${-BALL_X} ${-losY})` },
+                                React.createElement("g", { transform: contentScale === 1 ? undefined : `translate(0 ${losY}) scale(1 ${contentScale}) translate(0 ${-losY})` },
                                     (() => {
                                         // Pre-compute the set of motion routes that have a
                                         // follow-up attached. The motion's arrowhead is omitted
