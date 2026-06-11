@@ -13852,6 +13852,10 @@ const { useState, useEffect, useCallback } = React;
 // hard-code them you still can — paste between the quotes below — it's optional.)
 const SUPABASE_URL = "https://brvuqdradofdtlhvpmtk.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_YtvHZhxD38kzIS-5kqp0sw_xfRGP4bv";
+// When the keys are baked in (above), the backend is fixed — hide the
+// "Change backend" UI so players/coaches never see it. It only shows in a
+// build where keys are entered at runtime (the escape hatch matters there).
+const KEYS_BAKED = !SUPABASE_URL.includes("PASTE") && !SUPABASE_ANON_KEY.includes("PASTE");
 
 function storedKeys() {
   const hardUrl = SUPABASE_URL.includes("PASTE") ? "" : SUPABASE_URL.trim();
@@ -14030,10 +14034,12 @@ function AuthScreen({ backendHost, onChangeBackend }) {
           : "No code yet? Ask your team's admin to generate one for you. New school setting things up? Use your founder code."}
       </div>
 
-      <div className="hint" style={{borderTop:"1px solid var(--line)",paddingTop:11,marginTop:13}}>
-        Backend: <b style={{color:"var(--muted)"}}>{backendHost || "—"}</b>. Wrong project, or seeing "failed to fetch"?{" "}
-        <a href="#" onClick={e=>{e.preventDefault();onChangeBackend();}}>Change backend</a>.
-      </div>
+      {!KEYS_BAKED && (
+        <div className="hint" style={{borderTop:"1px solid var(--line)",paddingTop:11,marginTop:13}}>
+          Backend: <b style={{color:"var(--muted)"}}>{backendHost || "—"}</b>. Wrong project, or seeing "failed to fetch"?{" "}
+          <a href="#" onClick={e=>{e.preventDefault();onChangeBackend();}}>Change backend</a>.
+        </div>
+      )}
     </div>
   );
 }
@@ -14370,7 +14376,7 @@ function App() {
 
       <div style={{textAlign:"center",marginTop:18,fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:"var(--faint)",letterSpacing:"0.08em"}}>
         Your team's data is private to your team.
-        {configured && !showConnect && <> · <a href="#" style={{color:"var(--faint)"}} onClick={e=>{e.preventDefault(); setShowConnect(true);}}>backend settings</a></>}
+        {configured && !showConnect && !KEYS_BAKED && <> · <a href="#" style={{color:"var(--faint)"}} onClick={e=>{e.preventDefault(); setShowConnect(true);}}>backend settings</a></>}
       </div>
     </div>
   );
