@@ -4506,9 +4506,11 @@ function PlaybookApp() {
                     nx = Math.min(left, right);
                     ny = Math.min(top, bottom);
                 }
-                // Keep the whole zone on the field (stops at the edge, never slides off).
-                nx = Math.max(0, Math.min(FW - nw, nx));
-                ny = Math.max(0, Math.min(FH - nh, ny));
+                // Let the zone reach the edges — its CENTER can sit on any sideline or
+                // end line (so it can hang halfway off to cover the boundary), but it
+                // can never slide entirely off the field.
+                nx = Math.max(-nw / 2, Math.min(FW - nw / 2, nx));
+                ny = Math.max(-nh / 2, Math.min(FH - nh / 2, ny));
                 const upd = { ...c, x: nx, y: ny, w: nw, h: nh };
                 // Dragging an attached zone re-defines its offset from the player.
                 if (c.attachedTo && zoneDrag.attachP) {
@@ -10082,8 +10084,8 @@ function PlaybookApp() {
                                         const sm = player.sizeMul || 1;
                                         // Player size is in true field units — consistent across every view, so the
                                         // size slider behaves identically whether zoomed in (redzone) or out (80yd).
-                                        const R = Math.max(6, Math.min(36, 11.5 * sm));
-                                        const fs = Math.max(8, Math.min(24, 11 * sm));
+                                        const R = Math.max(6, Math.min(36, 5.75 * sm));
+                                        const fs = Math.max(8, Math.min(24, 5.5 * sm));
                                         return (React.createElement("g", { key: player.id, onMouseDown: e => onPlayerDown(e, player.id), onTouchStart: e => { e.stopPropagation(); e.preventDefault(); onPlayerDown(e, player.id); }, style: { cursor: alignMode ? "pointer" : tool === "select" ? "move" : tool === "erase" ? "not-allowed" : "pointer" }, onDoubleClick: () => { setEditingLabel(player.id); setEditLabelVal(player.label); } },
                                             isSel && React.createElement("circle", { cx: player.x, cy: player.y, r: R + 5, fill: "none", stroke: "#fbbf24", strokeWidth: "2", strokeDasharray: "4,2", opacity: "0.8" }),
                                             isAlignSel && React.createElement("circle", { cx: player.x, cy: player.y, r: R + 7, fill: "none", stroke: "#67e8f9", strokeWidth: "2.5", strokeDasharray: "3,3", opacity: "0.95" }),
@@ -10618,8 +10620,8 @@ function PlaybookApp() {
                                             copy.offY = (z.offY || 0) + offset;
                                         }
                                         else {
-                                            copy.x = Math.max(0, Math.min(FW - z.w, (z.x || 0) + offset));
-                                            copy.y = Math.max(0, Math.min(FH - z.h, (z.y || 0) + offset));
+                                            copy.x = Math.max(-z.w / 2, Math.min(FW - z.w / 2, (z.x || 0) + offset));
+                                            copy.y = Math.max(-z.h / 2, Math.min(FH - z.h / 2, (z.y || 0) + offset));
                                         }
                                         setCoverages(prev => [...prev, copy]);
                                         setSelectedZoneId(copy.id);
