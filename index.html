@@ -70,7 +70,7 @@ const ROUTE_CFG = {
 };
 const ROUTE_TYPES_BY_TAB = {
     offense: ["pass", "run", "preSnapMotion", "postSnapMotion", "blocking", "option"],
-    defense: ["pass", "run", "preSnapMotion", "postSnapMotion", "showBlitz", "hideBlitz", "option"],
+    defense: ["pass", "run", "preSnapMotion", "postSnapMotion", "blocking", "showBlitz", "hideBlitz", "option"],
     special: ["pass", "run", "preSnapMotion", "postSnapMotion", "blocking", "option"],
 };
 const ROUTE_LABELS = {
@@ -154,6 +154,272 @@ const uniqueVariantName = (base, existingNames) => {
     }
     return candidate;
 };
+// ── Pure flip transforms ──
+// Each takes the spatial parts of a play and returns flipped copies of them.
+// Shared by the editor's flip buttons AND the play library's "make a mirrored
+// copy" action, so a copy is mirrored EXACTLY the way the editor flips the live
+// play — one definition, no drift.
+// FLIP ACROSS THE LOS: vertical mirror + swap offense/defense.
+function flipPartsAcrossLOS({ players = [], routes = [], coverages = [], losY }) {
+    const fy = (y) => 2 * losY - y;
+    return {
+        players: players.map(p => ({ ...p, y: fy(p.y),
+            ptype: p.ptype === "offense" ? "defense" : (p.ptype === "defense" ? "offense" : p.ptype) })),
+        routes: routes.map(r => ({ ...r, points: (r.points || []).map(pt => ({ ...pt, y: fy(pt.y) })) })),
+        coverages: coverages.map(c => {
+            if (c.ctype !== "zone")
+                return c;
+            const next = { ...c, y: 2 * losY - c.y - c.h };
+            if (typeof c.offY === "number")
+                next.offY = -c.offY;
+            return next;
+        }),
+    };
+}
+// MIRROR LEFT↔RIGHT, players included (same play, opposite hash).
+function flipPartsLeftRight({ players = [], routes = [], coverages = [], ballX }) {
+    const fx = (x) => FW - x;
+    return {
+        players: players.map(p => ({ ...p, x: fx(p.x) })),
+        routes: routes.map(r => ({ ...r, points: (r.points || []).map(pt => ({ ...pt, x: fx(pt.x) })) })),
+        coverages: coverages.map(c => {
+            if (c.ctype !== "zone")
+                return c;
+            const next = { ...c, x: FW - c.x - c.w };
+            if (typeof c.offX === "number")
+                next.offX = -c.offX;
+            return next;
+        }),
+        ballX: typeof ballX === "number" ? fx(ballX) : ballX,
+    };
+}
+// FLIP THE CALL only — mirror routes/zones/ball/labels left↔right, keep the
+// formation, then re-own each mirrored route/zone to the man now nearest it.
+function flipPartsCall({ players = [], routes = [], coverages = [], texts = [], ballPlan, ballX }) {
+    const fx = (x) => FW - x;
+    const nearestOf = (x, y, pool) => {
+        let best = null, bd = Infinity;
+        pool.forEach(p => { const d = (p.x - x) ** 2 + (p.y - y) ** 2; if (d < bd) {
+            bd = d;
+            best = p;
+        } });
+        return best;
+    };
+    const routesOut = routes.map(r => {
+        const pts = (r.points || []).map(pt => ({ ...pt, x: fx(pt.x) }));
+        const m = { ...r, points: pts };
+        if (typeof r.orderOffX === "number")
+            m.orderOffX = -r.orderOffX;
+        if (r.ownerId != null && pts.length) {
+            const owner = players.find(p => p.id === r.ownerId);
+            const pool = owner ? players.filter(p => p.ptype === owner.ptype) : players;
+            const np = nearestOf(pts[0].x, pts[0].y, pool);
+            if (np)
+                m.ownerId = np.id;
+        }
+        return m;
+    });
+    const covsOut = coverages.map(c => {
+        if (c.ctype !== "zone")
+            return c;
+        const m = { ...c, x: fx(c.x) - c.w };
+        if (typeof c.offX === "number")
+            m.offX = -c.offX;
+        if (typeof c.dropDx === "number")
+            m.dropDx = -c.dropDx;
+        if (c.attachedTo != null) {
+            const cx = m.x + m.w / 2, cy = m.y + m.h / 2;
+            const nd = nearestOf(cx, cy, players.filter(p => p.ptype === "defense"));
+            if (nd) {
+                m.attachedTo = nd.id;
+                m.offX = cx - nd.x;
+                m.offY = cy - nd.y;
+            }
+        }
+        return m;
+    });
+    return {
+        players,
+        routes: routesOut,
+        coverages: covsOut,
+        texts: texts.map(t => (typeof t.x === "number" ? { ...t, x: fx(t.x) } : t)),
+        ballPlan: ballPlan ? { ...ballPlan, steps: (ballPlan.steps || []).map(s => (s.toPoint && typeof s.toPoint.x === "number") ? { ...s, toPoint: { ...s.toPoint, x: fx(s.toPoint.x) } } : s) } : ballPlan,
+        ballX: typeof ballX === "number" ? fx(ballX) : ballX,
+    };
+}
+// Name a mirrored COPY. For a left↔right mirror, swap Left/Right (and Lt/Rt) in
+// the name when present; otherwise tag with a short suffix. Always de-duped.
+const mirroredCopyName = (base, kind, existingNames) => {
+    let nm = (base || "Play").trim();
+    if (kind === "lr") {
+        const swapped = nm.replace(/\b(Left|Right|Lt|Rt)\b/gi, (m) => {
+            const map = { left: "Right", right: "Left", lt: "Rt", rt: "Lt" };
+            const repl = map[m.toLowerCase()];
+            if (!repl)
+                return m;
+            if (m === m.toUpperCase())
+                return repl.toUpperCase();
+            if (m[0] === m[0].toUpperCase())
+                return repl[0].toUpperCase() + repl.slice(1);
+            return repl;
+        });
+        nm = swapped !== nm ? swapped : `${nm} (Mirror)`;
+    }
+    else if (kind === "teams") {
+        nm = `${nm} (Flip)`;
+    }
+    else {
+        nm = `${nm} (Flip Call)`;
+    }
+    return uniqueVariantName(nm, existingNames);
+};
+// RPO ball steps for one PLAY-IN-ACTION rep. Rep 1 (run read) keeps only the
+// give (handoff/pitch), forced REAL, and drops the throw — the ball is handed
+// off and rides the back. Rep 2 (pass read) keeps every step but forces the
+// give to a FAKE, so the ball meshes, pulls back, then throws the route.
+function rpoBallSteps(steps, rep) {
+    const isGive = (s) => s && (s.action === "handoff" || s.action === "pitch");
+    if (rep === 1)
+        return (steps || []).filter(isGive).map(s => ({ ...s, fake: false }));
+    return (steps || []).map(s => isGive(s) ? { ...s, fake: true } : s);
+}
+// Content for the interactive Help guide overlay. Plain data so it can be
+// rendered as a searchable, categorized reference. Each topic { t, d } is a
+// control/feature title and a short, friendly explanation of what it does and
+// how to use it. Keep this in sync with the actual controls.
+const HELP_GUIDE = [
+    {
+        id: "start", icon: "🚀", title: "Getting Started",
+        blurb: "The basics — tabs, the field, and saving your work.",
+        topics: [
+            { t: "Offense / Defense / Special tabs", d: "The three tabs at the top switch what you're drawing. Each tab keeps its own default look and remembers whatever you put on the field." },
+            { t: "The field", d: "Offense lines up below the dashed yellow line (the line of scrimmage) and moves up the field; routes run upward. Defense lines up above it." },
+            { t: "Saving a play", d: "Type a name and pick a play type in the bottom bar, then hit SAVE. The play drops into your Play Library on the left." },
+            { t: "MINE vs DEFAULT", d: "Your personal plays live in MINE; shared team plays live in DEFAULT. Switch between them with the pill in the toolbar when it's available." },
+            { t: "Auto-save & the SAVED pill", d: "The app saves after every change — watch the green SAVED pill in the toolbar. Click it any time to open Backup / Restore." },
+        ],
+    },
+    {
+        id: "tools", icon: "🧰", title: "Drawing Tools",
+        blurb: "The tool palette — select, add players, draw routes, erase, and more.",
+        topics: [
+            { t: "⊹ Select", d: "The default tool. Click a player, route, zone, or label to select it, then drag to move it." },
+            { t: "⬤ OFF +  /  ◼ DEF +", d: "Add a player — green for offense, red for defense. Click anywhere on the field to drop one in." },
+            { t: "⟶ Route", d: "Draw a route. Tap a player first and the route belongs to him. A strip of route types and combinations appears while this tool is active." },
+            { t: "◯ Zone", d: "Draw a coverage zone — the area a defender drops into. Defense tab only." },
+            { t: "⇄ Man", d: "Draw a man-coverage link from a defender to the receiver he's covering. Defense tab only." },
+            { t: "T Text", d: "Drop a text label anywhere for notes, assignments, or coaching points." },
+            { t: "⌫ Erase", d: "Tap any player, route, zone, or label to delete it. Every erase can be undone." },
+            { t: "✋ Pan", d: "Drag to move your view around the field without moving anything on it." },
+            { t: "Zoom  ＋ / − / ⊙", d: "Zoom in and out with the controls in the bottom-right corner. ⊙ snaps the view back to fit." },
+        ],
+    },
+    {
+        id: "formations", icon: "🧍", title: "Players & Formations",
+        blurb: "Set your alignment, drop in the other side, and reuse looks.",
+        topics: [
+            { t: "Formation dropdown", d: "Pick a formation to set your side's alignment. Switching it swaps only that side and leaves the other side — and its routes — in place." },
+            { t: "Add an opposing look", d: "The \"+ vs DEF / OFF look\" picker drops the other side's formation onto the field. Picking a new one replaces the old opposing look instead of stacking another on top." },
+            { t: "Reload formation", d: "Re-applies the current formation, snapping your side back to its alignment if you've nudged players out of place." },
+            { t: "Save a formation", d: "Built a custom alignment? Save it as a formation and it joins your dropdown. A custom that shares a built-in's name overrides that built-in." },
+            { t: "Moving players", d: "With the Select tool, drag any player to reposition him. Routes attached to him stay attached." },
+            { t: "The offensive line", d: "Every offense formation uses the same five-man line (T-G-C-G-T). On defense it also shows as a reference so you can see the front the defense faces." },
+        ],
+    },
+    {
+        id: "routes", icon: "➰", title: "Routes & Motion",
+        blurb: "Draw routes, load combinations, and set pre-snap motion.",
+        topics: [
+            { t: "Drawing a route", d: "Pick the Route tool, optionally tap the player first, then click points on the field to lay the path. The route belongs to whoever it starts on." },
+            { t: "Route types & combinations", d: "While the Route tool is active a strip of route types appears. Single routes attach to one player; combinations load onto the whole formation at once." },
+            { t: "Option routes", d: "Branch a route off a point on an existing route. In Play in Action the receiver runs the primary first, then the play replays him running the option branch." },
+            { t: "Pre-snap motion", d: "A motion route runs before the snap. Chain a follow-up route and the player motions, then flows straight into his real route as one continuous path." },
+        ],
+    },
+    {
+        id: "ball", icon: "⚡", title: "Ball Mechanics",
+        blurb: "Snap, handoffs, pitches, throws, reads, RPO, and tackle-eligible.",
+        topics: [
+            { t: "Who takes the snap", d: "By default the QB takes the snap. Tap any skill player to make him the snapper instead — wildcat or direct-snap looks." },
+            { t: "Ball sequence (steps)", d: "Build what the ball does with + Handoff, + Pitch, + Pass, and + Kick. Steps run in order; reorder them with the ↑ / ↓ arrows or remove one with ✕." },
+            { t: "Choosing a target", d: "Each step's \"to\" dropdown lists every offensive player except whoever is already carrying the ball at that point. A pass can also target a spot on the field at a set depth." },
+            { t: "Fake", d: "Check \"fake\" on a step and the ball meshes and pulls back — play-action — without actually changing who has it." },
+            { t: "Throw to OL", d: "Offensive linemen are ineligible by default and stay hidden as targets. Flip on \"Throw to OL\" for tackle-eligible and trick plays — it also opens them up in your reads." },
+            { t: "Passing reads", d: "Tap players to set the 1→5 progression order. The list shows every eligible receiver — everyone except the interior linemen." },
+            { t: "RPO (Run-Pass Option)", d: "Add a handoff AND a pass to the sequence, then turn on RPO. Play in Action shows the give on the first rep and the fake-handoff + throw on the second." },
+            { t: "Moving the ball & the line", d: "Drag the ball to reposition the snap spot; drag the dashed line to move the whole play up or down the field. Both can be undone." },
+        ],
+    },
+    {
+        id: "defense", icon: "🛡️", title: "Defense",
+        blurb: "Coverages, zones, man, blitzes, and fronts.",
+        topics: [
+            { t: "Coverages", d: "Pick a coverage to drop its zones or man assignments onto the field automatically — or draw your own with the Zone and Man tools." },
+            { t: "Blitzes", d: "Pick a blitz to add pressure paths to the front. Re-selecting the same blitz re-applies it." },
+            { t: "Zones", d: "Draw a coverage zone with the Zone tool, then select it to resize or recolor it." },
+            { t: "Man coverage", d: "Draw a link from a defender to the receiver he's responsible for with the Man tool." },
+            { t: "Fronts & schemes", d: "Save and re-apply defensive fronts and blocking schemes so you're not redrawing the same look every time." },
+        ],
+    },
+    {
+        id: "anim", icon: "▶️", title: "Play in Action",
+        blurb: "Animate the play on the field.",
+        topics: [
+            { t: "PLAY IN ACTION", d: "Animates the play — players run their routes and the ball follows the sequence you built." },
+            { t: "Loop", d: "Turn on Loop and the animation replays over and over until you stop it." },
+            { t: "Timing modes", d: "Control how pre-snap motions fire — all together or staggered — to match the tempo you want." },
+            { t: "Two-rep plays", d: "Option routes and RPOs run twice on their own: the first rep shows one outcome, then the play resets and shows the second." },
+        ],
+    },
+    {
+        id: "3d", icon: "🎬", title: "3D Walkthrough",
+        blurb: "Watch the play from field level in 3D.",
+        topics: [
+            { t: "Open the walkthrough", d: "Launch the 3D view to watch the play unfold from the field in three dimensions." },
+            { t: "Sync vs Real", d: "Sync mode mirrors the 2D animation exactly. Real mode gives a more cinematic 3D camera and motion." },
+        ],
+    },
+    {
+        id: "export", icon: "📤", title: "Export & Share",
+        blurb: "GIFs, printing, and keeping your library safe.",
+        topics: [
+            { t: "GIF export", d: "Export the play as an animated GIF. It captures the full animation, including both reps of an option or RPO." },
+            { t: "Print", d: "Print a clean play card — or a whole install / script — for the call sheet or binder." },
+            { t: "HUDL menu", d: "The HUDL button in the toolbar opens the hub for exporting, printing, and managing your playbook." },
+            { t: "Backup & Restore", d: "Click the SAVED pill to copy your MINE library out as text — your guaranteed safety net if storage ever fails. Paste it back to restore." },
+        ],
+    },
+    {
+        id: "library", icon: "📚", title: "Play Library",
+        blurb: "Find, organize, duplicate, and mirror your plays.",
+        topics: [
+            { t: "Open / Load", d: "Saved plays appear in the library on the left. Click a play to load it onto the field for editing." },
+            { t: "Rename / Delete / Copy", d: "Each play has ✎ to rename, 🗑 to delete, and ⧉ COPY to make a plain duplicate." },
+            { t: "⇆ FLIP — mirrored copy", d: "Makes a mirrored version without touching the original: mirror left↔right (opposite hash), flip just the call, or flip across the line of scrimmage." },
+            { t: "Search & filter", d: "Search and filter your library by name, type, and formation to find a play fast." },
+            { t: "Assign to a formation (bulk)", d: "Multi-select plays to attach them to a formation all at once." },
+        ],
+    },
+    {
+        id: "scripts", icon: "📋", title: "Installs & Scripts",
+        blurb: "Teaching sets and practice scripts.",
+        topics: [
+            { t: "Installs", d: "Group plays into an install — a teaching set you flip through and run one play at a time." },
+            { t: "Practice scripts", d: "Build a script of periods, each holding the plays for that segment of practice." },
+            { t: "Running them", d: "Run an install or script to step through its plays; each one animates from its own saved diagram, not the live field." },
+        ],
+    },
+    {
+        id: "tips", icon: "💡", title: "Tips & Shortcuts",
+        blurb: "Undo, movable panels, and handy habits.",
+        topics: [
+            { t: "Undo", d: "Undo reverses your last action — moving, drawing, erasing, dragging the ball or the line, switching formations, even CLEAR. It holds your last ~20 actions." },
+            { t: "Movable panels", d: "Drag a panel by its grip handle to slide it out of your way; it stays inside the field area." },
+            { t: "Auto-fit view", d: "The view slides to keep your whole play framed without ever shrinking the players or routes." },
+            { t: "CLEAR vs NEW", d: "CLEAR wipes the field back to this tab's default look. NEW duplicates the current play so you can save it as a separate copy." },
+        ],
+    },
+];
 // Strip any leading formation name(s) off a blitz name so a mass-duplicate
 // doesn't double the prefix. Given "Tornado Bandit" with a formation called
 // "Tornado", returns "Bandit"; "Switch Tornado Bandit" (both formations) peels
@@ -690,6 +956,17 @@ async function storageGetMaybeChunked(key, shared) {
     }
     return raw;
 }
+// Standard 5-man offensive line (T-G-C-G-T). ONE definition, shared by the
+// "OL Only" formation below and by the auto-stamped reference line that appears
+// under a defensive look (see loadFormation), so the two always line up
+// identically. Change the splits here and both follow.
+const OL_BASE = [
+    { id: "c", label: "C", role: "OL", dx: 0, dy: 15 },
+    { id: "lg", label: "G", role: "OL", dx: -22, dy: 15 },
+    { id: "rg", label: "G", role: "OL", dx: 22, dy: 15 },
+    { id: "lt", label: "T", role: "OL", dx: -44, dy: 15 },
+    { id: "rt", label: "T", role: "OL", dx: 44, dy: 15 },
+];
 const FORMATIONS = {
     offense: {
         "I-Formation": [
@@ -722,9 +999,9 @@ const FORMATIONS = {
         // OL-only formation — exactly the five interior linemen and nothing
         // else. Useful for teaching blocking schemes, pulls, double teams,
         // combo blocks, or drawing line-of-scrimmage concepts in isolation.
-        "OL Only (T-G-C-G-T)": [
-            { id: "c", label: "C", role: "OL", dx: 0, dy: 15 }, { id: "lg", label: "G", role: "OL", dx: -22, dy: 15 }, { id: "rg", label: "G", role: "OL", dx: 22, dy: 15 }, { id: "lt", label: "T", role: "OL", dx: -44, dy: 15 }, { id: "rt", label: "T", role: "OL", dx: 44, dy: 15 },
-        ],
+        // Exactly the shared 5-man line and nothing else — identical alignment to
+        // the OL in every other formation and to the defensive reference line.
+        "OL Only (T-G-C-G-T)": OL_BASE,
     },
     defense: {
         "4-3": [
@@ -1097,7 +1374,7 @@ function DraggablePanel({ style, children, className, dragCursor = "move", onMou
             ...(pos ? { left: pos.x, top: pos.y, right: "auto", bottom: "auto", transform: "none" } : {}) } }, children));
 }
 function PlaybookApp() {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const [tab, setTab] = useState("defense");
     const [tool, setTool] = useState("select");
     const [routeType, setRouteType] = useState("pass");
@@ -1159,9 +1436,10 @@ function PlaybookApp() {
     // coords. Returning to a view with enough room sets scale back to 1, so
     // the play visually "snaps back" to its original size without any data
     // mutation. Tracked via a ref too so getSVGPt doesn't need it in deps.
-    const [contentScale, setContentScale] = useState(1);
-    const contentScaleRef = useRef(1);
-    useEffect(() => { contentScaleRef.current = contentScale; }, [contentScale]);
+    // Auto-fit shift: how far to slide the visible band (vertically) so the whole
+    // play stays in view WITHOUT resizing anything. Players and routes keep their
+    // true on-screen size; only the slice of field shown moves to follow the play.
+    const [fitShiftY, setFitShiftY] = useState(0);
     const animStartTimeRef = useRef(0);
     // startAnimRef: always points at the most recently-built startAnim
     // callback. Used by the install / practice-script PLAY IN ACTION flow,
@@ -1185,6 +1463,11 @@ function PlaybookApp() {
     // animHasOptionsRef flags whether the second pass should run at all.
     const animOptionRouteByPlayerRef = useRef(null);
     const animHasOptionsRef = useRef(false);
+    // RPO: when true, PLAY IN ACTION runs two reps that share the SAME player
+    // motion but differ in the BALL — rep 1 hands off (run), rep 2 fakes the
+    // handoff and throws (pass). Set in startAnim only when the ball plan is
+    // flagged rpo AND has both a give (handoff/pitch) and a throw (pass).
+    const animIsRPORef = useRef(false);
     // Pre-snap motion phase refs. animPreSnapRouteByPlayerRef maps each
     // player who runs pre-snap motion to their route; the per-route timing
     // (start offset and duration) lives in animPreSnapTimingsRef. The total
@@ -1417,6 +1700,12 @@ function PlaybookApp() {
     const [renameVal, setRenameVal] = useState("");
     // Per-play formation editor: id of the card whose "+" picker is currently open
     const [editingFormationsFor, setEditingFormationsFor] = useState(null);
+    // Which play's "make a mirrored copy" flip menu is open in the library (id or null)
+    const [flippingPlayFor, setFlippingPlayFor] = useState(null);
+    // Interactive help guide overlay
+    const [showHelp, setShowHelp] = useState(false);
+    const [helpCat, setHelpCat] = useState("start");
+    const [helpQuery, setHelpQuery] = useState("");
     // Multi-select mode in the playbook browser
     const [multiSelect, setMultiSelect] = useState(false);
     const [selectedPlayIds, setSelectedPlayIds] = useState(() => new Set());
@@ -1521,7 +1810,7 @@ function PlaybookApp() {
         steps.forEach(step => { const w = step.fake ? perFake : perReal; wins.push({ s: cur, e: cur + w }); cur += w; });
         return wins;
     };
-    const computeBallAnimPos = (bt, lookup) => {
+    const computeBallAnimPos = (bt, lookup, stepsOverride) => {
         const origin = { x: ballX, y: losY };
         const live = lookup || ((id) => { const p = ballPlayerById(id); return p ? { x: p.x, y: p.y } : null; });
         const snapId = ballSnapId();
@@ -1529,7 +1818,7 @@ function PlaybookApp() {
         const tSnap = 0.08;
         if (bt <= tSnap)
             return ballLerp(origin, snapPos, tSnap > 0 ? bt / tSnap : 1);
-        const steps = ballPlan.steps || [];
+        const steps = stepsOverride || ballPlan.steps || [];
         if (!steps.length)
             return snapPos;
         // Where a kicked ball ends after its bounce: continue past the landing spot
@@ -1604,6 +1893,31 @@ function PlaybookApp() {
         }
         return holderSpot || live(holderId) || snapPos;
     };
+    // RPO ball position from the POST-PRE-SNAP elapsed (ms). Maps the two PLAY-IN-
+    // ACTION reps to the two outcomes: rep 1 is the give (run), rep 2 fakes the
+    // give then throws (pass). Between the reps (the intermission) the ball sits
+    // at the snap, matching the players resetting. Every surface that draws the
+    // ball during an RPO routes through here so the 2D field, run viewer, GIF and
+    // 3D all show the same give-then-throw.
+    const computeBallAnimPosRPO = (postEl, lookup) => {
+        const steps = ballPlan.steps || [];
+        const PH = ANIM_DURATION_MS + ANIM_HOLD_MS, INT = 600;
+        let rep, re;
+        if (postEl < PH) {
+            rep = 1;
+            re = postEl;
+        }
+        else if (postEl < PH + INT) {
+            rep = 2;
+            re = 0;
+        }
+        else {
+            rep = 2;
+            re = postEl - PH - INT;
+        }
+        const bt = Math.max(0, Math.min(1, re / ANIM_DURATION_MS));
+        return computeBallAnimPos(bt, lookup, rpoBallSteps(steps, rep));
+    };
     // ── Shared live-player sampler (single source for GIF export + 3D Sync) ──
     // Returns the full player array at a given animation time. Reads the same
     // plan refs startAnim populates and runs the same route/zone/motion interp
@@ -1645,11 +1959,16 @@ function PlaybookApp() {
         const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
         const elapsed = usingOverride ? elapsedOverride : (now - animStartTimeRef.current);
         const hasOpt = animHasOptionsRef.current;
+        // RPO also runs two reps, but both reps share the SAME (primary) routes —
+        // only the ball differs. So twoPass drives the timeline either way; the
+        // rep-2 route map is chosen below (primary for RPO, option otherwise).
+        const rpo = animIsRPORef.current;
+        const twoPass = hasOpt || rpo;
         const hasPre = animHasPreSnapRef.current;
         const preSnapTotal = hasPre ? animPreSnapTotalRef.current : 0;
         const PHASE = ANIM_DURATION_MS + ANIM_HOLD_MS;
         const INTER = 600;
-        const total = preSnapTotal + (hasOpt ? (2 * PHASE + INTER) : PHASE);
+        const total = preSnapTotal + (twoPass ? (2 * PHASE + INTER) : PHASE);
         if (elapsed < 0 || elapsed >= total)
             return basePlayers;
         // Pre-snap phase: animate only pre-snap motion players; everyone
@@ -1684,7 +2003,7 @@ function PlaybookApp() {
         const postElapsed = elapsed - preSnapTotal;
         let localElapsed = postElapsed;
         let rbp = animRouteByPlayerRef.current;
-        if (hasOpt) {
+        if (twoPass) {
             if (postElapsed < PHASE) {
                 localElapsed = postElapsed;
                 rbp = animRouteByPlayerRef.current;
@@ -1709,7 +2028,9 @@ function PlaybookApp() {
             }
             else {
                 localElapsed = postElapsed - PHASE - INTER;
-                rbp = animOptionRouteByPlayerRef.current;
+                // RPO rep 2 reruns the SAME routes (only the ball changes); an option
+                // play's rep 2 swaps in the option-branch routes.
+                rbp = rpo ? animRouteByPlayerRef.current : animOptionRouteByPlayerRef.current;
             }
         }
         const durs = animRouteDurationsRef.current;
@@ -2073,7 +2394,7 @@ function PlaybookApp() {
     const [viewCenter, setViewCenter] = useState({ x: FW / 2, y: LOS_Y });
     const [panning, setPanning] = useState(false);
     const [panStart, setPanStart] = useState(null);
-    const [fieldView, setFieldView] = useState("split80");
+    const [fieldView, setFieldView] = useState("split50");
     const [splitOffset, setSplitOffset] = useState(12);
     const [showSaveForm, setShowSaveForm] = useState(false);
     const [saveFormName, setSaveFormName] = useState("");
@@ -2409,9 +2730,10 @@ function PlaybookApp() {
             if (startAnimRef.current)
                 startAnimRef.current(true); // populate plan refs, no side effects
             const hasOpt = animHasOptionsRef.current, hasPre = animHasPreSnapRef.current;
+            const rpo = animIsRPORef.current, twoPass = hasOpt || rpo;
             const preSnapTotal = hasPre ? (animPreSnapTotalRef.current || 0) : 0;
             const PHASE = ANIM_DURATION_MS + ANIM_HOLD_MS, INTER = 600;
-            const total = preSnapTotal + (hasOpt ? 2 * PHASE + INTER : PHASE);
+            const total = preSnapTotal + (twoPass ? 2 * PHASE + INTER : PHASE);
             const base = playersRef.current || [];
             const N = 140, frames = [];
             for (let f = 0; f <= N; f++) {
@@ -2419,8 +2741,11 @@ function PlaybookApp() {
                 const lp = livePlayersAt(elapsed) || base;
                 const byId = new Map(lp.map(p => [p.id, p]));
                 const pos = base.map(p => { const q = byId.get(p.id) || p; return { x: q.x, y: q.y }; });
-                const bt = Math.max(0, Math.min(1, (elapsed - preSnapTotal) / ANIM_DURATION_MS));
-                const ball = computeBallAnimPos(bt, (id) => { const q = byId.get(id); return q ? { x: q.x, y: q.y } : null; });
+                const _look = (id) => { const q = byId.get(id); return q ? { x: q.x, y: q.y } : null; };
+                const postEl = elapsed - preSnapTotal;
+                const ball = rpo
+                    ? computeBallAnimPosRPO(postEl, _look)
+                    : computeBallAnimPos(Math.max(0, Math.min(1, postEl / ANIM_DURATION_MS)), _look);
                 frames.push({ pos, ball: ball ? { x: ball.x, y: ball.y } : null });
             }
             d.sync = { frames, preSnapFrac: total > 0 ? preSnapTotal / total : 0 };
@@ -2430,7 +2755,7 @@ function PlaybookApp() {
         }
         setWalk3dData(d);
         setShow3D(true);
-    }, [build3DPlay, livePlayersAt, computeBallAnimPos]);
+    }, [build3DPlay, livePlayersAt, computeBallAnimPos, computeBallAnimPosRPO]);
     // ── Defensive call helper ───────────────────────────────────────────────
     // Reads the offense currently drawn (personnel, formation shape, run/pass,
     // route concepts, passing strength) and recommends a FRONT, a COVERAGE (with
@@ -3564,19 +3889,45 @@ function PlaybookApp() {
         setBulkFormation("");
         setEditingFormationsFor(null);
     }, [playbookScope]);
+    // Live mirror of everything an undo needs to put back. Refreshed after every
+    // render, so pushUndo can grab a COMPLETE snapshot — player positions, routes,
+    // zones, text, the ball plan, and the line of scrimmage — regardless of which
+    // action fired it. pushUndo runs BEFORE the mutation, so this still holds the
+    // pre-action state at the moment of capture.
+    const playStateRef = useRef({ players, routes, coverages, texts, ballPlan, ballX, losY, manFromId, currentPlay, playName, playNotes, playTypes, formation });
+    useEffect(() => {
+        playStateRef.current = { players, routes, coverages, texts, ballPlan, ballX, losY, manFromId, currentPlay, playName, playNotes, playTypes, formation };
+    }, [players, routes, coverages, texts, ballPlan, ballX, losY, manFromId, currentPlay, playName, playNotes, playTypes, formation]);
     const pushUndo = useCallback((p, r) => {
-        setUndoStack(prev => [...prev.slice(-19), { players: p, routes: r }]);
+        const s = playStateRef.current;
+        setUndoStack(prev => [...prev.slice(-19), {
+                players: p !== undefined ? p : s.players,
+                routes: r !== undefined ? r : s.routes,
+                coverages: s.coverages,
+                texts: s.texts,
+                ballPlan: s.ballPlan,
+                ballX: s.ballX,
+                losY: s.losY,
+                manFromId: s.manFromId,
+                currentPlay: s.currentPlay,
+                playName: s.playName,
+                playNotes: s.playNotes,
+                playTypes: s.playTypes,
+                formation: s.formation,
+            }]);
     }, []);
     const undo = useCallback(() => {
         setUndoStack(prev => {
             if (!prev.length)
                 return prev;
             const last = prev[prev.length - 1];
-            setPlayers(last.players);
-            setRoutes(last.routes);
-            // Fuller snapshots (e.g. from FLIP PLAY) also carry these — restore them
-            // so the undo doesn't leave a half-flipped play. Older/simpler entries
-            // omit them and are left untouched.
+            // Restore the WHOLE play snapshot so the last action is fully reverted —
+            // positions, routes, zones, text, ball, and the line of scrimmage. The
+            // guards keep any older/simpler entry (which may omit a field) working.
+            if (last.players !== undefined)
+                setPlayers(last.players);
+            if (last.routes !== undefined)
+                setRoutes(last.routes);
             if (last.coverages !== undefined)
                 setCoverages(last.coverages);
             if (last.texts !== undefined)
@@ -3585,22 +3936,42 @@ function PlaybookApp() {
                 setBallPlan(last.ballPlan);
             if (typeof last.ballX === "number")
                 setBallX(last.ballX);
+            if (typeof last.losY === "number") {
+                setLosY(last.losY);
+                losYRef.current = last.losY;
+            }
+            if (last.manFromId !== undefined)
+                setManFromId(last.manFromId);
+            if (last.currentPlay !== undefined)
+                setCurrentPlay(last.currentPlay);
+            if (last.playName !== undefined)
+                setPlayName(last.playName);
+            if (last.playNotes !== undefined)
+                setPlayNotes(last.playNotes);
+            if (last.playTypes !== undefined)
+                setPlayTypes(last.playTypes);
+            if (last.formation !== undefined)
+                setFormation(last.formation);
             return prev.slice(0, -1);
         });
     }, []);
-    const loadFormation = useCallback((fname, toverride) => {
+    const loadFormation = useCallback((fname, toverride, forceBuiltIn, keepOther) => {
         var _a, _b;
         const t = toverride || tab;
         const builtIn = (_a = FORMATIONS[t]) === null || _a === void 0 ? void 0 : _a[fname];
-        const def = builtIn || ((_b = customForms[t]) === null || _b === void 0 ? void 0 : _b[fname]);
+        // forceBuiltIn ignores any same-named custom and loads the built-in itself
+        // (used right after deleting an override, before the state update lands).
+        const customDef = forceBuiltIn ? null : (_b = customForms[t]) === null || _b === void 0 ? void 0 : _b[fname];
+        // A custom formation with the same name OVERRIDES the built-in of that name.
+        const def = customDef || builtIn;
         if (!def)
             return;
         // MINE-scope label override: when a built-in defensive formation loads
-        // while the user is in MINE scope, swap default labels (DE/DT/MLB/...)
+        // while the active scope is "personal", swap default labels (DE/DT/MLB/...)
         // for the user's personal labeling system (T/M/J/...). Custom formations
         // keep whatever labels they were saved with — that's how the override
         // becomes permanent once you save your relabeled formation.
-        const applyMineOverride = !!builtIn && scopeRef.current === "personal";
+        const applyMineOverride = !!builtIn && !customDef && scopeRef.current === "personal";
         const np = def.map(p => {
             const ptype = t === "defense" ? "defense" : t === "special" ? (p.dy < 0 ? "defense" : "offense") : "offense";
             const label = (applyMineOverride && ptype === "defense" && MINE_DEFENSE_LABELS[p.id])
@@ -3608,27 +3979,43 @@ function PlaybookApp() {
                 : p.label;
             return { ...p, id: uid(), origId: p.id, label, x: ballX + p.dx, y: losY + p.dy, ptype };
         });
-        // OL is ALWAYS present. When loading a DEFENSIVE formation, the
-        // formation itself only contains defensive players, but the offensive
-        // line (T-G-C-G-T) should still appear on the field as a visual
-        // reference for where the defense is lined up against. We stamp a
-        // standard 5-OL set below the LOS using the same dx/dy offsets the
-        // built-in offensive formations use, so it lines up exactly with the
-        // offense's "OL Only" formation.
-        if (t === "defense") {
-            const OL_BASE = [
-                { id: "c", label: "C", role: "OL", dx: 0, dy: 15 },
-                { id: "lg", label: "G", role: "OL", dx: -22, dy: 15 },
-                { id: "rg", label: "G", role: "OL", dx: 22, dy: 15 },
-                { id: "lt", label: "T", role: "OL", dx: -44, dy: 15 },
-                { id: "rt", label: "T", role: "OL", dx: 44, dy: 15 },
-            ];
-            OL_BASE.forEach(p => {
-                np.push({ ...p, id: uid(), origId: p.id, x: ballX + p.dx, y: losY + p.dy, ptype: "offense" });
-            });
+        // Stamp the shared reference O-line under a defensive look so there's a line
+        // to align against. It's flagged olRef so later loads can tell it apart from
+        // a real offense the user has actually put on the field.
+        const stampOLRef = (arr) => OL_BASE.forEach(p => {
+            arr.push({ ...p, id: uid(), origId: p.id, olRef: true, x: ballX + p.dx, y: losY + p.dy, ptype: "offense" });
+        });
+        // keepOther = "switch THIS side's look" (the formation dropdown / reload
+        // button): swap only this side and leave the OTHER side — and its routes —
+        // on the field. Everything else (clear, load-play, delete-reload…) replaces
+        // the whole field exactly as before.
+        if (keepOther && t !== "special") {
+            const prev = playStateRef.current.players || [];
+            let kept;
+            if (t === "offense") {
+                // Keep the defense; drop any old offense, including the stamped
+                // reference line (a real offense is taking its place).
+                kept = prev.filter(p => p.ptype === "defense");
+            }
+            else {
+                // Keep a REAL offense if one is on the field; otherwise stamp the
+                // reference line so the new defense has something to line up against.
+                kept = prev.filter(p => p.ptype === "offense" && !p.olRef);
+                if (kept.length === 0)
+                    stampOLRef(np);
+            }
+            const keptIds = new Set(kept.map(p => p.id));
+            setPlayers([...kept, ...np]);
+            // Clear the OLD look's routes (the side we just swapped); keep the other
+            // side's routes intact.
+            setRoutes(prevR => prevR.filter(r => r.ownerId && keptIds.has(r.ownerId)));
         }
-        setPlayers(np);
-        setRoutes([]);
+        else {
+            if (t === "defense")
+                stampOLRef(np);
+            setPlayers(np);
+            setRoutes([]);
+        }
         setSelectedId(null);
         // A fresh formation wipes the routes, so any applied blitz/coverage is
         // already gone from the field. Reset the dropdowns to match — otherwise
@@ -3651,14 +4038,20 @@ function PlaybookApp() {
             return;
         pushUndo(players, routes);
         const applyMineOverride = !!builtIn && scopeRef.current === "personal";
+        const oppPtype = oppTab === "defense" ? "defense" : "offense";
         const np = def.map(p => {
-            const ptype = oppTab === "defense" ? "defense" : "offense";
-            const label = (applyMineOverride && ptype === "defense" && MINE_DEFENSE_LABELS[p.id])
+            const label = (applyMineOverride && oppPtype === "defense" && MINE_DEFENSE_LABELS[p.id])
                 ? MINE_DEFENSE_LABELS[p.id]
                 : p.label;
-            return { ...p, id: uid(), origId: p.id, label, x: ballX + p.dx, y: losY + p.dy, ptype };
+            return { ...p, id: uid(), origId: p.id, label, x: ballX + p.dx, y: losY + p.dy, ptype: oppPtype };
         });
-        setPlayers(prev => [...prev, ...np]);
+        // Switching the opposing look REPLACES it rather than stacking on top: drop
+        // the old opposing players (this also clears the auto-stamped reference line
+        // when a real offense is dropping in) and their routes, then add the new
+        // look. Your own side and its routes stay put.
+        const removedIds = new Set(players.filter(p => p.ptype === oppPtype).map(p => p.id));
+        setPlayers(prev => [...prev.filter(p => p.ptype !== oppPtype), ...np]);
+        setRoutes(prev => prev.filter(r => !(r.ownerId && removedIds.has(r.ownerId))));
         setSelectedId(null);
     }, [tab, losY, ballX, customForms, players, routes, pushUndo]);
     // Open the "Save Formation" dialog (replaces window.prompt — those don't run in the artifact iframe)
@@ -3678,34 +4071,42 @@ function PlaybookApp() {
     }, [tab, players, customForms, formation]);
     // Actually save with the name typed in the dialog
     const confirmSaveFormation = useCallback(() => {
-        var _a;
         const trimmed = saveFormName.trim();
         if (!trimmed)
             return;
-        // Built-in protection: never let a custom shadow a built-in name
-        if ((_a = FORMATIONS[tab]) === null || _a === void 0 ? void 0 : _a[trimmed])
-            return;
+        // A custom MAY share a built-in's name — saving under that name stores an
+        // override of the built-in (loadFormation prefers the custom version, and
+        // deleting it restores the built-in).
         const targetPType = tab === "defense" ? "defense" : "offense";
         const teamPlayers = players.filter(p => p.ptype === targetPType);
         if (teamPlayers.length === 0) {
             setShowSaveForm(false);
             return;
         }
-        const def = teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY) }));
+        const def = teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY), ...(p.color ? { color: p.color } : {}), ...(p.sizeMul && p.sizeMul !== 1 ? { sizeMul: p.sizeMul } : {}) }));
         setCustomForms(prev => ({ ...prev, [tab]: { ...(prev[tab] || {}), [trimmed]: def } }));
         setFormation(trimmed);
         setShowSaveForm(false);
     }, [tab, players, losY, ballX, customForms, saveFormName]);
     // Hard-protected delete — only ever runs against a custom formation
     const doDeleteFormation = useCallback((fname) => {
-        var _a;
+        var _a, _b;
         if (!((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[fname]))
             return; // never deletes built-in formations
         setCustomForms(prev => { const next = { ...prev, [tab]: { ...prev[tab] } }; delete next[tab][fname]; return next; });
-        const fnames = Object.keys(FORMATIONS[tab] || {});
-        if (fnames[0]) {
-            setFormation(fnames[0]);
-            loadFormation(fnames[0]);
+        // If this custom was OVERRIDING a built-in of the same name, deleting it
+        // restores the built-in — reload it (forced) under the same name. Otherwise
+        // fall back to the first built-in formation.
+        if ((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[fname]) {
+            setFormation(fname);
+            loadFormation(fname, undefined, true);
+        }
+        else {
+            const fnames = Object.keys(FORMATIONS[tab] || {});
+            if (fnames[0]) {
+                setFormation(fnames[0]);
+                loadFormation(fnames[0]);
+            }
         }
         setConfirmDeleteForm(null);
     }, [customForms, tab, loadFormation]);
@@ -3741,7 +4142,7 @@ function PlaybookApp() {
             // If user opted in, snapshot the current field positions as the new layout;
             // otherwise keep the existing stored layout (renaming only).
             const newLayout = (editFormReplaceLayout && teamPlayers.length > 0)
-                ? teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY) }))
+                ? teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY), ...(p.color ? { color: p.color } : {}), ...(p.sizeMul && p.sizeMul !== 1 ? { sizeMul: p.sizeMul } : {}) }))
                 : tabCustom[oldName];
             if (newName !== oldName)
                 delete tabCustom[oldName];
@@ -3884,6 +4285,13 @@ function PlaybookApp() {
         else {
             setFormation(first);
             loadFormation(first, tab);
+            // A fresh formation opens at its unit's natural view — 50yd for
+            // offense/defense, 80yd for special teams — with the LOS ~10 yards off
+            // the bottom. (A loaded play is framed by loadPlay on its saved LOS.)
+            setFieldView(tab === "special" ? "split80" : "split50");
+            setSplitOffset(25);
+            setZoom(1);
+            setViewCenter({ x: FW / 2, y: LOS_Y });
         }
     }, [tab]);
     // findRouteOwnerId — given a route's first point, return the id of
@@ -4021,7 +4429,9 @@ function PlaybookApp() {
     const computeViewBox = useCallback(() => {
         const range = getFieldViewRange(fieldView, splitOffset);
         const baseW = FW;
-        let baseY = range.yStart;
+        // Slide the band by the auto-fit shift so the play stays in view; the band
+        // HEIGHT never changes, so nothing on screen resizes as it follows the play.
+        let baseY = range.yStart + fitShiftY;
         let baseH = range.yEnd - range.yStart;
         // Special teams: open up room behind any end line in view so the whole
         // goalpost — and a ball kicked through it — is visible past the end zone.
@@ -4043,7 +4453,7 @@ function PlaybookApp() {
         const overY = 20;
         const cy = Math.max(baseY + hH - overY, Math.min(baseY + baseH - hH + overY, viewCenter.y));
         return { vbX: cx - hW, vbY: cy - hH, vbW, vbH };
-    }, [fieldView, splitOffset, zoom, viewCenter, getFieldViewRange, tab]);
+    }, [fieldView, splitOffset, zoom, viewCenter, getFieldViewRange, tab, fitShiftY]);
     const getSVGPt = useCallback((e) => {
         const svg = svgRef.current;
         if (!svg)
@@ -4052,15 +4462,10 @@ function PlaybookApp() {
         const cx = e.touches ? e.touches[0].clientX : e.clientX;
         const cy = e.touches ? e.touches[0].clientY : e.clientY;
         const { vbX, vbY, vbW, vbH } = computeViewBox();
-        let x = vbX + (cx - rect.left) * (vbW / rect.width);
-        let y = vbY + (cy - rect.top) * (vbH / rect.height);
-        // Content scales vertically only (anchored at the LOS), so undo just Y.
-        const s = contentScaleRef.current;
-        if (s !== 1 && s > 0) {
-            y = (y - losY) / s + losY;
-        }
+        const x = vbX + (cx - rect.left) * (vbW / rect.width);
+        const y = vbY + (cy - rect.top) * (vbH / rect.height);
         return { x, y };
-    }, [computeViewBox, losY]);
+    }, [computeViewBox]);
     // Start LOS drag: snapshot each player's position relative to the LOS so we can
     // reconstruct exact positions on every move (no per-frame delta accumulation).
     const startLosDrag = useCallback((e) => {
@@ -4072,11 +4477,13 @@ function PlaybookApp() {
         losDragRef.current = {
             startMouseY: pt.y,
             startLosY: startLos,
+            pushedUndo: false,
             players: players.map(p => ({ id: p.id, dy: p.y - startLos })),
             routes: routes.map(r => ({ id: r.id, points: r.points.map(pt2 => ({ dy: pt2.y - startLos })) })),
+            coverages: coverages.map(c => ({ id: c.id, dy: (typeof c.y === "number" ? c.y - startLos : 0) })),
         };
         setDraggingLOS(true);
-    }, [players, routes, getSVGPt]);
+    }, [players, routes, coverages, getSVGPt]);
     // Start ball drag: snapshot every player's x relative to the ball so the whole
     // formation re-spots horizontally with the ball (ball stays between the hashes).
     const startBallDrag = useCallback((e) => {
@@ -4087,6 +4494,7 @@ function PlaybookApp() {
         ballDragRef.current = {
             startMouseX: pt.x,
             startBallX: ballX,
+            pushedUndo: false,
             players: players.map(p => ({ id: p.id, dx: p.x - ballX })),
             routes: routes.map(r => ({ id: r.id, points: r.points.map(p2 => ({ dx: p2.x - ballX })) })),
         };
@@ -4244,6 +4652,12 @@ function PlaybookApp() {
             const mouseDelta = pt.y - snap.startMouseY;
             const newLos = Math.max(range.yStart, Math.min(range.yEnd, snap.startLosY + mouseDelta));
             if (Math.abs(newLos - losYRef.current) > 0.01) {
+                // Capture the pre-drag state once, on the first real movement, so the
+                // whole LOS slide (and everything that rode it) reverts in one undo.
+                if (!snap.pushedUndo) {
+                    pushUndo();
+                    snap.pushedUndo = true;
+                }
                 losYRef.current = newLos;
                 setLosY(newLos);
                 setPlayers(prev => prev.map(p => {
@@ -4256,9 +4670,22 @@ function PlaybookApp() {
                         return r;
                     return { ...r, points: r.points.map((pt2, i) => { var _a, _b; return ({ ...pt2, y: newLos + ((_b = (_a = off.points[i]) === null || _a === void 0 ? void 0 : _a.dy) !== null && _b !== void 0 ? _b : pt2.y - newLos) }); }) };
                 }));
+                // Zones (and any positioned coverage shells) ride the LOS too, keeping
+                // their offset from it so the whole call stays lined up on the line.
+                setCoverages(prev => prev.map(c => {
+                    const off = snap.coverages.find(o => o.id === c.id);
+                    return (off && typeof c.y === "number") ? { ...c, y: newLos + off.dy } : c;
+                }));
             }
             return;
         }
+        // View-band edges: every draggable element below clamps to the currently
+        // visible view (full field width, the view's y-band) so nothing can be
+        // dragged off-screen — it reaches the edge and stops.
+        const _vb = getFieldViewRange(fieldView, splitOffset);
+        // Clamp drags to the VISIBLE band — the auto-fit slide is folded in, so
+        // nothing can be dragged off the slice of field that's actually on screen.
+        const VTOP = _vb.yStart + fitShiftY, VBOT = _vb.yEnd + fitShiftY, VL = 0, VR = FW;
         if (draggingBall && ballDragRef.current) {
             const snap = ballDragRef.current;
             const pt = getSVGPt(e);
@@ -4267,6 +4694,12 @@ function PlaybookApp() {
             const mouseDelta = pt.x - snap.startMouseX;
             const newBall = Math.max(LEFT_HASH, Math.min(RIGHT_HASH, snap.startBallX + mouseDelta));
             if (Math.abs(newBall - ballX) > 0.01) {
+                // Capture once on the first real movement so the ball slide (and the
+                // formation that shifted with it) reverts in a single undo.
+                if (!snap.pushedUndo) {
+                    pushUndo();
+                    snap.pushedUndo = true;
+                }
                 setBallX(newBall);
                 // ...but any player that would slide off the field stops at the edge,
                 // closing down the space between it and the ball (pops back out on the return drag).
@@ -4332,12 +4765,13 @@ function PlaybookApp() {
                 const start = drag.startPositions.get(p.id);
                 if (!start)
                     return p;
-                let nx = Math.max(2, Math.min(FW - 2, start.x + dx));
+                let nx = Math.max(VL, Math.min(VR, start.x + dx));
                 let ny = start.y + dy;
                 if (p.ptype === "offense")
                     ny = Math.max(losY, ny);
                 else if (p.ptype === "defense")
                     ny = Math.min(losY, ny);
+                ny = Math.max(VTOP, Math.min(VBOT, ny));
                 return { ...p, x: nx, y: ny };
             }));
             return;
@@ -4379,7 +4813,9 @@ function PlaybookApp() {
                     if (bestY !== null)
                         ny = bestY;
                 }
-                return { ...p, x: pt.x - dragOffset.x, y: ny };
+                const nx = Math.max(VL, Math.min(VR, pt.x - dragOffset.x));
+                ny = Math.max(VTOP, Math.min(VBOT, ny));
+                return { ...p, x: nx, y: ny };
             }));
             // Move any routes whose ownerId matches the dragged player by the
             // SAME delta. This keeps each route anchored to its assigned player
@@ -4409,7 +4845,8 @@ function PlaybookApp() {
                     if (bestY !== null)
                         newY = bestY;
                 }
-                const newX = pt.x - dragOffset.x;
+                const newX = Math.max(VL, Math.min(VR, pt.x - dragOffset.x));
+                newY = Math.max(VTOP, Math.min(VBOT, newY));
                 const dx = newX - draggedOld.x;
                 const dy = newY - draggedOld.y;
                 if (dx !== 0 || dy !== 0) {
@@ -4426,7 +4863,7 @@ function PlaybookApp() {
             const pt = getSVGPt(e);
             const dx = pt.x - textDrag.startMX, dy = pt.y - textDrag.startMY;
             setTexts(prev => prev.map(t => t.id === textDrag.id
-                ? { ...t, x: Math.max(0, Math.min(FW, textDrag.origX + dx)), y: Math.max(0, Math.min(FH, textDrag.origY + dy)) }
+                ? { ...t, x: Math.max(VL, Math.min(VR, textDrag.origX + dx)), y: Math.max(VTOP, Math.min(VBOT, textDrag.origY + dy)) }
                 : t));
             return;
         }
@@ -4467,8 +4904,8 @@ function PlaybookApp() {
                     const cxC = o.x + o.w / 2, cyC = o.y + o.h / 2;
                     // Let the point sit a little outside the zone (shade a defender just
                     // beyond it) but keep it on the field.
-                    let px = Math.max(0, Math.min(FW, cxC + od.x + dx));
-                    let py = Math.max(0, Math.min(FH, cyC + od.y + dy));
+                    let px = Math.max(VL, Math.min(VR, cxC + od.x + dx));
+                    let py = Math.max(VTOP, Math.min(VBOT, cyC + od.y + dy));
                     return { ...c, dropDx: px - cxC, dropDy: py - cyC };
                 }));
                 return;
@@ -4506,11 +4943,10 @@ function PlaybookApp() {
                     nx = Math.min(left, right);
                     ny = Math.min(top, bottom);
                 }
-                // Let the zone reach the edges — its CENTER can sit on any sideline or
-                // end line (so it can hang halfway off to cover the boundary), but it
-                // can never slide entirely off the field.
-                nx = Math.max(-nw / 2, Math.min(FW - nw / 2, nx));
-                ny = Math.max(-nh / 2, Math.min(FH - nh / 2, ny));
+                // Keep the whole zone inside the current view: it can be dragged until
+                // its edge meets a view edge, but never past it (no part goes off-screen).
+                nx = Math.max(VL, Math.min(VR - nw, nx));
+                ny = Math.max(VTOP, Math.min(VBOT - nh, ny));
                 const upd = { ...c, x: nx, y: ny, w: nw, h: nh };
                 // Dragging an attached zone re-defines its offset from the player.
                 if (c.attachedTo && zoneDrag.attachP) {
@@ -5257,7 +5693,19 @@ function PlaybookApp() {
             setFormation(play.formation);
             loadFormation(play.formation);
         }
-    }, [loadFormation]);
+        // Restore the saved line of scrimmage and frame the view on it, so a play
+        // reopens exactly where it was last placed on the field — not back at the
+        // default 35. The split offset is chosen to sit the LOS ~10 yards off the
+        // bottom of the view.
+        const ly = (typeof play.losY === "number") ? play.losY : LOS_Y;
+        setLosY(ly);
+        const lview = play.category === "special" ? "split80" : "split50";
+        const loff = Math.max(1, Math.min(splitMaxOffset(lview), Math.round((FH - EZ - ly) / YARD - 10)));
+        setFieldView(lview);
+        setSplitOffset(loff);
+        setZoom(1);
+        setViewCenter({ x: FW / 2, y: ly });
+    }, [loadFormation, splitMaxOffset]);
     // ── Formation membership editing (many-to-many) ──
     // Add a formation to a play's compatible-formations list. The first entry
     // stays primary; we add to the end. If the play has no formations array yet,
@@ -5347,6 +5795,11 @@ function PlaybookApp() {
     // LOS, so loading "Tornado" gives us exactly that. Falls back to the first
     // available defensive formation if "Tornado" isn't in this scope's customs.
     const clearPlay = useCallback(() => {
+        // Snapshot first so an accidental CLEAR can be taken back in a single undo —
+        // the whole play comes back (players, routes, zones, text, ball, LOS, name,
+        // and identity). Skip it only when there's genuinely nothing to lose.
+        if (players.length || routes.length || coverages.length || texts.length || currentPlay)
+            pushUndo();
         setCurrentPlay(null);
         setPlayName("New Play");
         setPlayNotes("");
@@ -5359,15 +5812,21 @@ function PlaybookApp() {
         setSelectedCoverage("");
         setSelectedBlitz("");
         setPlayTypes(["Zone"]);
-        setTab("defense");
-        const target = (customForms.defense && customForms.defense.Tornado)
-            ? "Tornado"
-            : (Object.keys(customForms.defense || {})[0] || Object.keys(FORMATIONS.defense || {})[0]);
+        // Stay on whatever tab you're on and drop in that unit's default look:
+        // Tornado Front on defense, Deuce Right on offense, first available on
+        // special teams. Falls back through a near-name, then any formation.
+        const prefs = tab === "defense" ? ["Tornado Front", "Tornado"]
+            : tab === "offense" ? ["Deuce Right", "Deuce"]
+                : [];
+        const has = (n) => (customForms[tab] && customForms[tab][n]) || (FORMATIONS[tab] && FORMATIONS[tab][n]);
+        const target = prefs.find(has)
+            || Object.keys(customForms[tab] || {})[0]
+            || Object.keys(FORMATIONS[tab] || {})[0];
         if (target) {
             setFormation(target);
-            loadFormation(target, "defense");
+            loadFormation(target, tab);
         }
-    }, [customForms, loadFormation]);
+    }, [tab, customForms, loadFormation, players, routes, coverages, texts, currentPlay, pushUndo]);
     // Clear ONLY one side of the ball, leaving the other side — and everything
     // tied to it — intact. "offense" removes every offensive player plus their
     // routes and resets the ball (no one left to snap it); "defense" removes the
@@ -5378,7 +5837,7 @@ function PlaybookApp() {
         const removedIds = new Set((players || []).filter(p => !keep(p)).map(p => p.id));
         if (removedIds.size === 0)
             return; // that side is already empty
-        setUndoStack(prev => [...prev.slice(-19), { players, routes, coverages, texts, ballPlan, ballX }]);
+        pushUndo();
         setPlayers(prev => prev.filter(keep));
         setRoutes(prev => prev.filter(r => !(r.ownerId && removedIds.has(r.ownerId))));
         setTexts(prev => prev.filter(t => !(t.owner && removedIds.has(t.owner))));
@@ -5454,23 +5913,33 @@ function PlaybookApp() {
                 maxY = bot;
         });
         if (minY === Infinity) {
-            setContentScale(1);
+            setFitShiftY(0);
             return;
         }
+        // Slide the band the SMALLEST amount that brings the whole play on screen.
+        // Nothing is resized — only which slice of the field is shown moves. If the
+        // play is taller than the band it can't all fit, so center it (best effort)
+        // and the deepest part may sit at the edge until you pick a wider view.
         const range = getFieldViewRange(fieldView, splitOffset);
-        const margin = 20;
-        const upRoom = losY - range.yStart - margin;
-        const downRoom = range.yEnd - losY - margin;
-        const upNeed = losY - minY;
-        const downNeed = maxY - losY;
-        let scale = 1;
-        if (upRoom > 0 && upNeed > upRoom)
-            scale = Math.min(scale, upRoom / upNeed);
-        if (downRoom > 0 && downNeed > downRoom)
-            scale = Math.min(scale, downRoom / downNeed);
-        setContentScale(Math.max(0.2, Math.min(1, scale))); // floor at 20% so things stay visible
-        // Intentional: omit players/routes/coverages from deps so the scale doesn't
-        // jitter mid-drag. View change + play load are the triggers.
+        const margin = 24;
+        const bandTop = range.yStart, bandBot = range.yEnd, bandH = bandBot - bandTop;
+        const playTop = minY - margin, playBot = maxY + margin;
+        let shift = 0;
+        if (playBot - playTop > bandH) {
+            shift = (playTop + playBot) / 2 - (bandTop + bandBot) / 2; // taller than view → center it
+        }
+        else if (playTop < bandTop) {
+            shift = playTop - bandTop; // sticking off the top → slide up
+        }
+        else if (playBot > bandBot) {
+            shift = playBot - bandBot; // sticking off the bottom → slide down
+        }
+        // Keep the slid band on the field (end zones included).
+        shift = Math.max(-bandTop, Math.min(FH - bandBot, shift));
+        setFitShiftY(shift);
+        // Intentional: omit players/routes/coverages from deps so the view doesn't
+        // re-slide on every edit — LOS move, view change, and play load are the
+        // triggers, which is when the framing actually needs to settle.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fieldView, splitOffset, losY, currentPlay]);
     const exitAlign = useCallback(() => {
@@ -6541,12 +7010,42 @@ function PlaybookApp() {
         const trimmed = (name || "").trim();
         if (!trimmed)
             return;
+        // Capture any offensive BLOCKING the line is showing on the field so a
+        // scheme can carry the protection alongside (or instead of) a coverage +
+        // blitz. Stored relative to the offensive center / LOS the same way a
+        // route combo is, so it re-anchors onto whatever line it's applied to.
+        const cx = offenseCenterX(players);
+        const blocking = [];
+        routes.forEach(r => {
+            if (r.rtype !== "blocking" || !r.points || r.points.length < 2)
+                return;
+            let owner = r.ownerId ? players.find(p => p.id === r.ownerId) : null;
+            if (!owner) {
+                let bd = Infinity;
+                for (const pl of players) {
+                    const d = Math.hypot(pl.x - r.points[0].x, pl.y - r.points[0].y);
+                    if (d < bd) {
+                        bd = d;
+                        owner = pl;
+                    }
+                }
+                if (!owner || bd > 40)
+                    return;
+            }
+            if ((owner.ptype || "offense") !== "offense")
+                return;
+            const ox = owner.x, oy = owner.y;
+            const e = { label: owner.label || "", role: owner.role || "", relX: ox - cx, relY: oy - losY, rtype: "blocking", offsets: r.points.map(pt => ({ dx: pt.x - ox, dy: pt.y - oy })) };
+            if (r.color)
+                e.color = r.color;
+            blocking.push(e);
+        });
         setSchemePresets(prev => ({
             ...prev,
-            [trimmed]: { coverage: selectedCoverage || null, blitz: selectedBlitz || null },
+            [trimmed]: { coverage: selectedCoverage || null, blitz: selectedBlitz || null, ...(blocking.length ? { blocking } : {}) },
         }));
         setSelectedScheme(trimmed);
-    }, [selectedCoverage, selectedBlitz, setSchemePresets]);
+    }, [selectedCoverage, selectedBlitz, players, routes, losY, offenseCenterX, setSchemePresets]);
     const applyScheme = useCallback((name) => {
         const preset = schemePresets[name];
         if (!preset) {
@@ -6559,8 +7058,47 @@ function PlaybookApp() {
         if (preset.blitz && blitzPresets[preset.blitz]) {
             applyBlitz(preset.blitz);
         }
+        // Re-apply any saved offensive BLOCKING, matching saved linemen to the
+        // current line by label, then role, then nearest by relative alignment —
+        // the same way a route combo re-anchors. Replaces blocking already on the
+        // field; leaves every other route (and the blitz/coverage just applied)
+        // untouched.
+        if (Array.isArray(preset.blocking) && preset.blocking.length) {
+            const cx = offenseCenterX(players);
+            const used = new Set();
+            const built = [];
+            preset.blocking.forEach(pr => {
+                let owner = pr.label ? players.find(p => p.ptype === "offense" && !used.has(p.id) && p.label === pr.label) : null;
+                if (!owner && pr.role)
+                    owner = players.find(p => p.ptype === "offense" && !used.has(p.id) && p.role === pr.role);
+                if (!owner) {
+                    let bd = Infinity;
+                    for (const pl of players) {
+                        if (pl.ptype !== "offense" || used.has(pl.id))
+                            continue;
+                        const d = Math.abs((pl.x - cx) - (pr.relX || 0));
+                        if (d < bd) {
+                            bd = d;
+                            owner = pl;
+                        }
+                    }
+                }
+                if (!owner)
+                    return;
+                used.add(owner.id);
+                const pts = (pr.offsets || []).map(o => ({ x: owner.x + (o.dx || 0), y: owner.y + (o.dy || 0) }));
+                if (pts.length < 2)
+                    return;
+                const nr = { id: uid(), points: pts, rtype: "blocking", ownerId: owner.id };
+                if (pr.color)
+                    nr.color = pr.color;
+                built.push(nr);
+            });
+            if (built.length)
+                setRoutes(prev => [...prev.filter(r => r.rtype !== "blocking"), ...built]);
+        }
         setSelectedScheme(name);
-    }, [schemePresets, coveragePresets, blitzPresets, applyCoverage, applyBlitz]);
+    }, [schemePresets, coveragePresets, blitzPresets, applyCoverage, applyBlitz, players, offenseCenterX]);
     const deleteSchemePreset = useCallback((name) => {
         setSchemePresets(prev => { const next = { ...prev }; delete next[name]; return next; });
         if (selectedScheme === name)
@@ -6769,49 +7307,23 @@ function PlaybookApp() {
             setDrawingRoute(false);
             setRoutePoints([]);
         }
-        const flipY = (y) => 2 * losY - y;
-        setPlayers(prev => prev.map(p => ({
-            ...p,
-            y: flipY(p.y),
-            ptype: p.ptype === "offense" ? "defense" : (p.ptype === "defense" ? "offense" : p.ptype),
-        })));
-        setRoutes(prev => prev.map(r => ({
-            ...r,
-            points: (r.points || []).map(pt => ({ ...pt, y: flipY(pt.y) })),
-        })));
-        setCoverages(prev => prev.map(c => {
-            if (c.ctype !== "zone")
-                return c;
-            // zone position uses top-left (x,y) + size (w,h); mirror the top edge
-            // to be the original bottom edge reflected across the LOS.
-            const next = { ...c, y: 2 * losY - c.y - c.h };
-            if (typeof c.offY === "number")
-                next.offY = -c.offY;
-            return next;
-        }));
-    }, [losY, players, routes, pushUndo, drawingRoute]);
+        const f = flipPartsAcrossLOS({ players, routes, coverages, losY });
+        setPlayers(f.players);
+        setRoutes(f.routes);
+        setCoverages(f.coverages);
+    }, [losY, players, routes, coverages, pushUndo, drawingRoute]);
     const flipLR = useCallback(() => {
         pushUndo(players, routes);
         if (drawingRoute) {
             setDrawingRoute(false);
             setRoutePoints([]);
         }
-        const flipX = (x) => FW - x;
-        setPlayers(prev => prev.map(p => ({ ...p, x: flipX(p.x) })));
-        setRoutes(prev => prev.map(r => ({
-            ...r,
-            points: (r.points || []).map(pt => ({ ...pt, x: flipX(pt.x) })),
-        })));
-        setCoverages(prev => prev.map(c => {
-            if (c.ctype !== "zone")
-                return c;
-            const next = { ...c, x: FW - c.x - c.w };
-            if (typeof c.offX === "number")
-                next.offX = -c.offX;
-            return next;
-        }));
-        setBallX(b => FW - b);
-    }, [players, routes, pushUndo, drawingRoute]);
+        const f = flipPartsLeftRight({ players, routes, coverages, ballX });
+        setPlayers(f.players);
+        setRoutes(f.routes);
+        setCoverages(f.coverages);
+        setBallX(f.ballX);
+    }, [players, routes, coverages, ballX, pushUndo, drawingRoute]);
     // flipPlayLR — flip the CALL, not the formation. Mirror the routes (incl. the
     // blitz-order badge offset), zones (incl. drop/anchor offsets), ball, ball-plan
     // spots and text labels left↔right, but leave the players where they line up,
@@ -6825,68 +7337,19 @@ function PlaybookApp() {
         // comes off the OTHER edge, the coverage rotates the other way) while the
         // alignment itself never moves. The plain ⇆ button still mirrors the players
         // too; this one flips only the call.
-        setUndoStack(prev => [...prev.slice(-19), { players, routes, coverages, texts, ballPlan, ballX }]);
+        pushUndo();
         if (drawingRoute) {
             setDrawingRoute(false);
             setRoutePoints([]);
         }
-        const fx = (x) => FW - x;
-        const nearestOf = (x, y, pool) => {
-            let best = null, bd = Infinity;
-            pool.forEach(p => { const d = (p.x - x) ** 2 + (p.y - y) ** 2; if (d < bd) {
-                bd = d;
-                best = p;
-            } });
-            return best;
-        };
-        // Routes: mirror the points, then re-own to the nearest SAME-SIDE player so
-        // the mirrored blitz / route is run by whoever now sits where it starts.
-        setRoutes(prev => prev.map(r => {
-            const pts = (r.points || []).map(pt => ({ ...pt, x: fx(pt.x) }));
-            const m = { ...r, points: pts };
-            if (typeof r.orderOffX === "number")
-                m.orderOffX = -r.orderOffX;
-            if (r.ownerId != null && pts.length) {
-                const owner = players.find(p => p.id === r.ownerId);
-                const pool = owner ? players.filter(p => p.ptype === owner.ptype) : players;
-                const np = nearestOf(pts[0].x, pts[0].y, pool);
-                if (np)
-                    m.ownerId = np.id;
-            }
-            return m;
-        }));
-        // Zones: mirror the rectangle, then re-attach to the nearest defender and
-        // re-anchor the follow offset to him.
-        setCoverages(prev => prev.map(c => {
-            if (c.ctype !== "zone")
-                return c;
-            const m = { ...c, x: fx(c.x) - c.w };
-            if (typeof c.offX === "number")
-                m.offX = -c.offX;
-            if (typeof c.dropDx === "number")
-                m.dropDx = -c.dropDx;
-            if (c.attachedTo != null) {
-                const cx = m.x + m.w / 2, cy = m.y + m.h / 2;
-                const nd = nearestOf(cx, cy, players.filter(p => p.ptype === "defense"));
-                if (nd) {
-                    m.attachedTo = nd.id;
-                    m.offX = cx - nd.x;
-                    m.offY = cy - nd.y;
-                }
-            }
-            return m;
-        }));
-        // Ball + labels mirror in place. Players don't move, so any ball-target ids
-        // still point at the right men — only their on-field spots flip.
-        setTexts(prev => prev.map(t => (typeof t.x === "number" ? { ...t, x: fx(t.x) } : t)));
-        setBallPlan(prev => ({
-            ...prev,
-            steps: (prev.steps || []).map(s => (s.toPoint && typeof s.toPoint.x === "number")
-                ? { ...s, toPoint: { ...s.toPoint, x: fx(s.toPoint.x) } } : s),
-        }));
-        setBallX(b => fx(b));
+        const f = flipPartsCall({ players, routes, coverages, texts, ballPlan, ballX });
+        setRoutes(f.routes);
+        setCoverages(f.coverages);
+        setTexts(f.texts);
+        setBallPlan(f.ballPlan);
+        setBallX(f.ballX);
         // Players intentionally NOT mirrored — the formation stays put.
-    }, [players, routes, coverages, texts, ballPlan, ballX, drawingRoute]);
+    }, [players, routes, coverages, texts, ballPlan, ballX, drawingRoute, pushUndo]);
     // ── "Play in action" animation helpers ──
     // Walk each route-owning player along its route over a fixed duration, hold
     // briefly at the end so the user can see where everyone arrived, then snap
@@ -7425,6 +7888,15 @@ function PlaybookApp() {
         animRouteByPlayerRef.current = routeByPlayer;
         animOptionRouteByPlayerRef.current = optionRouteByPlayer;
         animHasOptionsRef.current = optionsByParent.size > 0;
+        // RPO: flagged on the ball plan AND it has both a give (handoff/pitch) and a
+        // throw (pass). Drives the two-rep give / fake-throw ball across every
+        // surface (the tick, GIF and 3D all reach this setup through startAnim).
+        {
+            const _bpSteps = (ballPlan && ballPlan.steps) || [];
+            animIsRPORef.current = !!(ballPlan && ballPlan.rpo)
+                && _bpSteps.some(s => s.action === "handoff" || s.action === "pitch")
+                && _bpSteps.some(s => s.action === "pass");
+        }
         animRouteDurationsRef.current = durations;
         animZoneByPlayerRef.current = zoneByPlayer;
         animPreSnapRouteByPlayerRef.current = preSnapRouteByPlayer;
@@ -7645,11 +8117,14 @@ function PlaybookApp() {
             const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
             const elapsed = now - animStartTimeRef.current;
             const hasOpt = animHasOptionsRef.current;
+            // RPO: two reps sharing the same routes, only the ball differs.
+            const rpo = animIsRPORef.current;
+            const twoPass = hasOpt || rpo;
             const hasPre = animHasPreSnapRef.current;
             const preSnapTotal = hasPre ? animPreSnapTotalRef.current : 0;
             const PHASE = ANIM_DURATION_MS + ANIM_HOLD_MS;
-            const INTER = 600; // intermission between primary and option pass
-            const total = preSnapTotal + (hasOpt ? (2 * PHASE + INTER) : PHASE);
+            const INTER = 600; // intermission between the two reps
+            const total = preSnapTotal + (twoPass ? (2 * PHASE + INTER) : PHASE);
             if (elapsed >= total) {
                 // Animation finished including the hold — snap everyone back to start.
                 const starts2 = animStartPosRef.current;
@@ -7720,14 +8195,14 @@ function PlaybookApp() {
             //   • PHASE+INTER..2*PHASE+INTER — option routes
             let localElapsed = postElapsed;
             let rbp = animRouteByPlayerRef.current;
-            if (hasOpt) {
+            if (twoPass) {
                 if (postElapsed < PHASE) {
                     localElapsed = postElapsed;
                     rbp = animRouteByPlayerRef.current;
                 }
                 else if (postElapsed < PHASE + INTER) {
                     // Intermission: hold everyone at the start position so the user
-                    // sees the play visually reset before the option pass begins.
+                    // sees the play visually reset before the second rep begins.
                     const starts2 = animStartPosRef.current;
                     const preRbp2 = animPreSnapRouteByPlayerRef.current;
                     if (starts2) {
@@ -7748,7 +8223,9 @@ function PlaybookApp() {
                 }
                 else {
                     localElapsed = postElapsed - PHASE - INTER;
-                    rbp = animOptionRouteByPlayerRef.current;
+                    // RPO rep 2 reuses the SAME (primary) routes — only the ball differs;
+                    // an option play swaps in the option-branch routes for rep 2.
+                    rbp = rpo ? animRouteByPlayerRef.current : animOptionRouteByPlayerRef.current;
                 }
             }
             // Each route has its own duration (same value in SYNC mode, scaled by
@@ -7873,7 +8350,7 @@ function PlaybookApp() {
             animRAFRef.current = requestAnimationFrame(tick);
         };
         animRAFRef.current = requestAnimationFrame(tick);
-    }, [playingAnim, players, routes, coverages, animTimingMode, preSnapMode, stopAnim]);
+    }, [playingAnim, players, routes, coverages, animTimingMode, preSnapMode, stopAnim, ballPlan, losY, ballX]);
     // Cancel animation if the component unmounts mid-play.
     useEffect(() => {
         return () => {
@@ -7891,34 +8368,35 @@ function PlaybookApp() {
     // startAnim has been rebuilt with the new players/routes closure, so
     // calling startAnimRef.current() actually animates the loaded play.
     useEffect(() => { startAnimRef.current = startAnim; }, [startAnim]);
-    // Auto-load the play when run-mode opens or navigates between plays.
-    // This puts the editor state in sync with whatever play the run viewer
-    // is showing, so the run viewer's live SVG can read the same `players`
-    // / `routes` / `coverages` state the main editor reads — and so the
-    // existing startAnim animation pipeline animates against the right
-    // play without any closure or staleness gymnastics.
+    // Auto-load the play when run-mode opens or navigates between plays, so the
+    // existing startAnim pipeline animates against the right play. The viewer
+    // draws the SAVED play directly now, so this sync only matters for PLAY IN
+    // ACTION — but it MUST pick the same play the viewer is showing. We rebuild
+    // the identical filtered/ordered list the viewer uses (skipping any deleted
+    // play IDs) and clamp the index, instead of indexing the raw ID list — those
+    // two diverge the moment a referenced play is missing, which would load a
+    // different play than the one on screen (or, with a stale index, none at all).
     useEffect(() => {
         if (!runningScriptId && !runningInstallId)
             return;
-        let playId = null;
+        let ids = [];
         if (runningScriptId) {
             const script = scripts.find(s => s.id === runningScriptId);
             if (!script)
                 return;
-            const allIds = script.periods.reduce((acc, per) => acc.concat(per.playIds || []), []);
-            playId = allIds[runStepIdx];
+            (script.periods || []).forEach(per => (per.playIds || []).forEach(pid => ids.push(pid)));
         }
         else {
             const inst = installs.find(i => i.id === runningInstallId);
             if (!inst)
                 return;
-            playId = (inst.playIds || [])[runStepIdx];
+            (inst.playIds || []).forEach(pid => ids.push(pid));
         }
-        if (!playId)
+        const found = ids.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
+        if (found.length === 0)
             return;
-        const play = plays.find(p => p.id === playId);
-        if (play)
-            loadPlay(play);
+        const i = Math.max(0, Math.min(found.length - 1, runStepIdx));
+        loadPlay(found[i]);
         // We intentionally only re-run when the IDs/index change. Including
         // scripts/installs/plays in deps would re-fire on every library edit
         // and reset the viewer to whatever play the saved data points at.
@@ -8540,8 +9018,10 @@ function PlaybookApp() {
                         const _lookup = (id) => { const q = _byId.get(id); return q ? { x: q.x, y: q.y } : null; };
                         const _elapsed = (typeof elapsedOverride === "number") ? elapsedOverride : 0;
                         const _preTot = animHasPreSnapRef.current ? (animPreSnapTotalRef.current || 0) : 0;
-                        const _bt = Math.max(0, Math.min(1, (_elapsed - _preTot) / ANIM_DURATION_MS));
-                        const _bp = computeBallAnimPos(_bt, _lookup);
+                        const _po = _elapsed - _preTot;
+                        const _bp = animIsRPORef.current
+                            ? computeBallAnimPosRPO(_po, _lookup)
+                            : computeBallAnimPos(Math.max(0, Math.min(1, _po / ANIM_DURATION_MS)), _lookup);
                         if (_bp) {
                             const bx = _bp.x * s, by = _bp.y * s;
                             ctx.save();
@@ -8606,10 +9086,16 @@ function PlaybookApp() {
             // length into animPreSnapTotalRef — including the get-set/moving split —
             // so reuse it instead of recomputing, guaranteeing the GIF matches.
             const hasOptionsForTiming = routes.some(r => r && r.optionOf);
+            // RPO also needs the two-rep window (give, then fake + throw), even with no
+            // option routes — otherwise the GIF would stop after the run rep.
+            const isRPOForTiming = !!(ballPlan && ballPlan.rpo)
+                && (ballPlan.steps || []).some(s => s.action === "handoff" || s.action === "pitch")
+                && (ballPlan.steps || []).some(s => s.action === "pass");
+            const twoRepTiming = hasOptionsForTiming || isRPOForTiming;
             const PHASE_MS = ANIM_DURATION_MS + ANIM_HOLD_MS;
             const INTER_MS = 600;
             const preSnapPhaseMs = animPreSnapTotalRef.current || 0;
-            const expectedAnimMs = preSnapPhaseMs + (hasOptionsForTiming ? (2 * PHASE_MS + INTER_MS) : PHASE_MS);
+            const expectedAnimMs = preSnapPhaseMs + (twoRepTiming ? (2 * PHASE_MS + INTER_MS) : PHASE_MS);
             // ── Deterministic frame capture ──
             // 20 fps. Every frame is drawn from an explicit virtual timestamp, so no
             // motion can be missed regardless of how the device schedules work.
@@ -8758,6 +9244,48 @@ function PlaybookApp() {
         setRenamingPlayId(copy.id);
         setRenameVal(copy.name);
     }, []);
+    // Make a MIRRORED COPY of a saved play using one of the three flip operations
+    // (kind = "teams" | "lr" | "call"), exactly mirroring the editor's flip
+    // buttons. The original is left untouched; the new play is inserted right
+    // after it and opened for renaming. losY is the mirror axis for the across-LOS
+    // flip, so it comes from the saved play (falling back to the default).
+    const flipPlayCopy = useCallback((play, kind) => {
+        const parts = {
+            players: play.players || [],
+            routes: play.routes || [],
+            coverages: play.coverages || [],
+            texts: play.texts || [],
+            ballX: typeof play.ballX === "number" ? play.ballX : BALL_X,
+            ballPlan: play.ballPlan || { snapTo: null, steps: [], reads: {} },
+            losY: typeof play.losY === "number" ? play.losY : LOS_Y,
+        };
+        const f = kind === "teams" ? flipPartsAcrossLOS(parts)
+            : kind === "lr" ? flipPartsLeftRight(parts)
+                : flipPartsCall(parts);
+        const merged = { ...parts, ...f };
+        const copy = JSON.parse(JSON.stringify(play));
+        copy.id = uid();
+        copy.name = mirroredCopyName(play.name, kind, plays.map(p => p.name));
+        copy.players = JSON.parse(JSON.stringify(merged.players));
+        copy.routes = JSON.parse(JSON.stringify(merged.routes));
+        copy.coverages = JSON.parse(JSON.stringify(merged.coverages));
+        copy.texts = JSON.parse(JSON.stringify(merged.texts));
+        copy.ballX = merged.ballX;
+        copy.ballPlan = JSON.parse(JSON.stringify(merged.ballPlan || { snapTo: null, steps: [], reads: {} }));
+        if (typeof merged.losY === "number")
+            copy.losY = merged.losY;
+        setPlays(prev => {
+            const i = prev.findIndex(p => p.id === play.id);
+            if (i < 0)
+                return [...prev, copy];
+            const u = [...prev];
+            u.splice(i + 1, 0, copy);
+            return u;
+        });
+        setFlippingPlayFor(null);
+        setRenamingPlayId(copy.id);
+        setRenameVal(copy.name);
+    }, [plays]);
     // Commit an in-progress play rename.
     const commitRename = useCallback(() => {
         setRenamingPlayId(id => {
@@ -9615,6 +10143,9 @@ function PlaybookApp() {
                         return `SAVED ${m}m AGO`;
                     })()),
                     React.createElement("span", { style: { fontSize: 9, color: "rgba(110,231,183,0.55)", borderLeft: "1px solid rgba(110,231,183,0.25)", paddingLeft: 6, marginLeft: 1 } }, "BACKUP")),
+                React.createElement("button", { className: "sbtn dim", onClick: () => { setHelpQuery(""); setHelpCat("start"); setShowHelp(true); }, title: "Help \u2014 an interactive guide to every control in the app", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0 } },
+                    React.createElement("span", { style: { fontSize: 14, fontWeight: 800, lineHeight: 1 } }, "?"),
+                    React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.06em" } }, "HELP")),
                 React.createElement("button", { className: "sbtn amb", onClick: () => setShowHudl(true), style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", flexShrink: 0 } },
                     React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round" },
                         React.createElement("path", { d: "M5 12h14M12 5l7 7-7 7" })),
@@ -9666,8 +10197,8 @@ function PlaybookApp() {
                         React.createElement("button", { className: "sbtn dim", onClick: () => cyclePlay(-1), disabled: filteredPlays.length < 2, title: "Load the previous saved play in this list", style: { padding: "7px 9px", fontSize: 15, lineHeight: 1, opacity: filteredPlays.length < 2 ? 0.35 : 1, cursor: filteredPlays.length < 2 ? "default" : "pointer" } }, "\u2039"),
                         React.createElement("input", { className: "inp", value: playName, onChange: e => setPlayName(e.target.value), placeholder: "Play Name", style: { width: 130 } }),
                         React.createElement("button", { className: "sbtn dim", onClick: () => cyclePlay(1), disabled: filteredPlays.length < 2, title: "Load the next saved play in this list", style: { padding: "7px 9px", fontSize: 15, lineHeight: 1, opacity: filteredPlays.length < 2 ? 0.35 : 1, cursor: filteredPlays.length < 2 ? "default" : "pointer" } }, "\u203A"),
-                        React.createElement(SearchSelect, { value: formation, width: 140, title: "Formation \u2014 type to search built-in or custom", options: [...formNames.map(f => ({ value: f, label: f })), ...orderedNames(Object.keys(customForms[tab] || {}), catSortPref("formations")).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (!f)
-                                return; setTexts(prev => prev.filter(t => !["blitz", "coverage", "formation"].includes(t.owner))); setSelectedTextId(null); setEditingTextId(null); setFormation(f); loadFormation(f); } }),
+                        React.createElement(SearchSelect, { value: formation, width: 140, placeholder: tab === "defense" ? "Front" : "Formation", title: tab === "defense" ? "Front — type to search built-in or custom fronts" : "Formation — type to search built-in or custom", options: [...formNames.filter(f => { var _a; return !((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[f]); }).map(f => ({ value: f, label: f })), ...orderedNames(Object.keys(customForms[tab] || {}), catSortPref("formations")).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (!f)
+                                return; pushUndo(); setTexts(prev => prev.filter(t => !["blitz", "coverage", "formation"].includes(t.owner))); setSelectedTextId(null); setEditingTextId(null); setFormation(f); loadFormation(f, undefined, undefined, true); } }),
                         React.createElement("button", { className: "sbtn dim", onClick: openSaveFormation, title: "Save current layout as custom formation", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
                         React.createElement("div", { style: { position: "relative" } },
                             React.createElement("input", { className: "inp", style: { width: 128 }, placeholder: "Personnel", value: personnelOpen ? personnelQuery : personnel, onFocus: () => { setPersonnelOpen(true); setPersonnelQuery(""); }, onChange: e => { setPersonnelQuery(e.target.value); setPersonnelOpen(true); }, onBlur: () => { setTimeout(() => setPersonnelOpen(false), 130); }, title: "Personnel \u2014 pick one to stamp its saved numbers/letters/colors onto the field (positions stay put). Type a new name, then hit \uD83D\uDCBE to save the current look. The package tag is saved with the play." }),
@@ -9704,9 +10235,9 @@ function PlaybookApp() {
                             }, title: "Save the players' current numbers, letters & colors under this personnel \u2014 like saving a formation, but looks only (positions stay put). Pick or type a name first.", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
                         personnelCustomList.length > 0 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("personnel"), title: "Manage custom personnel \u2014 search and delete groupings", style: { padding: "7px 9px" } }, "\uD83D\uDDD1")),
                         Object.keys(customForms[tab] || {}).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("formations"), title: "Reorder or delete your custom formations", style: { padding: "7px 9px" } }, "\u21C5")),
-                        ((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]) && !((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation]) && (React.createElement(React.Fragment, null,
-                            React.createElement("button", { className: "sbtn dim", onClick: openEditFormation, title: "Edit this custom formation (rename or update layout)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270F"),
-                            React.createElement("button", { className: "sbtn dim", onClick: () => setConfirmDeleteForm(formation), title: "Delete this custom formation", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
+                        ((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]) && (React.createElement(React.Fragment, null,
+                            !((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation]) && (React.createElement("button", { className: "sbtn dim", onClick: openEditFormation, title: "Edit this custom formation (rename or update layout)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270F")),
+                            React.createElement("button", { className: "sbtn dim", onClick: () => setConfirmDeleteForm(formation), title: ((_c = FORMATIONS[tab]) === null || _c === void 0 ? void 0 : _c[formation]) ? "Delete your override — restores the built-in" : "Delete this custom formation", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         tab !== "special" && (React.createElement(SearchSelect, { value: "", width: 148, placeholder: `+ vs ${tab === "offense" ? "DEF" : "OFF"} look…`, title: `Add ${tab === "offense" ? "defense" : "offense"} formation onto the field`, options: [...Object.keys(FORMATIONS[tab === "offense" ? "defense" : "offense"] || {}).map(f => ({ value: f, label: f })), ...Object.keys(customForms[tab === "offense" ? "defense" : "offense"] || {}).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (f)
                                 addOpposingFormation(f); } })),
                         tab === "offense" && (() => {
@@ -9798,21 +10329,23 @@ function PlaybookApp() {
                                 }, title: "Duplicate this blitz for the formations you pick \u2014 one saved blitz per formation, named with the formation first and the blitz name at the end.", style: { padding: "7px 9px", color: "#a5b4fc", borderColor: "rgba(99,102,241,0.45)" } }, "\uD83D\uDDC2"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "blitz", mode: "rename", original: selectedBlitz, value: selectedBlitz, replaceLayout: false }), title: "Edit this blitz preset (rename or replace its routes)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetDeleteConfirm({ target: "blitz", name: selectedBlitz }), title: "Delete this blitz preset", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
-                        React.createElement(SearchSelect, { value: selectedScheme, width: 150, placeholder: "Scheme\u2026", borderColor: "rgba(168,85,247,0.35)", clearable: true, clearLabel: "NO SCHEME", title: "Scheme = coverage + blitz combo \u2014 type to search (matches the coverage/blitz names too)", options: orderedNames(Object.keys(schemePresets), catSortPref("schemes")).map(n => { const s = schemePresets[n]; const parts = []; if (s && s.coverage)
+                        React.createElement(SearchSelect, { value: selectedScheme, width: 150, placeholder: "Scheme\u2026", borderColor: "rgba(168,85,247,0.35)", clearable: true, clearLabel: "NO SCHEME", title: "Scheme = coverage + blitz + blocking \u2014 type to search (matches the coverage/blitz names too)", options: orderedNames(Object.keys(schemePresets), catSortPref("schemes")).map(n => { const s = schemePresets[n]; const parts = []; if (s && s.coverage)
                                 parts.push(`C:${s.coverage}`); if (s && s.blitz)
-                                parts.push(`B:${s.blitz}`); return { value: n, label: parts.length ? `${n} (${parts.join(" · ")})` : n }; }), onPick: n => { if (n)
+                                parts.push(`B:${s.blitz}`); if (s && s.blocking && s.blocking.length)
+                                parts.push("BLK"); return { value: n, label: parts.length ? `${n} (${parts.join(" · ")})` : n }; }), onPick: n => { if (n)
                                 applyScheme(n);
                             else
                                 setSelectedScheme(""); } }),
                         React.createElement("button", { className: "sbtn dim", onClick: () => {
-                                if (!selectedCoverage && !selectedBlitz) {
-                                    alert("Pick a coverage and/or a blitz first, then save the combo as a scheme.");
+                                const hasBlocking = routes.some(r => r.rtype === "blocking");
+                                if (!selectedCoverage && !selectedBlitz && !hasBlocking) {
+                                    alert("Pick a coverage and/or a blitz — or draw some blocking — first, then save it as a scheme.");
                                     return;
                                 }
                                 const base = (selectedScheme && schemePresets[selectedScheme]) ? selectedScheme : `Scheme ${Object.keys(schemePresets).length + 1}`;
                                 const suggested = uniqueVariantName(base, Object.keys(schemePresets));
                                 setPresetNameEditor({ target: "scheme", mode: "save", value: suggested });
-                            }, title: "Save the currently-selected coverage + blitz as a single scheme", style: { padding: "7px 9px", color: "#c4b5fd", borderColor: "rgba(168,85,247,0.3)" } }, "\uD83D\uDCBE"),
+                            }, title: "Save the current coverage + blitz + any blocking as a single scheme", style: { padding: "7px 9px", color: "#c4b5fd", borderColor: "rgba(168,85,247,0.3)" } }, "\uD83D\uDCBE"),
                         Object.keys(schemePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("schemes"), title: "Reorder or delete schemes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px", borderColor: "rgba(168,85,247,0.3)" } }, "\u21C5")),
                         selectedScheme && schemePresets[selectedScheme] && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "scheme", mode: "rename", original: selectedScheme, value: selectedScheme, replaceLayout: false }), title: "Rename this scheme preset", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
@@ -9836,7 +10369,7 @@ function PlaybookApp() {
                         React.createElement("input", { className: "inp", value: playNotes, onChange: e => setPlayNotes(e.target.value), placeholder: "Notes\u2026", style: { flex: 1, minWidth: 90 } }),
                         React.createElement("button", { className: "sbtn grn", onClick: savePlay }, "SAVE"),
                         React.createElement("button", { className: "sbtn dim", onClick: newFromCurrent, title: "New \u2014 duplicates the current play so you can save a copy" }, "NEW"),
-                        React.createElement("button", { className: "sbtn dim", onClick: clearPlay, title: "Clear \u2014 wipe the field back to a default Tornado look (OL only)" }, "CLEAR"),
+                        React.createElement("button", { className: "sbtn dim", onClick: clearPlay, title: "Clear \u2014 wipe the field and drop in this tab's default look (Tornado Front on defense, Deuce Right on offense), staying on the tab you're on" }, "CLEAR"),
                         React.createElement("button", { className: "sbtn dim", onClick: () => clearSide("offense"), disabled: !players.some(p => p.ptype !== "defense"), title: "Clear the offense only \u2014 remove every offensive player and their routes (and reset the ball); the defense and its coverages stay put", style: { padding: "7px 9px", color: "#86efac", borderColor: "rgba(74,222,128,0.35)" } }, "CLR O"),
                         React.createElement("button", { className: "sbtn dim", onClick: () => clearSide("defense"), disabled: !players.some(p => p.ptype === "defense"), title: "Clear the defense only \u2014 remove every defender, their routes and all coverages; the offense and the ball stay put", style: { padding: "7px 9px", color: "#fca5a5", borderColor: "rgba(248,113,113,0.35)" } }, "CLR D"),
                         React.createElement("button", { className: "sbtn dim", onClick: undo, title: "Undo (last action)", style: { padding: "7px 10px" } }, "\u21A9"),
@@ -9848,8 +10381,6 @@ function PlaybookApp() {
                         [
                             { key: "split80", lbl: "80yd" },
                             { key: "split50", lbl: "50yd" },
-                            { key: "split30", lbl: "30yd" },
-                            { key: "split20", lbl: "20yd" },
                             { key: "redzone", lbl: "Red Zone" },
                             { key: "goalline", lbl: "Goal Line" },
                         ].map(v => (React.createElement("button", { key: v.key, onClick: () => switchFieldView(v.key), style: { padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
@@ -9923,8 +10454,8 @@ function PlaybookApp() {
                             return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`, style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
                                 React.createElement("defs", null,
                                     Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "6", markerHeight: "6", refX: "0.8", refY: "3", orient: "auto" },
-                                        React.createElement("line", { x1: "0.8", y1: "0.5", x2: "0.8", y2: "5.5", stroke: cfg.color, strokeWidth: "2", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "6", markerHeight: "6", refX: "4.6", refY: "2.3", orient: "auto" },
-                                        React.createElement("path", { d: "M0,0 L0,4.6 L6,2.3 z", fill: cfg.color })))),
+                                        React.createElement("line", { x1: "0.8", y1: "0.5", x2: "0.8", y2: "5.5", stroke: cfg.color, strokeWidth: "2", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "5", markerHeight: "5", refX: "3.6", refY: "1.8", orient: "auto" },
+                                        React.createElement("path", { d: "M0,0 L0,3.6 L4.7,1.8 z", fill: cfg.color })))),
                                     React.createElement("radialGradient", { id: "turfVig", cx: "50%", cy: "50%", r: "75%" },
                                         React.createElement("stop", { offset: "55%", stopColor: "rgba(0,0,0,0)" }),
                                         React.createElement("stop", { offset: "100%", stopColor: "rgba(0,0,0,0.22)" })),
@@ -9959,7 +10490,7 @@ function PlaybookApp() {
                                         React.createElement("ellipse", { cx: ballX, cy: losY, rx: 7, ry: 5, fill: "#8B4513", stroke: draggingBall ? "#fde68a" : "#daa520", strokeWidth: "2" }),
                                         React.createElement("line", { x1: ballX - 6, y1: losY, x2: ballX + 6, y2: losY, stroke: "#f5deb3", strokeWidth: "0.8", pointerEvents: "none" }),
                                         React.createElement("line", { x1: ballX, y1: losY - 4, x2: ballX, y2: losY + 4, stroke: "#f5deb3", strokeWidth: "0.8", pointerEvents: "none" })))),
-                                React.createElement("g", { transform: contentScale === 1 ? undefined : `translate(0 ${losY}) scale(1 ${contentScale}) translate(0 ${-losY})` },
+                                React.createElement("g", null,
                                     (() => {
                                         // Pre-compute the set of motion routes that have a
                                         // follow-up attached. The motion's arrowhead is omitted
@@ -9973,7 +10504,7 @@ function PlaybookApp() {
                                             var _a, _b, _c, _d;
                                             const skipArrow = motionsWithFollowUp.has(route.id);
                                             return (React.createElement("g", { key: route.id },
-                                                React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff", strokeWidth: (((_b = ROUTE_CFG[route.rtype]) === null || _b === void 0 ? void 0 : _b.width) || 2.5) * 1.45 * (selectedId === route.id ? 1.4 : 1), strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: ((_c = ROUTE_CFG[route.rtype]) === null || _c === void 0 ? void 0 : _c.dash) || "none", markerEnd: skipArrow ? "none" : `url(#arr-${route.rtype})`, style: { cursor: "pointer", filter: selectedId === route.id ? "drop-shadow(0 0 3px rgba(251,191,36,0.6))" : "none" }, onClick: () => onRouteClick(route.id) }),
+                                                React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff", strokeWidth: (((_b = ROUTE_CFG[route.rtype]) === null || _b === void 0 ? void 0 : _b.width) || 2.5) * 1.0 * (selectedId === route.id ? 1.4 : 1), strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: ((_c = ROUTE_CFG[route.rtype]) === null || _c === void 0 ? void 0 : _c.dash) || "none", markerEnd: skipArrow ? "none" : `url(#arr-${route.rtype})`, style: { cursor: "pointer", filter: selectedId === route.id ? "drop-shadow(0 0 3px rgba(251,191,36,0.6))" : "none" }, onClick: () => onRouteClick(route.id) }),
                                                 route.optionOf && route.points && route.points[0] && (React.createElement("circle", { cx: route.points[0].x, cy: route.points[0].y, r: 3.8, fill: ((_d = ROUTE_CFG.option) === null || _d === void 0 ? void 0 : _d.color) || "#14b8a6", stroke: "#fff", strokeWidth: 1.2, style: { pointerEvents: "none" } })),
                                                 route.order != null && route.points && route.points[0] && (() => {
                                                     var _a;
@@ -10004,6 +10535,7 @@ function PlaybookApp() {
                                             onMouseDown: (e) => startZoneDrag(e, z, "move"),
                                             onTouchStart: (e) => startZoneDrag(e, z, "move"),
                                             onClick: () => { if (tool === "erase") {
+                                                pushUndo();
                                                 setCoverages(prev => prev.filter(c => c.id !== z.id));
                                                 if (selectedZoneId === z.id)
                                                     setSelectedZoneId(null);
@@ -10147,8 +10679,10 @@ function PlaybookApp() {
                                                             setEditingTextId(null);
                                                     }
                                                 }, rows: Math.max(1, (t.text || "").split("\n").length), placeholder: "Type\u2026", style: { pointerEvents: "auto", resize: "none", minWidth: 90, maxWidth: 240, textAlign: "center", fontWeight: 700, fontSize: fs, lineHeight: 1.25, fontFamily: "'JetBrains Mono', monospace", color: t.color || "#fff", background: "rgba(10,10,20,0.94)", border: "1px solid #fde68a", borderRadius: 6, padding: "4px 8px", outline: "none" } })) : (React.createElement("div", { style: { position: "relative", pointerEvents: "none", display: "inline-block" } },
-                                                React.createElement("div", { onMouseDown: e => startTextDrag(e, t), onTouchStart: e => startTextDrag(e, t), onClick: () => { if (tool === "erase")
-                                                        deleteText(t.id); }, onDoubleClick: () => { if (tool !== "erase") {
+                                                React.createElement("div", { onMouseDown: e => startTextDrag(e, t), onTouchStart: e => startTextDrag(e, t), onClick: () => { if (tool === "erase") {
+                                                        pushUndo();
+                                                        deleteText(t.id);
+                                                    } }, onDoubleClick: () => { if (tool !== "erase") {
                                                         setSelectedTextId(t.id);
                                                         setEditingTextId(t.id);
                                                     } }, title: interactive ? "Drag to move · double-click to edit" : "", style: { pointerEvents: interactive ? "auto" : "none", cursor: tool === "erase" ? "pointer" : (tool === "select" ? "move" : "default"), display: "inline-block", whiteSpace: "pre-wrap", textAlign: "center", maxWidth: 240, fontWeight: 700, fontSize: fs, lineHeight: 1.25, fontFamily: "'JetBrains Mono', monospace", color: t.color || "#fff", padding: "3px 8px", borderRadius: 6, background: isSel ? "rgba(10,10,20,0.4)" : "transparent", border: isSel ? "1px dashed #fde68a" : "1px solid transparent", textShadow: "0 1px 2px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.85)" } }, t.text || "Text"),
@@ -10158,7 +10692,7 @@ function PlaybookApp() {
                                                     React.createElement("span", { style: { width: 1, height: 16, background: "rgba(255,255,255,0.15)", margin: "0 1px" } }),
                                                     swatches.map(sw => (React.createElement("button", { key: sw, onClick: () => updateText(t.id, { color: sw }), title: "Colour", style: { width: 16, height: 16, borderRadius: "50%", cursor: "pointer", background: sw, border: (t.color || "#fff") === sw ? "2px solid #fde68a" : "1px solid rgba(255,255,255,0.35)" } }))),
                                                     React.createElement("span", { style: { width: 1, height: 16, background: "rgba(255,255,255,0.15)", margin: "0 1px" } }),
-                                                    React.createElement("button", { onClick: () => deleteText(t.id), title: "Delete text", style: { width: 20, height: 20, borderRadius: 4, border: "1px solid rgba(239,68,68,0.5)", background: "rgba(239,68,68,0.14)", color: "#fca5a5", cursor: "pointer", fontSize: 12, lineHeight: 1 } }, "\u2715"))))))));
+                                                    React.createElement("button", { onClick: () => { pushUndo(); deleteText(t.id); }, title: "Delete text", style: { width: 20, height: 20, borderRadius: 4, border: "1px solid rgba(239,68,68,0.5)", background: "rgba(239,68,68,0.14)", color: "#fca5a5", cursor: "pointer", fontSize: 12, lineHeight: 1 } }, "\u2715"))))))));
                                     }),
                                     tool === "route" && tab === "defense" && (routeType === "showBlitz" || routeType === "hideBlitz") && (() => {
                                         const gaps = offensiveGaps(players);
@@ -10180,10 +10714,10 @@ function PlaybookApp() {
                                         return (React.createElement("g", { pointerEvents: "none" },
                                             React.createElement("path", { d: ptPath(routePoints), fill: "none", stroke: routeColor, strokeWidth: routeWidth, strokeDasharray: routeDash, strokeLinecap: "round", strokeLinejoin: "round", opacity: "1" }),
                                             showGhost && (React.createElement("line", { x1: last.x, y1: last.y, x2: hoverPoint.x, y2: hoverPoint.y, stroke: routeColor, strokeWidth: Math.max(1, routeWidth * 0.55), strokeDasharray: "2,4", strokeLinecap: "round", opacity: "0.4" })),
-                                            showGhost && (React.createElement("circle", { cx: hoverPoint.x, cy: hoverPoint.y, r: 4, fill: "none", stroke: routeColor, strokeWidth: "1.2", opacity: "0.5" })),
+                                            showGhost && (React.createElement("circle", { cx: hoverPoint.x, cy: hoverPoint.y, r: 3, fill: "none", stroke: routeColor, strokeWidth: "1.2", opacity: "0.5" })),
                                             routePoints.map((pt, i) => (React.createElement("g", { key: i },
-                                                i === 0 && (React.createElement("circle", { cx: pt.x, cy: pt.y, r: 9, fill: "none", stroke: routeColor, strokeWidth: "2", opacity: "0.55" })),
-                                                React.createElement("circle", { cx: pt.x, cy: pt.y, r: i === 0 ? 4.5 : 4, fill: routeColor, stroke: "#0a0a14", strokeWidth: "1.5", opacity: "1" }))))));
+                                                i === 0 && (React.createElement("circle", { cx: pt.x, cy: pt.y, r: 6, fill: "none", stroke: routeColor, strokeWidth: "2", opacity: "0.55" })),
+                                                React.createElement("circle", { cx: pt.x, cy: pt.y, r: i === 0 ? 3 : 2.5, fill: routeColor, stroke: "#0a0a14", strokeWidth: "1.5", opacity: "1" }))))));
                                     })(),
                                     (() => {
                                         const animating = playingAnim;
@@ -10220,8 +10754,9 @@ function PlaybookApp() {
                                         const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
                                         const preTot = animPreSnapTotalRef.current || 0;
                                         const mainElapsed = (now - animStartTimeRef.current) - preTot;
-                                        const bt = animating ? Math.max(0, Math.min(1, mainElapsed / ANIM_DURATION_MS)) : 0;
-                                        const bpos = animating ? computeBallAnimPos(bt) : null;
+                                        const bpos = !animating ? null
+                                            : animIsRPORef.current ? computeBallAnimPosRPO(mainElapsed)
+                                                : computeBallAnimPos(Math.max(0, Math.min(1, mainElapsed / ANIM_DURATION_MS)));
                                         return (React.createElement("g", { pointerEvents: "none" },
                                             !animating && segs.map((s, i) => {
                                                 const c = colorFor(s.action);
@@ -10620,8 +11155,9 @@ function PlaybookApp() {
                                             copy.offY = (z.offY || 0) + offset;
                                         }
                                         else {
-                                            copy.x = Math.max(-z.w / 2, Math.min(FW - z.w / 2, (z.x || 0) + offset));
-                                            copy.y = Math.max(-z.h / 2, Math.min(FH - z.h / 2, (z.y || 0) + offset));
+                                            const vr = getFieldViewRange(fieldView, splitOffset);
+                                            copy.x = Math.max(0, Math.min(FW - z.w, (z.x || 0) + offset));
+                                            copy.y = Math.max(vr.yStart, Math.min(vr.yEnd - z.h, (z.y || 0) + offset));
                                         }
                                         setCoverages(prev => [...prev, copy]);
                                         setSelectedZoneId(copy.id);
@@ -10655,9 +11191,9 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: () => setPendingCaptureRoute(false), style: { padding: "3px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "CANCEL"))),
                         drawingRoute && (React.createElement("div", { ref: routeBannerRef, style: { position: "absolute",
                                 ...(routeBannerPos ? { left: routeBannerPos.x, top: routeBannerPos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
-                                background: "rgba(10,10,18,0.92)", border: `1px solid ${((_c = ROUTE_CFG[routeType]) === null || _c === void 0 ? void 0 : _c.color) || "#3b82f6"}80`, padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 5, display: "flex", alignItems: "center", gap: 10, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", maxWidth: "95%", flexWrap: "wrap" } },
+                                background: "rgba(10,10,18,0.92)", border: `1px solid ${((_d = ROUTE_CFG[routeType]) === null || _d === void 0 ? void 0 : _d.color) || "#3b82f6"}80`, padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 5, display: "flex", alignItems: "center", gap: 10, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", maxWidth: "95%", flexWrap: "wrap" } },
                             React.createElement("span", { onMouseDown: startBannerDrag, onTouchStart: startBannerDrag, title: "Drag to move this out of the way", style: { cursor: "move", touchAction: "none", color: "rgba(255,255,255,0.35)", fontSize: 14, padding: "2px 4px 2px 0", letterSpacing: "-1px", userSelect: "none" } }, "\u283F"),
-                            React.createElement("span", { style: { color: (_d = ROUTE_CFG[routeType]) === null || _d === void 0 ? void 0 : _d.color } },
+                            React.createElement("span", { style: { color: (_e = ROUTE_CFG[routeType]) === null || _e === void 0 ? void 0 : _e.color } },
                                 "\u25CF ",
                                 ROUTE_LABELS[routeType]),
                             React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u00B7"),
@@ -10679,7 +11215,7 @@ function PlaybookApp() {
                                     setGestureStartPos(null);
                                     setFreeDrawingGesture(false);
                                     setHoverPoint(null);
-                                }, style: { padding: "3px 10px", borderRadius: 4, border: `1px solid ${(_e = ROUTE_CFG[routeType]) === null || _e === void 0 ? void 0 : _e.color}`, background: `${(_f = ROUTE_CFG[routeType]) === null || _f === void 0 ? void 0 : _f.color}22`, color: (_g = ROUTE_CFG[routeType]) === null || _g === void 0 ? void 0 : _g.color, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.1em" } }, "FINISH"),
+                                }, style: { padding: "3px 10px", borderRadius: 4, border: `1px solid ${(_f = ROUTE_CFG[routeType]) === null || _f === void 0 ? void 0 : _f.color}`, background: `${(_g = ROUTE_CFG[routeType]) === null || _g === void 0 ? void 0 : _g.color}22`, color: (_h = ROUTE_CFG[routeType]) === null || _h === void 0 ? void 0 : _h.color, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.1em" } }, "FINISH"),
                             React.createElement("button", { onClick: () => { setDrawingRoute(false); setRoutePoints([]); setGestureStartPos(null); setFreeDrawingGesture(false); setHoverPoint(null); }, style: { padding: "3px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "ESC"))),
                         React.createElement(DraggablePanel, { style: { position: "absolute", bottom: 18, right: 22, display: "flex", flexDirection: "column", gap: 5, background: "rgba(10,10,18,0.85)", border: "1px solid rgba(255,255,255,0.08)", padding: 6, borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 5 } },
                             React.createElement("button", { onClick: () => setZoom(z => Math.min(4, z * 1.25)), title: "Zoom in", style: { width: 30, height: 28, borderRadius: 5, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#fbbf24", cursor: "pointer", fontSize: 16, fontWeight: 600, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" } }, "+"),
@@ -10728,7 +11264,7 @@ function PlaybookApp() {
                     React.createElement("button", { className: "tbtn", style: { borderColor: "rgba(239,68,68,0.28)", color: "rgba(239,68,68,0.55)" }, onClick: () => { pushUndo(players, routes); setPlayers([]); setRoutes([]); } },
                         React.createElement("span", { style: { fontSize: 16 } }, "\uD83D\uDDD1"),
                         "CLEAR"),
-                    React.createElement("button", { className: "tbtn", onClick: () => loadFormation(formation) },
+                    React.createElement("button", { className: "tbtn", onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true); } },
                         React.createElement("span", { style: { fontSize: 16 } }, "\u21BA"),
                         "RESET"),
                     React.createElement("button", { className: "tbtn", onClick: undo },
@@ -10755,9 +11291,9 @@ function PlaybookApp() {
             showSaveForm && (() => {
                 var _a, _b;
                 const trimmed = saveFormName.trim();
-                const isBuiltIn = !!((_a = FORMATIONS[tab]) === null || _a === void 0 ? void 0 : _a[trimmed]);
-                const overwriting = !isBuiltIn && !!((_b = customForms[tab]) === null || _b === void 0 ? void 0 : _b[trimmed]);
-                const canSave = trimmed.length > 0 && !isBuiltIn;
+                const overridesBuiltIn = !!((_a = FORMATIONS[tab]) === null || _a === void 0 ? void 0 : _a[trimmed]);
+                const overwriting = !!((_b = customForms[tab]) === null || _b === void 0 ? void 0 : _b[trimmed]);
+                const canSave = trimmed.length > 0;
                 const targetPType = tab === "defense" ? "defense" : "offense";
                 const teamCount = players.filter(p => p.ptype === targetPType).length;
                 return (React.createElement("div", { className: "mover", onClick: () => setShowSaveForm(false) },
@@ -10781,11 +11317,11 @@ function PlaybookApp() {
                                     setShowSaveForm(false);
                             }, placeholder: "My custom formation", autoFocus: true, style: { fontSize: 14, padding: "9px 12px" } }),
                         React.createElement("div", { style: { minHeight: 20, marginTop: 6, marginBottom: 14 } },
-                            isBuiltIn && React.createElement("div", { className: "mono", style: { fontSize: 10, color: "#ef4444" } },
+                            overridesBuiltIn && React.createElement("div", { className: "mono", style: { fontSize: 10, color: "#fbbf24" } },
                                 "\u26A0 \"",
                                 trimmed,
-                                "\" is a built-in formation \u2014 pick a different name"),
-                            overwriting && React.createElement("div", { className: "mono", style: { fontSize: 10, color: "#fbbf24" } },
+                                "\" is a built-in \u2014 your version will override it (delete it later to restore the built-in)"),
+                            overwriting && !overridesBuiltIn && React.createElement("div", { className: "mono", style: { fontSize: 10, color: "#fbbf24" } },
                                 "\u26A0 Will overwrite existing custom formation \"",
                                 trimmed,
                                 "\"")),
@@ -11063,9 +11599,15 @@ function PlaybookApp() {
                                         zoneCount,
                                         " zone",
                                         zoneCount === 1 ? "" : "s"),
+                                    flippingPlayFor === play.id && (React.createElement("div", { style: { background: "#0a0a14", border: "1px solid rgba(125,211,252,0.3)", borderRadius: 6, padding: "7px 8px", display: "flex", flexDirection: "column", gap: 5 }, onClick: (e) => e.stopPropagation() },
+                                        React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.45)", letterSpacing: "0.1em", marginBottom: 1 } }, "SAVE A MIRRORED COPY"),
+                                        React.createElement("button", { onClick: () => flipPlayCopy(play, "lr"), title: "Mirror left \u2194 right, players and all \u2014 same play, opposite hash", style: { textAlign: "left", padding: "6px 9px", background: "rgba(125,211,252,0.08)", border: "1px solid rgba(125,211,252,0.25)", borderRadius: 5, color: "#bae6fd", fontSize: 12, cursor: "pointer" } }, "\u21C6\u00A0 Mirror left \u2194 right"),
+                                        React.createElement("button", { onClick: () => flipPlayCopy(play, "call"), title: "Flip the CALL only \u2014 mirror the routes, zones and ball but keep the formation; left/right jobs trade", style: { textAlign: "left", padding: "6px 9px", background: "rgba(125,211,252,0.08)", border: "1px solid rgba(125,211,252,0.25)", borderRadius: 5, color: "#bae6fd", fontSize: 12, cursor: "pointer" } }, "\u21C6\u00A0 Flip the call (keep formation)"),
+                                        React.createElement("button", { onClick: () => flipPlayCopy(play, "teams"), title: "Flip across the line of scrimmage \u2014 vertical mirror and swap offense \u2194 defense", style: { textAlign: "left", padding: "6px 9px", background: "rgba(125,211,252,0.08)", border: "1px solid rgba(125,211,252,0.25)", borderRadius: 5, color: "#bae6fd", fontSize: 12, cursor: "pointer" } }, "\u21C5\u00A0 Flip across LOS (swap O/D)"))),
                                     React.createElement("div", { style: { display: "flex", gap: 5, marginTop: "auto", flexWrap: "wrap" } },
                                         React.createElement("button", { onClick: () => openPlay(play), style: { flex: "1 1 auto", padding: "5px 8px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(34,197,94,0.5)", background: "rgba(34,197,94,0.12)", color: "#4ade80", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "OPEN"),
                                         React.createElement("button", { onClick: () => duplicatePlay(play), title: "Duplicate this play", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(34,211,238,0.45)", background: "rgba(34,211,238,0.1)", color: "#67e8f9", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\u29C9 COPY"),
+                                        React.createElement("button", { onClick: () => setFlippingPlayFor(prev => prev === play.id ? null : play.id), title: "Make a mirrored copy of this play \u2014 flip left\u2194right, flip just the call, or flip across the LOS", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${flippingPlayFor === play.id ? "rgba(125,211,252,0.75)" : "rgba(125,211,252,0.45)"}`, background: flippingPlayFor === play.id ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.1)", color: "#7dd3fc", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, flippingPlayFor === play.id ? "✕ FLIP" : "⇆ FLIP"),
                                         React.createElement("button", { onClick: () => {
                                                 const copy = JSON.parse(JSON.stringify(play));
                                                 copy.id = uid();
@@ -11152,6 +11694,51 @@ function PlaybookApp() {
                         React.createElement("div", { style: { marginTop: 4 } },
                             React.createElement("b", { style: { color: "#f87171" } }, "Defense:"),
                             " place the front, box, and secondary, then draw coverage zones (or man lines) and pass-rush arrows \u2014 or, for a run, draw each defender's gap-fit arrow to show how everyone fits."))))),
+            showHelp && (() => {
+                const q = helpQuery.trim().toLowerCase();
+                const searching = q.length > 0;
+                const matches = searching
+                    ? HELP_GUIDE.flatMap(cat => cat.topics
+                        .filter(tp => (tp.t + " " + tp.d).toLowerCase().includes(q))
+                        .map(tp => ({ ...tp, cat: cat.title, icon: cat.icon })))
+                    : [];
+                const active = HELP_GUIDE.find(c => c.id === helpCat) || HELP_GUIDE[0];
+                return (React.createElement("div", { onClick: () => setShowHelp(false), style: { position: "fixed", inset: 0, zIndex: 6000, background: "rgba(5,6,12,0.72)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "3vh 16px" } },
+                    React.createElement("div", { onClick: e => e.stopPropagation(), style: { width: "min(940px,96vw)", height: "min(86vh,760px)", background: "#0e0e1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, boxShadow: "0 24px 70px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column", overflow: "hidden" } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 } },
+                            React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 22, letterSpacing: "0.05em", color: "#fff", display: "flex", alignItems: "center", gap: 8 } }, "\uD83D\uDCD6 Help Guide"),
+                            React.createElement("div", { style: { flex: 1 } }),
+                            React.createElement("div", { style: { position: "relative", width: "min(280px,42vw)" } },
+                                React.createElement("input", { value: helpQuery, onChange: e => setHelpQuery(e.target.value), placeholder: "Search controls\u2026", autoFocus: true, style: { width: "100%", padding: "7px 28px 7px 10px", borderRadius: 8, background: "#000", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", fontSize: 13, boxSizing: "border-box" } }),
+                                helpQuery && React.createElement("button", { onClick: () => setHelpQuery(""), style: { position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 14, lineHeight: 1 } }, "\u2715")),
+                            React.createElement("button", { onClick: () => setShowHelp(false), title: "Close", style: { width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 15, flexShrink: 0 } }, "\u2715")),
+                        React.createElement("div", { style: { flex: 1, display: "flex", minHeight: 0 } },
+                            !searching && (React.createElement("div", { style: { width: 210, borderRight: "1px solid rgba(255,255,255,0.07)", overflowY: "auto", padding: "8px 6px", flexShrink: 0 } }, HELP_GUIDE.map(cat => (React.createElement("button", { key: cat.id, onClick: () => setHelpCat(cat.id), style: { display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "9px 10px", marginBottom: 2, borderRadius: 8, cursor: "pointer", border: "none", background: helpCat === cat.id ? "rgba(245,158,11,0.14)" : "transparent", color: helpCat === cat.id ? "#fcd34d" : "#cbd5e1", fontSize: 13, fontWeight: helpCat === cat.id ? 700 : 500 } },
+                                React.createElement("span", { style: { fontSize: 15, width: 20, textAlign: "center", flexShrink: 0 } }, cat.icon),
+                                React.createElement("span", null, cat.title)))))),
+                            React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: "18px 22px" } }, searching ? (React.createElement(React.Fragment, null,
+                                React.createElement("div", { style: { fontSize: 12, color: "#888", marginBottom: 14 } },
+                                    matches.length,
+                                    " result",
+                                    matches.length === 1 ? "" : "s",
+                                    " for \u201C",
+                                    helpQuery.trim(),
+                                    "\u201D"),
+                                matches.length === 0 && React.createElement("div", { style: { color: "#777", fontStyle: "italic", fontSize: 13 } }, "No matches. Try a simpler word like \u201Croute\u201D, \u201Cball\u201D, \u201Cflip\u201D, or \u201Cundo\u201D."),
+                                matches.map((tp, i) => (React.createElement("div", { key: i, style: { marginBottom: 16, paddingBottom: 16, borderBottom: i < matches.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none" } },
+                                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" } },
+                                        React.createElement("span", { style: { fontSize: 13 } }, tp.icon),
+                                        React.createElement("span", { style: { fontSize: 14, fontWeight: 700, color: "#fff" } }, tp.t),
+                                        React.createElement("span", { style: { fontSize: 10, color: "#9aa1ad", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 4, padding: "1px 6px" } }, tp.cat)),
+                                    React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55, color: "#b9c0cc" } }, tp.d)))))) : (React.createElement(React.Fragment, null,
+                                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 4 } },
+                                    React.createElement("span", { style: { fontSize: 22 } }, active.icon),
+                                    React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 24, letterSpacing: "0.04em", color: "#fff" } }, active.title)),
+                                React.createElement("div", { style: { fontSize: 13, color: "#8b93a1", marginBottom: 18 } }, active.blurb),
+                                active.topics.map((tp, i) => (React.createElement("div", { key: i, style: { marginBottom: 15, paddingBottom: 15, borderBottom: i < active.topics.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none" } },
+                                    React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#fde68a", marginBottom: 4 } }, tp.t),
+                                    React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55, color: "#b9c0cc" } }, tp.d)))))))))));
+            })(),
             show3D && walk3dData && React.createElement(Walkthrough3D, { data: walk3dData, onClose: () => { setShow3D(false); setWalk3dData(null); } }),
             showDefRec && (() => {
                 const rec = getDefenseRec();
@@ -11261,6 +11848,24 @@ function PlaybookApp() {
                     React.createElement("button", { onClick: () => ballAddStep("pitch"), style: { padding: "5px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, border: "1px solid #f59e0b55", background: "#f59e0b22", color: "#fbbf24" } }, "+ Pitch"),
                     React.createElement("button", { onClick: () => ballAddStep("pass"), style: { padding: "5px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, border: "1px solid #3b82f655", background: "#3b82f622", color: "#93c5fd" } }, "+ Pass"),
                     React.createElement("button", { onClick: () => ballAddStep("kick"), style: { padding: "5px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, border: "1px solid #22d3ee55", background: "#22d3ee22", color: "#67e8f9" } }, "+ Kick")),
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "7px 9px", borderRadius: 7, border: `1px solid ${ballPlan.olEligible ? "rgba(251,146,60,0.5)" : "rgba(255,255,255,0.1)"}`, background: ballPlan.olEligible ? "rgba(251,146,60,0.12)" : "rgba(255,255,255,0.03)" } },
+                    React.createElement("button", { onClick: () => setBallPlan(bp => ({ ...bp, olEligible: !bp.olEligible })), title: "When on, offensive linemen can be picked as throw/handoff targets (tackle-eligible, trick plays). Off by default \u2014 linemen are ineligible receivers.", style: { padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700, border: `1px solid ${ballPlan.olEligible ? "#fb923c" : "rgba(255,255,255,0.18)"}`, background: ballPlan.olEligible ? "rgba(251,146,60,0.25)" : "rgba(255,255,255,0.05)", color: ballPlan.olEligible ? "#fed7aa" : "#cbd5e1", whiteSpace: "nowrap" } }, ballPlan.olEligible ? "✓ Throw to OL" : "Throw to OL"),
+                    React.createElement("div", { style: { fontSize: 10, color: "rgba(255,255,255,0.5)", lineHeight: 1.45 } }, ballPlan.olEligible
+                        ? "Linemen now show up as eligible targets — tackle-eligible & trick plays."
+                        : "Linemen are ineligible (default). Flip on to throw or pitch to a lineman.")),
+                (() => {
+                    const _st = ballPlan.steps || [];
+                    const _give = _st.some(s => s.action === "handoff" || s.action === "pitch");
+                    const _throw = _st.some(s => s.action === "pass");
+                    const _ready = _give && _throw;
+                    return (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "7px 9px", borderRadius: 7, border: `1px solid ${ballPlan.rpo ? "rgba(192,132,252,0.55)" : "rgba(255,255,255,0.1)"}`, background: ballPlan.rpo ? "rgba(192,132,252,0.12)" : "rgba(255,255,255,0.03)" } },
+                        React.createElement("button", { onClick: () => setBallPlan(bp => ({ ...bp, rpo: !bp.rpo })), title: "Run-Pass Option: PLAY IN ACTION shows the give on the first rep, then a fake handoff and the throw on the second", style: { padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700, border: `1px solid ${ballPlan.rpo ? "#c084fc" : "rgba(255,255,255,0.18)"}`, background: ballPlan.rpo ? "rgba(192,132,252,0.25)" : "rgba(255,255,255,0.05)", color: ballPlan.rpo ? "#e9d5ff" : "#cbd5e1", whiteSpace: "nowrap" } }, ballPlan.rpo ? "✓ RPO" : "RPO"),
+                        React.createElement("div", { style: { fontSize: 10, color: "rgba(255,255,255,0.5)", lineHeight: 1.45 } }, ballPlan.rpo
+                            ? (_ready
+                                ? "Two reps in PLAY IN ACTION: 1st hands it off (run), 2nd fakes the handoff and throws the route."
+                                : "Add BOTH a handoff (the give) and a pass (the throw) above — the RPO needs both.")
+                            : "Run-pass option — show the give, then the fake + throw across two reps.")));
+                })(),
                 ballPlan.steps.length === 0 && React.createElement("div", { style: { fontSize: 11, color: "#666", marginBottom: 12, fontStyle: "italic", lineHeight: 1.5 } },
                     "None yet. Add a handoff for a run, or a pass. Chain two handoffs for a reverse, or two passes for a trick play. Toggle ",
                     React.createElement("b", { style: { color: "#fbbf24" } }, "fake"),
@@ -11268,7 +11873,18 @@ function PlaybookApp() {
                 React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 7, marginBottom: 12 } }, ballPlan.steps.map((s, idx) => {
                     const isPass = s.action === "pass";
                     const isKick = s.action === "kick";
-                    const targets = players.filter(p => ["QB", "WR", "TE", "HB", "FB", "RB", "K", "P"].includes(p.role));
+                    // Throwable / handoff targets = every offensive player EXCEPT the
+                    // one already carrying the ball entering this step (walk the prior
+                    // real steps from the snapper). Offensive linemen are ineligible by
+                    // default; the "Throw to OL" toggle opens them up for tackle-
+                    // eligible and trick plays.
+                    let _holderId = ballSnapId();
+                    for (let _k = 0; _k < idx; _k++) {
+                        const _ps = ballPlan.steps[_k];
+                        if (_ps && !_ps.fake && _ps.toId)
+                            _holderId = _ps.toId;
+                    }
+                    const targets = players.filter(p => p.ptype === "offense" && p.id !== _holderId && (ballPlan.olEligible || p.role !== "OL"));
                     const selVal = s.toId ? s.toId : (s.toPoint ? "__spot__" : "");
                     const depthYd = s.toPoint ? Math.round((losY - s.toPoint.y) / YARD) : 12;
                     const mb = (dis) => ({ width: 22, height: 20, borderRadius: 4, cursor: dis ? "default" : "pointer", border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.05)", color: dis ? "#444" : "#cbd5e1", fontSize: 11, opacity: dis ? 0.4 : 1, padding: 0 });
@@ -11286,12 +11902,12 @@ function PlaybookApp() {
                             React.createElement("select", { value: selVal, onChange: e => { const v = e.target.value; if (v === "__spot__")
                                     ballUpdateStep(s.id, { toId: null, toPoint: s.toPoint || { x: ballX, y: losY - 12 * YARD } });
                                 else
-                                    ballUpdateStep(s.id, { toId: v || null, toPoint: null }); }, style: { flex: 1, minWidth: 110, padding: "4px 6px", borderRadius: 5, background: "rgba(255,255,255,0.07)", color: "#e5e7eb", border: "1px solid rgba(255,255,255,0.15)", fontSize: 12 } },
-                                React.createElement("option", { value: "" }, "\u2014 choose \u2014"),
-                                targets.map(p => React.createElement("option", { key: p.id, value: p.id },
+                                    ballUpdateStep(s.id, { toId: v || null, toPoint: null }); }, style: { flex: 1, minWidth: 110, padding: "4px 6px", borderRadius: 5, background: "#000", color: "#fff", border: "1px solid rgba(255,255,255,0.25)", fontSize: 12 } },
+                                React.createElement("option", { value: "", style: { background: "#000", color: "#fff" } }, "\u2014 choose \u2014"),
+                                targets.map(p => React.createElement("option", { key: p.id, value: p.id, style: { background: "#000", color: "#fff" } },
                                     p.label || p.role,
                                     p.role === "QB" ? " (QB)" : "")),
-                                isPass && React.createElement("option", { value: "__spot__" }, "\uD83D\uDCCD Spot on field")),
+                                isPass && React.createElement("option", { value: "__spot__", style: { background: "#000", color: "#fff" } }, "\uD83D\uDCCD Spot on field")),
                             React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1" } },
                                 React.createElement("input", { type: "checkbox", checked: !!s.fake, onChange: e => ballUpdateStep(s.id, { fake: e.target.checked }), style: { accentColor: "#f59e0b" } }),
                                 " fake"))),
@@ -11315,13 +11931,13 @@ function PlaybookApp() {
                     "PASSING READS ",
                     React.createElement("span", { style: { color: "#555" } }, "\u00B7 tap to set 1\u21925 order")),
                 React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5 } },
-                    players.filter(p => ["WR", "TE", "HB", "FB", "RB"].includes(p.role)).map(p => {
+                    players.filter(p => p.ptype === "offense" && (ballPlan.olEligible || p.role !== "OL")).map(p => {
                         const n = ballPlan.reads[p.id] || 0;
                         return React.createElement("button", { key: p.id, onClick: () => ballSetRead(p.id), style: { padding: "4px 9px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5, border: `1px solid ${n ? "#22c55e" : "rgba(255,255,255,0.14)"}`, background: n ? "rgba(34,197,94,0.16)" : "rgba(255,255,255,0.05)", color: n ? "#bbf7d0" : "#cbd5e1" } },
                             n > 0 && React.createElement("span", { style: { width: 15, height: 15, borderRadius: 8, background: n === 1 ? "#22c55e" : "#0ea5e9", color: "#0a0a14", fontSize: 9, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" } }, n),
                             p.label || p.role);
                     }),
-                    players.filter(p => ["WR", "TE", "HB", "FB", "RB"].includes(p.role)).length === 0 && React.createElement("span", { style: { fontSize: 11, color: "#666", fontStyle: "italic" } }, "Add receivers to set a progression.")),
+                    players.filter(p => p.ptype === "offense" && (ballPlan.olEligible || p.role !== "OL")).length === 0 && React.createElement("span", { style: { fontSize: 11, color: "#666", fontStyle: "italic" } }, "Add receivers to set a progression.")),
                 React.createElement("div", { style: { marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.07)", fontSize: 9.5, color: "#6b7280", lineHeight: 1.5 } }, "This designs and draws the ball path on the field. Animating the ball through it during Play-in-Action is the next step."))),
             showCustomize && (() => {
                 const ezBg = endzoneBgOverride || (fieldTheme && fieldTheme.endzone) || "#0d4423";
@@ -12475,38 +13091,63 @@ function PlaybookApp() {
                         includePt(cx - c.w / 2, cy - c.h / 2);
                         includePt(cx + c.w / 2, cy + c.h / 2);
                     });
-                    // Always include the LOS so the dashed yellow line is on screen.
-                    if (typeof play.losY === "number") {
-                        includePt(FW / 2, play.losY);
-                    }
-                    else if (typeof losY === "number") {
-                        includePt(FW / 2, losY);
-                    }
                     if (minX === Infinity)
                         return { x: 0, y: 0, w: FW, h: FH };
+                    // Include the LOS *y* (the dashed line spans the full width anyway) so
+                    // it stays on screen — but DON'T let it pull the horizontal bounds
+                    // toward field-center, or a play run from a hash drifts to mid-screen.
+                    const lY = (typeof play.losY === "number") ? play.losY : (typeof losY === "number" ? losY : null);
+                    if (lY !== null) {
+                        if (lY < minY)
+                            minY = lY;
+                        if (lY > maxY)
+                            maxY = lY;
+                    }
                     const PAD = 40;
-                    let bx = Math.max(0, minX - PAD);
+                    // Vertical: tight around the action — resting spots + full routes, so
+                    // every step of the animation stays in frame.
                     let by = Math.max(0, minY - PAD);
-                    let bw = Math.min(FW - bx, (maxX - minX) + 2 * PAD);
                     let bh = Math.min(FH - by, (maxY - minY) + 2 * PAD);
-                    // Extend horizontally to a more landscape-friendly aspect when
-                    // the play is narrow but tall. This avoids huge black bars on
-                    // wide monitors — we show more field context on the sides
-                    // rather than wasting screen real estate.
+                    // Horizontal: CENTER ON THE BALL'S HASH so a play run from a hash sits
+                    // on that hash instead of being yanked to mid-screen. The width is
+                    // symmetric about the hash and wide enough to hold every player on
+                    // both sides.
+                    const hashX = (typeof play.ballX === "number") ? play.ballX : FW / 2;
+                    let halfW = Math.max(hashX - minX, maxX - hashX) + PAD;
+                    // Widen to a landscape aspect if the play is tall/narrow — stays hash-centered.
                     const TARGET_ASPECT = 1.55;
-                    const curAspect = bw / bh;
-                    if (curAspect < TARGET_ASPECT && bh > 0) {
-                        const desiredW = bh * TARGET_ASPECT;
-                        const extra = (desiredW - bw) / 2;
-                        const newBx = Math.max(0, bx - extra);
-                        const newBw = Math.min(FW - newBx, desiredW);
-                        bx = newBx;
-                        bw = newBw;
+                    if (2 * halfW < bh * TARGET_ASPECT)
+                        halfW = (bh * TARGET_ASPECT) / 2;
+                    let bw = 2 * halfW;
+                    let bx = hashX - halfW;
+                    // Keep the box on the field: full width if it would overflow both
+                    // sides, otherwise slide it just inside the nearest sideline.
+                    if (bw >= FW) {
+                        bx = 0;
+                        bw = FW;
+                    }
+                    else {
+                        if (bx < 0)
+                            bx = 0;
+                        else if (bx + bw > FW)
+                            bx = FW - bw;
                     }
                     return { x: bx, y: by, w: bw, h: bh };
                 };
                 const vb = computePlayBounds(step.play);
-                return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "#0a0a14", zIndex: 2000, display: "flex", flexDirection: "column" } },
+                // SOURCE OF TRUTH for what this viewer draws. At rest we render the
+                // SAVED play directly (step.play) so the diagram is always the play that
+                // was drawn for this install/script — never whatever happens to be on
+                // the editor field. Only while PLAY IN ACTION is running do we switch to
+                // the live editor state, because that's what startAnim mutates each
+                // frame (loadPlay has already synced it to this same play).
+                const vAnimating = playingAnim;
+                const vPlayers = vAnimating ? players : (step.play.players || []);
+                const vRoutes = vAnimating ? routes : (step.play.routes || []);
+                const vCoverages = vAnimating ? coverages : (step.play.coverages || []);
+                const vLosY = vAnimating ? losY : (typeof step.play.losY === "number" ? step.play.losY : LOS_Y);
+                return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "#0a0a14", zIndex: 2147483646, display: "flex", flexDirection: "column" } },
+                    typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", style: { position: "fixed", left: 10, top: 10, zIndex: 2147483647, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2190 Dashboard")),
                     React.createElement("div", { style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
                         React.createElement("div", { style: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center", maxWidth: "66%", pointerEvents: "none" } },
                             React.createElement("div", { className: "hd", style: { fontSize: 20, color: "#fff", letterSpacing: "0.1em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, step.play.name),
@@ -12551,8 +13192,8 @@ function PlaybookApp() {
                                     React.createElement("text", { x: 10, y: y + 4, fill: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", fontWeight: "bold" }, n),
                                     React.createElement("text", { x: FW - 22, y: y + 4, fill: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", fontWeight: "bold" }, n)));
                             }),
-                            React.createElement("line", { x1: 0, y1: losY, x2: FW, y2: losY, stroke: "rgba(251,191,36,0.85)", strokeWidth: 2.2, strokeDasharray: "6,5" }),
-                            coverages.filter(c => c.ctype === "zone").map(z => {
+                            React.createElement("line", { x1: 0, y1: vLosY, x2: FW, y2: vLosY, stroke: "rgba(251,191,36,0.85)", strokeWidth: 2.2, strokeDasharray: "6,5" }),
+                            vCoverages.filter(c => c.ctype === "zone").map(z => {
                                 let cx = z.x + z.w / 2, cy = z.y + z.h / 2;
                                 if (z.attachedTo) {
                                     let apX = null, apY = null;
@@ -12565,7 +13206,7 @@ function PlaybookApp() {
                                         }
                                     }
                                     if (apX === null) {
-                                        const ap = players.find(p => p.id === z.attachedTo);
+                                        const ap = vPlayers.find(p => p.id === z.attachedTo);
                                         if (ap) {
                                             apX = ap.x;
                                             apY = ap.y;
@@ -12584,9 +13225,9 @@ function PlaybookApp() {
                                     : React.createElement("rect", { x: x0, y: y0, width: z.w, height: z.h, rx: 10, ry: 10, fill: cfill, stroke: cstroke, strokeWidth: 1.5, strokeDasharray: "6,4" });
                                 return React.createElement("g", { key: z.id }, shapeEl);
                             }),
-                            coverages.filter(c => c.ctype === "man").map(m => {
-                                const fromP = players.find(p => p.id === m.fromId);
-                                const toP = players.find(p => p.id === m.toId);
+                            vCoverages.filter(c => c.ctype === "man").map(m => {
+                                const fromP = vPlayers.find(p => p.id === m.fromId);
+                                const toP = vPlayers.find(p => p.id === m.toId);
                                 if (!fromP || !toP)
                                     return null;
                                 const col = m.color || "#fb923c";
@@ -12598,9 +13239,9 @@ function PlaybookApp() {
                             }),
                             (() => {
                                 const motionsWithFollowUpRun = new Set();
-                                routes.forEach(r => { if (r && r.attachedToMotion)
+                                vRoutes.forEach(r => { if (r && r.attachedToMotion)
                                     motionsWithFollowUpRun.add(r.attachedToMotion); });
-                                return routes.map(r => {
+                                return vRoutes.map(r => {
                                     var _a, _b, _c;
                                     if (!r.points || r.points.length < 2)
                                         return null;
@@ -12623,12 +13264,16 @@ function PlaybookApp() {
                                         })()));
                                 });
                             })(),
-                            players.map(p => {
-                                const r = 12 * (p.sizeMul || 1);
+                            vPlayers.map(p => {
+                                // Match the 2D editor's player sizing (true field units) so the
+                                // install/practice view reads at the same scale as the editor.
+                                const sm = p.sizeMul || 1;
+                                const r = Math.max(6, Math.min(36, 5.75 * sm));
+                                const fs = Math.max(8, Math.min(24, 5.5 * sm));
                                 const col = p.color || ROLE_COLORS[p.role] || ROLE_COLORS.default;
                                 return (React.createElement("g", { key: p.id },
                                     React.createElement("circle", { cx: p.x, cy: p.y, r: r, fill: col, stroke: "rgba(0,0,0,0.7)", strokeWidth: 1.5 }),
-                                    React.createElement("text", { x: p.x, y: p.y, dy: "0.36em", textAnchor: "middle", fill: "#0a0a14", fontSize: Math.round(r * 0.85), fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif", style: { pointerEvents: "none", userSelect: "none" } }, p.label)));
+                                    React.createElement("text", { x: p.x, y: p.y, dy: "0.36em", textAnchor: "middle", fill: "#0a0a14", fontSize: fs, fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif", style: { pointerEvents: "none", userSelect: "none" } }, p.label)));
                             }),
                             coverages.filter(c => c.ctype === "zone" && c.label).map(z => {
                                 let cx = z.x + z.w / 2, cy = z.y + z.h / 2;
@@ -12656,7 +13301,21 @@ function PlaybookApp() {
                                 }
                                 const lx = cx + (z.labelOffX || 0), ly = cy + (z.labelOffY || 0);
                                 return (React.createElement("text", { key: z.id + "-lbl", x: lx, y: ly, dy: "0.36em", textAnchor: "middle", fill: z.color || "#3b82f6", fontSize: Math.max(10, Math.min(z.w, z.h) * 0.18), fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif", style: { pointerEvents: "none", userSelect: "none" } }, z.label));
-                            }))),
+                            }),
+                            !ballSnapOff() && (() => {
+                                const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+                                const preTot = animPreSnapTotalRef.current || 0;
+                                const mainElapsed = (now - animStartTimeRef.current) - preTot;
+                                let bp = !playingAnim ? computeBallAnimPos(0)
+                                    : animIsRPORef.current ? computeBallAnimPosRPO(mainElapsed)
+                                        : computeBallAnimPos(Math.max(0, Math.min(1, mainElapsed / ANIM_DURATION_MS)));
+                                if (!bp)
+                                    bp = { x: ballX, y: losY };
+                                return (React.createElement("g", { pointerEvents: "none" },
+                                    React.createElement("ellipse", { cx: bp.x, cy: bp.y, rx: 7.5, ry: 5.5, fill: "#8B4513", stroke: "#fde68a", strokeWidth: "2" }),
+                                    React.createElement("line", { x1: bp.x - 6, y1: bp.y, x2: bp.x + 6, y2: bp.y, stroke: "#f5deb3", strokeWidth: "0.8" }),
+                                    React.createElement("line", { x1: bp.x, y1: bp.y - 4, x2: bp.x, y2: bp.y + 4, stroke: "#f5deb3", strokeWidth: "0.8" })));
+                            })())),
                     React.createElement("div", { style: { padding: "12px 22px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
                         React.createElement("button", { onClick: prev, disabled: idx === 0, style: { padding: "9px 22px", borderRadius: 7, cursor: idx === 0 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${idx === 0 ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.25)"}`,
@@ -14337,6 +14996,10 @@ function App() {
   }, [m, session]);
 
   if (showEditor && window.GridironApp) {
+    // Expose a return-to-dashboard hook so the in-editor presentation (install /
+    // practice script) can show its own top-left Dashboard button instead of
+    // this shell button overlapping the PREV/NEXT nav.
+    window.__gridironReturnToDash = () => setShowEditor(false);
     return (
       <div style={{position:"fixed",inset:0,overflow:"auto",WebkitOverflowScrolling:"touch",background:"#090912",zIndex:2000}}>
         {React.createElement(window.GridironApp)}
