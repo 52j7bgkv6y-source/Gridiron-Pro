@@ -14765,24 +14765,11 @@ if (typeof window !== "undefined")
 <body>
 <div id="root"></div>
 
-<script>
-  /* Force Babel's CLASSIC JSX runtime (React.createElement). Recent
-     @babel/standalone builds default to the AUTOMATIC runtime, which injects
-     `import {jsx} from "react/jsx-runtime"` into the transpiled output — an
-     import statement is illegal in a classic <script>, so Babel threw
-     "Cannot use import statement outside a module" and the page stayed black.
-     Registering our own preset with runtime:"classic" keeps the output
-     import-free. (env is kept to match the prior default transform.) */
-  if (window.Babel && Babel.registerPreset && Babel.availablePresets) {
-    Babel.registerPreset("gp-react", {
-      presets: [
-        [Babel.availablePresets["react"], { runtime: "classic" }],
-        Babel.availablePresets["env"]
-      ]
-    });
-  }
-</script>
-<script type="text/babel" data-presets="gp-react" data-type="script">
+<!-- Shell source. Deliberately NOT type="text/babel" (so Babel's auto-
+     transformer, whose default JSX runtime varies by CDN version, never touches
+     it) and NOT a runnable script. The loader at the very bottom transforms this
+     with an EXPLICIT classic JSX runtime and injects the result. -->
+<script type="text/plain" id="gp-shell-src">
 const { useState, useEffect, useCallback } = React;
 
 // You do NOT need to edit this file. The site asks for your Supabase keys on
@@ -15388,6 +15375,36 @@ class ShellErrorBoundary extends React.Component {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<ShellErrorBoundary><App /></ShellErrorBoundary>);
+</script>
+<script>
+  /* Transform the shell source above with an EXPLICIT classic JSX runtime
+     (React.createElement), so Babel never injects `import {jsx} from
+     "react/jsx-runtime"` — that import is illegal in a classic <script> and was
+     leaving the page blank. The string preset "react" with {runtime:"classic"}
+     is version-independent (doesn't depend on Babel's default runtime or on
+     registering custom presets). Any failure is surfaced through the boot
+     watchdog instead of failing silently. */
+  (function () {
+    function boot() {
+      try {
+        if (!window.Babel || !Babel.transform) throw new Error("Babel did not load from the CDN (check your connection).");
+        var srcEl = document.getElementById("gp-shell-src");
+        if (!srcEl || !srcEl.textContent.trim()) throw new Error("Shell source is missing.");
+        var out = Babel.transform(srcEl.textContent, {
+          presets: [["react", { runtime: "classic" }], "env"],
+          sourceType: "script",
+          filename: "shell.jsx"
+        }).code;
+        var s = document.createElement("script");
+        s.textContent = out;
+        document.body.appendChild(s);
+      } catch (e) {
+        window.dispatchEvent(new ErrorEvent("error", { error: e, message: "Shell failed to start: " + ((e && e.message) || e) }));
+      }
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+    else boot();
+  })();
 </script>
 </body>
 </html>
