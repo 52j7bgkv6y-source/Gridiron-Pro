@@ -2,6 +2,48 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<script>
+/* Boot watchdog (plain JS — no React/Babel needed). If a CDN script fails to
+   load, an uncaught error fires, or nothing renders within a few seconds, this
+   prints the actual reason on screen instead of leaving a black page. */
+(function(){
+  var pending = null;
+  function esc(s){ return String(s).replace(/[<>&]/g, function(c){ return c==="<"?"&lt;":c===">"?"&gt;":"&amp;"; }); }
+  function showMsg(title, body){
+    var html = '<div style="min-height:100vh;background:#0a0a14;color:#fca5a5;font-family:monospace;padding:24px;overflow:auto;box-sizing:border-box">'
+      + '<h2 style="color:#f87171;margin:0 0 12px">' + title + '</h2>'
+      + '<pre style="white-space:pre-wrap;font-size:12px;line-height:1.65;margin:0">' + esc(body) + '</pre></div>';
+    function paint(){
+      var r = document.getElementById("root");
+      if (r) r.innerHTML = html;
+      else if (document.body) document.body.insertAdjacentHTML("afterbegin", html);
+    }
+    if (document.body) paint(); else pending = paint;
+  }
+  document.addEventListener("DOMContentLoaded", function(){ if (pending) { pending(); pending = null; } });
+  window.__gpFatal = false;
+  window.addEventListener("error", function(ev){
+    if (ev && ev.target && ev.target.tagName === "SCRIPT" && ev.target.src) {
+      window.__gpFatal = true;
+      showMsg("A required script failed to load",
+        "Couldn't load:\n" + ev.target.src + "\n\nThis page loads React, Babel and Supabase from the internet. Make sure you're online. If you opened this file directly from your computer (the address bar shows file:/// or C:\\...), some browsers block these scripts — host it (e.g. drag the file onto Netlify) or serve it over http instead of double-clicking it.");
+      return;
+    }
+    var m = (ev && ev.error && ev.error.stack) || (ev && ev.message) || "Unknown error";
+    if (/Script error/i.test(m) && !(ev && ev.error)) return;
+    window.__gpFatal = true;
+    showMsg("The app hit an error while starting", m);
+  }, true);
+  setTimeout(function(){
+    if (window.__gpFatal) return;
+    var r = document.getElementById("root");
+    if (r && r.childElementCount === 0) {
+      showMsg("The app didn't start",
+        "Nothing rendered after several seconds and no error was thrown.\n\nUsually this means a library (React / Babel / Supabase) didn't load, or the page is being opened straight from disk (file:///).\n\nTry:\n  1. Open the console (press F12, then the Console tab) and look for red errors.\n  2. Confirm you're online.\n  3. Host the file or serve it over http instead of double-clicking it.");
+    }
+  }, 5000);
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Gridiron Pro — Sign In</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -334,6 +376,7 @@ const HELP_GUIDE = [
             { t: "Route types & combinations", d: "While the Route tool is active a strip of route types appears. Single routes attach to one player; combinations load onto the whole formation at once." },
             { t: "Option routes", d: "Branch a route off a point on an existing route. In Play in Action the receiver runs the primary first, then the play replays him running the option branch." },
             { t: "Pre-snap motion", d: "A motion route runs before the snap. Chain a follow-up route and the player motions, then flows straight into his real route as one continuous path." },
+            { t: "Level routes (↕ LEVEL RTS)", d: "Snaps every route's depth onto the nearest yard line, so routes drawn at roughly the same depth end up on the exact same level. Each route scales from its player anchor, so the receiver doesn't move. Undoable." },
         ],
     },
     {
@@ -358,7 +401,8 @@ const HELP_GUIDE = [
             { t: "Blitzes", d: "Pick a blitz to add pressure paths to the front. Re-selecting the same blitz re-applies it." },
             { t: "Zones", d: "Draw a coverage zone with the Zone tool, then select it to resize or recolor it." },
             { t: "Man coverage", d: "Draw a link from a defender to the receiver he's responsible for with the Man tool." },
-            { t: "Fronts & schemes", d: "Save and re-apply defensive fronts and blocking schemes so you're not redrawing the same look every time." },
+            { t: "Spread a zone (2× / 3× / 4×)", d: "Select a field zone and use SPREAD to copy it evenly across the field at the same level — 2× makes thirds (3 zones), 3× fourths (4), 4× fifths (5). One deep zone becomes a Cover-3/4/5 shell in a tap." },
+            { t: "Fronts & schemes", d: "Save and re-apply defensive fronts and offensive schemes so you're not redrawing the same look every time. A Scheme bundles a coverage + blitz + any blocking AND run action under one name — applying it restores only the route types it carries and leaves your other routes alone." },
         ],
     },
     {
@@ -2257,12 +2301,9 @@ function PlaybookApp() {
     // Read a category's pref as a flat { mode, order:[] } (formations are stored
     // per-tab, so collapse to the current tab here).
     const catSortPref = useCallback((cat) => {
-        if (cat === "personnel")
-            return { mode: "name", order: [] }; // personnel is delete-only in the manager
-        if (cat === "routes")
-            return { mode: "name", order: [] }; // saved routes are delete-only in the manager
-        if (cat === "formations") {
-            const fp = sortPrefs.formations || {};
+        if (cat === "formations" || cat === "personnel") {
+            // Stored per-tab (the names are per-tab), exactly like custom formations.
+            const fp = sortPrefs[cat] || {};
             return { mode: fp.mode || "name", order: (fp.order && fp.order[tab]) || [] };
         }
         const cp = sortPrefs[cat] || {};
@@ -2271,9 +2312,9 @@ function PlaybookApp() {
     // Persist a new order for a category (also flips it to custom mode).
     const setCatOrder = useCallback((cat, order) => {
         setSortPrefs(prev => {
-            if (cat === "formations") {
-                const fp = prev.formations || {};
-                return { ...prev, formations: { mode: "custom", order: { ...(fp.order || {}), [tab]: order } } };
+            if (cat === "formations" || cat === "personnel") {
+                const fp = prev[cat] || {};
+                return { ...prev, [cat]: { mode: "custom", order: { ...(fp.order || {}), [tab]: order } } };
             }
             return { ...prev, [cat]: { mode: "custom", order } };
         });
@@ -2281,9 +2322,9 @@ function PlaybookApp() {
     // Switch a category between "name" and "custom" without losing the order.
     const setCatMode = useCallback((cat, mode) => {
         setSortPrefs(prev => {
-            if (cat === "formations") {
-                const fp = prev.formations || {};
-                return { ...prev, formations: { mode, order: fp.order || {} } };
+            if (cat === "formations" || cat === "personnel") {
+                const fp = prev[cat] || {};
+                return { ...prev, [cat]: { mode, order: fp.order || {} } };
             }
             const cp = prev[cat] || {};
             return { ...prev, [cat]: { mode, order: cp.order || [] } };
@@ -2616,9 +2657,7 @@ function PlaybookApp() {
         const mainRoutes = (routes || []).map((r, idx) => ({ r, idx })).filter(o => o.r.rtype !== "preSnapMotion");
         const usedM = new Set(), usedR = new Set();
         const motionByPlayer = new Map();
-        const OWN_DIST2 = 35 * 35; // mirror 2D OWNER_ID_MAX_DIST
-        const NEAR2 = (3.5 * YARD) ** 2; // proximity gate
-        const isBlitzRt = (rt) => rt === "showBlitz" || rt === "hideBlitz";
+        const NEAR2 = (3.5 * YARD) ** 2; // proximity gate (fallback for routes with no ownerId)
         // Pre-snap motion: prefer a route this player OWNS, else nearest start in
         // range — the same precedence the 2D engine uses, so the same players move.
         (players || []).forEach(p => {
@@ -2630,8 +2669,8 @@ function PlaybookApp() {
                 if (!f)
                     return;
                 const d = (f.x - p.x) ** 2 + (f.y - p.y) ** 2;
-                if (o.r.ownerId === p.id && d < OWN_DIST2)
-                    owned = o.idx;
+                if (o.r.ownerId === p.id)
+                    owned = o.idx; // trust the owner — no distance gate
                 if (d < bestD) {
                     bestD = d;
                     best = o.idx;
@@ -2660,8 +2699,8 @@ function PlaybookApp() {
                 if (!f)
                     return;
                 const d = (f.x - postPos.x) ** 2 + (f.y - postPos.y) ** 2;
-                if (o.r.ownerId === p.id && (isBlitzRt(o.r.rtype) || d < OWN_DIST2))
-                    owned = o.idx;
+                if (o.r.ownerId === p.id)
+                    owned = o.idx; // trust the owner — no distance gate (blitz or not)
                 if (d < bestD) {
                     bestD = d;
                     best = o.idx;
@@ -3916,6 +3955,48 @@ function PlaybookApp() {
                 formation: s.formation,
             }]);
     }, []);
+    // Snap each route's deepest point onto the nearest yard line, so routes drawn
+    // at roughly the same depth end up on the EXACT same level. Each route is
+    // scaled vertically about its anchor (first point) so the start stays on the
+    // player and only the depth changes — no horizontal distortion, no detaching
+    // from the receiver. Operates on the current side's pass/run routes; motion,
+    // blocking, blitz and option lines are left alone. Undoable.
+    const levelRoutes = () => {
+        const side = tab === "defense" ? "defense" : "offense";
+        const ownerSide = new Set(players.filter(p => p.ptype === side).map(p => p.id));
+        let changed = 0;
+        const out = routes.map(r => {
+            if (!r || !ownerSide.has(r.ownerId))
+                return r;
+            if (r.rtype !== "pass" && r.rtype !== "run")
+                return r;
+            const pts = r.points;
+            if (!pts || pts.length < 2)
+                return r;
+            const p0 = pts[0];
+            let pd = pts[0];
+            for (const p of pts) {
+                if (side === "offense" ? (p.y < pd.y) : (p.y > pd.y))
+                    pd = p;
+            }
+            const denom = pd.y - p0.y;
+            if (Math.abs(denom) < 4)
+                return r; // too shallow to level
+            const yardsDeep = Math.round((losY - pd.y) / YARD);
+            const targetY = losY - yardsDeep * YARD;
+            if (Math.abs(targetY - pd.y) < 0.5)
+                return r; // already on the line
+            const s = (targetY - p0.y) / denom;
+            if (!isFinite(s) || s <= 0.2 || s > 5)
+                return r; // sanity clamp
+            changed++;
+            return { ...r, points: pts.map(p => ({ ...p, y: p0.y + (p.y - p0.y) * s })) };
+        });
+        if (changed > 0) {
+            pushUndo(players, routes);
+            setRoutes(out);
+        }
+    };
     const undo = useCallback(() => {
         setUndoStack(prev => {
             if (!prev.length)
@@ -5827,20 +5908,28 @@ function PlaybookApp() {
             loadFormation(target, tab);
         }
     }, [tab, customForms, loadFormation, players, routes, coverages, texts, currentPlay, pushUndo]);
-    // Clear ONLY one side of the ball, leaving the other side — and everything
-    // tied to it — intact. "offense" removes every offensive player plus their
-    // routes and resets the ball (no one left to snap it); "defense" removes the
-    // defenders, their routes, all coverages and the scheme picks. Fully undoable.
+    // Clear ONLY one side of the line of scrimmage, leaving the other side — and
+    // everything tied to it — intact. "offense" removes the offensive players plus
+    // their routes/labels and resets the ball (no one left to snap it); "defense"
+    // removes the defenders, their routes/labels, all coverages and the scheme
+    // picks. Free-drawn routes and text labels that aren't tied to a player are
+    // cleared by WHICH SIDE OF THE LOS they sit on, so nothing is left floating on
+    // a side you've cleared. Fully undoable.
     const clearSide = useCallback((side) => {
         const isDef = side === "defense";
         const keep = (p) => isDef ? (p.ptype !== "defense") : (p.ptype === "defense");
+        // OFFENSE side = at or below the LOS (larger y); DEFENSE side = above it.
+        const onThisSide = (y) => isDef ? (y < losY) : (y >= losY);
         const removedIds = new Set((players || []).filter(p => !keep(p)).map(p => p.id));
-        if (removedIds.size === 0)
+        // Owned routes/labels follow their player; free ones go by their own spot.
+        const routeGone = (r) => r.ownerId ? removedIds.has(r.ownerId) : !!(r.points && r.points[0] && onThisSide(r.points[0].y));
+        const textGone = (t) => t.owner ? removedIds.has(t.owner) : onThisSide(t.y);
+        if (removedIds.size === 0 && !routes.some(routeGone) && !texts.some(textGone) && !(isDef && coverages.length > 0))
             return; // that side is already empty
         pushUndo();
         setPlayers(prev => prev.filter(keep));
-        setRoutes(prev => prev.filter(r => !(r.ownerId && removedIds.has(r.ownerId))));
-        setTexts(prev => prev.filter(t => !(t.owner && removedIds.has(t.owner))));
+        setRoutes(prev => prev.filter(r => !routeGone(r)));
+        setTexts(prev => prev.filter(t => !textGone(t)));
         if (selectedId && removedIds.has(selectedId))
             setSelectedId(null);
         setManFromId(null);
@@ -5854,7 +5943,7 @@ function PlaybookApp() {
             setCoverages(prev => prev.filter(c => !((c.fromId && removedIds.has(c.fromId)) || (c.toId && removedIds.has(c.toId)) || (c.attachedTo && removedIds.has(c.attachedTo)))));
             setBallPlan({ snapTo: null, steps: [], reads: {} });
         }
-    }, [players, routes, coverages, texts, ballPlan, ballX, selectedId]);
+    }, [players, routes, coverages, texts, ballPlan, ballX, selectedId, losY]);
     // Align all selected players to the same Y (median of the selection so a
     // single outlier doesn't pull the whole group toward it). Each player still
     // gets clamped to their side of the LOS afterward.
@@ -6586,10 +6675,30 @@ function PlaybookApp() {
                 return;
             }
             seenBlitzerLabels.add(b.label);
-            const candidates = players.filter(p => p.ptype === "defense" && !consumedOwnerIds.has(p.id) && (p.label === b.label || p.role === b.label));
-            if (candidates.length === 0)
+            // Match the saved blitzer to a defender by EXACT LABEL first; only fall
+            // back to a role match when no defender carries that label. The old
+            // single filter treated label and role as interchangeable, so a blitzer
+            // tagged "M" could be grabbed by whatever defender came first whose ROLE
+            // was "M" — dragging, say, a tackle onto the Mike's blitz path and
+            // leaving the real Mike with no route (frozen). Label-first stops that.
+            const avail = players.filter(p => p.ptype === "defense" && !consumedOwnerIds.has(p.id));
+            let candidates = avail.filter(p => p.label === b.label);
+            let matchedByRole = false;
+            if (candidates.length === 0) {
+                candidates = avail.filter(p => p.role === b.label);
+                matchedByRole = true;
+            }
+            if (candidates.length === 0) {
+                console.warn(`[applyBlitz] No available defender matches blitzer "${b.label}" in preset "${name}" — this rusher was skipped (no defender has that label or role).`);
                 return;
+            }
+            if (candidates.length > 1) {
+                console.warn(`[applyBlitz] Blitzer "${b.label}" matched ${candidates.length} defenders in preset "${name}"; using the first. Give each defender a unique label so the mapping is exact.`);
+            }
             const owner = candidates[0];
+            if (matchedByRole) {
+                console.warn(`[applyBlitz] Blitzer "${b.label}" found no defender with that LABEL, so it matched one by ROLE instead (now on "${owner.label || owner.role}"). If the wrong defender moves, set that defender's label to "${b.label}" in this formation so the blitz maps to him exactly.`);
+            }
             consumedOwnerIds.add(owner.id);
             let points;
             const gapLock = preset.gapLock && Array.isArray(b.pointOffsets) && b.pointOffsets.length >= 2 &&
@@ -6983,6 +7092,25 @@ function PlaybookApp() {
         if (selectedRouteCombo === name)
             setSelectedRouteCombo("");
     }, [setSortPrefs, selectedRouteCombo]);
+    const renameRoutePreset = useCallback((oldName, newName) => {
+        const n = (newName || "").trim();
+        if (!n || n === oldName)
+            return;
+        setSortPrefs(prev => {
+            const rp = { ...(prev.routePresets || {}) };
+            if (!rp[oldName] || rp[n])
+                return prev;
+            rp[n] = rp[oldName];
+            delete rp[oldName];
+            const next = { ...prev, routePresets: rp };
+            // carry the rename into a custom sort order if one exists
+            if (prev.routes && Array.isArray(prev.routes.order)) {
+                next.routes = { ...prev.routes, order: prev.routes.order.map(x => x === oldName ? n : x) };
+            }
+            return next;
+        });
+        setSelectedRouteCombo(sel => sel === oldName ? n : sel);
+    }, [setSortPrefs]);
     const renameBlitzPreset = useCallback((oldName, newName) => {
         const trimmed = (newName || "").trim();
         if (!trimmed || trimmed === oldName)
@@ -7010,14 +7138,16 @@ function PlaybookApp() {
         const trimmed = (name || "").trim();
         if (!trimmed)
             return;
-        // Capture any offensive BLOCKING the line is showing on the field so a
-        // scheme can carry the protection alongside (or instead of) a coverage +
-        // blitz. Stored relative to the offensive center / LOS the same way a
-        // route combo is, so it re-anchors onto whatever line it's applied to.
+        // Capture any offensive BLOCKING and RUN action the line / backfield is
+        // showing on the field so a scheme can carry the protection + run path
+        // alongside (or instead of) a coverage + blitz. Stored relative to the
+        // offensive center / LOS the same way a route combo is, so it re-anchors
+        // onto whatever line it's applied to.
         const cx = offenseCenterX(players);
         const blocking = [];
+        const run = [];
         routes.forEach(r => {
-            if (r.rtype !== "blocking" || !r.points || r.points.length < 2)
+            if ((r.rtype !== "blocking" && r.rtype !== "run") || !r.points || r.points.length < 2)
                 return;
             let owner = r.ownerId ? players.find(p => p.id === r.ownerId) : null;
             if (!owner) {
@@ -7035,14 +7165,14 @@ function PlaybookApp() {
             if ((owner.ptype || "offense") !== "offense")
                 return;
             const ox = owner.x, oy = owner.y;
-            const e = { label: owner.label || "", role: owner.role || "", relX: ox - cx, relY: oy - losY, rtype: "blocking", offsets: r.points.map(pt => ({ dx: pt.x - ox, dy: pt.y - oy })) };
+            const e = { label: owner.label || "", role: owner.role || "", relX: ox - cx, relY: oy - losY, rtype: r.rtype, offsets: r.points.map(pt => ({ dx: pt.x - ox, dy: pt.y - oy })) };
             if (r.color)
                 e.color = r.color;
-            blocking.push(e);
+            (r.rtype === "run" ? run : blocking).push(e);
         });
         setSchemePresets(prev => ({
             ...prev,
-            [trimmed]: { coverage: selectedCoverage || null, blitz: selectedBlitz || null, ...(blocking.length ? { blocking } : {}) },
+            [trimmed]: { coverage: selectedCoverage || null, blitz: selectedBlitz || null, ...(blocking.length ? { blocking } : {}), ...(run.length ? { run } : {}) },
         }));
         setSelectedScheme(trimmed);
     }, [selectedCoverage, selectedBlitz, players, routes, losY, offenseCenterX, setSchemePresets]);
@@ -7058,44 +7188,54 @@ function PlaybookApp() {
         if (preset.blitz && blitzPresets[preset.blitz]) {
             applyBlitz(preset.blitz);
         }
-        // Re-apply any saved offensive BLOCKING, matching saved linemen to the
-        // current line by label, then role, then nearest by relative alignment —
-        // the same way a route combo re-anchors. Replaces blocking already on the
-        // field; leaves every other route (and the blitz/coverage just applied)
-        // untouched.
-        if (Array.isArray(preset.blocking) && preset.blocking.length) {
+        // Re-apply any saved offensive BLOCKING and RUN action, matching saved
+        // players to the current personnel by label, then role, then nearest by
+        // relative alignment — the same way a route combo re-anchors. Only the
+        // route types the scheme actually carries get replaced (so an old
+        // blocking-only scheme still leaves your run action alone, and vice-versa);
+        // every other route plus the blitz/coverage just applied is untouched.
+        const hasBlk = Array.isArray(preset.blocking) && preset.blocking.length;
+        const hasRun = Array.isArray(preset.run) && preset.run.length;
+        if (hasBlk || hasRun) {
             const cx = offenseCenterX(players);
             const used = new Set();
             const built = [];
-            preset.blocking.forEach(pr => {
-                let owner = pr.label ? players.find(p => p.ptype === "offense" && !used.has(p.id) && p.label === pr.label) : null;
-                if (!owner && pr.role)
-                    owner = players.find(p => p.ptype === "offense" && !used.has(p.id) && p.role === pr.role);
-                if (!owner) {
-                    let bd = Infinity;
-                    for (const pl of players) {
-                        if (pl.ptype !== "offense" || used.has(pl.id))
-                            continue;
-                        const d = Math.abs((pl.x - cx) - (pr.relX || 0));
-                        if (d < bd) {
-                            bd = d;
-                            owner = pl;
+            const restore = (list, rtype) => {
+                (list || []).forEach(pr => {
+                    let owner = pr.label ? players.find(p => p.ptype === "offense" && !used.has(p.id) && p.label === pr.label) : null;
+                    if (!owner && pr.role)
+                        owner = players.find(p => p.ptype === "offense" && !used.has(p.id) && p.role === pr.role);
+                    if (!owner) {
+                        let bd = Infinity;
+                        for (const pl of players) {
+                            if (pl.ptype !== "offense" || used.has(pl.id))
+                                continue;
+                            const d = Math.abs((pl.x - cx) - (pr.relX || 0));
+                            if (d < bd) {
+                                bd = d;
+                                owner = pl;
+                            }
                         }
                     }
-                }
-                if (!owner)
-                    return;
-                used.add(owner.id);
-                const pts = (pr.offsets || []).map(o => ({ x: owner.x + (o.dx || 0), y: owner.y + (o.dy || 0) }));
-                if (pts.length < 2)
-                    return;
-                const nr = { id: uid(), points: pts, rtype: "blocking", ownerId: owner.id };
-                if (pr.color)
-                    nr.color = pr.color;
-                built.push(nr);
-            });
+                    if (!owner)
+                        return;
+                    used.add(owner.id);
+                    const pts = (pr.offsets || []).map(o => ({ x: owner.x + (o.dx || 0), y: owner.y + (o.dy || 0) }));
+                    if (pts.length < 2)
+                        return;
+                    const nr = { id: uid(), points: pts, rtype, ownerId: owner.id };
+                    if (pr.color)
+                        nr.color = pr.color;
+                    built.push(nr);
+                });
+            };
+            restore(preset.blocking, "blocking");
+            restore(preset.run, "run");
             if (built.length)
-                setRoutes(prev => [...prev.filter(r => r.rtype !== "blocking"), ...built]);
+                setRoutes(prev => [
+                    ...prev.filter(r => (hasBlk && r.rtype === "blocking") ? false : (hasRun && r.rtype === "run") ? false : true),
+                    ...built,
+                ]);
         }
         setSelectedScheme(name);
     }, [schemePresets, coveragePresets, blitzPresets, applyCoverage, applyBlitz, players, offenseCenterX]);
@@ -7418,16 +7558,10 @@ function PlaybookApp() {
         // first-point proximity (an option's first point sits on the parent
         // route, not on a player).
         const routeByPlayer = new Map();
-        // ownerId is trusted only if the named owner is actually NEAR the
-        // route's first point. Otherwise the ownerId is stale (route drawn
-        // for someone who was at points[0] originally, but the player has
-        // since moved, OR the route was tagged to a player who got selected
-        // by accident at draw time). Falling back to proximity in those
-        // cases prevents a far-away player from being yanked into animating
-        // a route whose start is nowhere near them — the bug where T was
-        // pinned by B's motion because the motion had ownerId=T even though
-        // its first point sat on B.
-        const OWNER_ID_MAX_DIST = 35;
+        // Routes are assigned to players by their explicit ownerId (set when the
+        // route is drawn). The ownerId is authoritative — see the per-route note
+        // below — so a route, including a pre-snap motion, always animates the
+        // exact player it belongs to and never the bystander nearest its start.
         const isBlitzRoute = (rt) => rt === "showBlitz" || rt === "hideBlitz";
         primaries.forEach(r => {
             if (!r.points || r.points.length < 2)
@@ -7436,27 +7570,20 @@ function PlaybookApp() {
             const p0 = r.points[0];
             const pLast = r.points[r.points.length - 1];
             const blitz = isBlitzRoute(r.rtype);
+            // Trust the explicit owner, full stop. A route belongs to the player it
+            // was drawn for (its ownerId), and routes travel WITH that player, so the
+            // ownerId stays valid even when the player lines up right on top of
+            // another. Assigning strictly by ownerId — never by proximity once an
+            // owner is set — guarantees a route pulls ONLY its own player and can
+            // never scoop up, freeze, or steal the movement of a bystander who lines
+            // up nearby. (Blitz routes already worked this way; every route type now
+            // follows the same rule.) If the owner was deleted, candidate is null and
+            // we fall through to the proximity fallback, which otherwise serves only
+            // legacy routes that carry no ownerId at all.
             if (r.ownerId) {
                 const candidate = players.find(p => p.id === r.ownerId);
-                if (candidate) {
-                    // A blitz route's ownerId is authoritative — it's set by label match
-                    // when a blitz preset is applied, or by clicking the defender when
-                    // it's drawn. Trust it even if the arrow's START sits off the
-                    // defender's body, which is common: a blitz is often drawn from a
-                    // mugged/gap spot, leaving points[0] well away from where the
-                    // defender lines up. (That offset was orphaning a blitzer like the
-                    // T and freezing him at the snap.) For every OTHER route type we
-                    // keep the distance gate, which guards against a stale ownerId
-                    // pulling the wrong player in — e.g. a mis-tagged pre-snap motion.
-                    if (blitz) {
-                        owner = candidate;
-                    }
-                    else {
-                        const dx = candidate.x - p0.x, dy = candidate.y - p0.y;
-                        if (Math.sqrt(dx * dx + dy * dy) < OWNER_ID_MAX_DIST)
-                            owner = candidate;
-                    }
-                }
+                if (candidate)
+                    owner = candidate;
             }
             if (!owner) {
                 let best = null, bestD = Infinity;
@@ -7520,11 +7647,11 @@ function PlaybookApp() {
             // though that start point is across the formation from them.
             if (r.ownerId) {
                 const candidate = players.find(p => p.id === r.ownerId);
-                if (candidate) {
-                    const dx = candidate.x - p0.x, dy = candidate.y - p0.y;
-                    if (Math.sqrt(dx * dx + dy * dy) < OWNER_ID_MAX_DIST)
-                        owner = candidate;
-                }
+                // Trust the explicit owner (same rule as the main route map above): a
+                // pre-snap motion pulls ONLY the player it's attached to, regardless of
+                // how close another player lines up, and never claims a bystander.
+                if (candidate)
+                    owner = candidate;
             }
             if (!owner) {
                 let best = null, bestD = Infinity;
@@ -8396,6 +8523,13 @@ function PlaybookApp() {
         if (found.length === 0)
             return;
         const i = Math.max(0, Math.min(found.length - 1, runStepIdx));
+        // Stop any running animation before swapping plays. A LOOP never ends on
+        // its own, so without this the rAF tick keeps running against the PREVIOUS
+        // play's animation plan — the freshly-loaded play then sits frozen, and
+        // PLAY IN ACTION won't restart it (it early-returns while "playing"). Pass
+        // reset=false since loadPlay overwrites the positions immediately anyway.
+        if (playingAnimRef.current)
+            stopAnim(false);
         loadPlay(found[i]);
         // We intentionally only re-run when the IDs/index change. Including
         // scripts/installs/plays in deps would re-fire on every library edit
@@ -8930,15 +9064,18 @@ function PlaybookApp() {
                             ctx.globalAlpha = 1;
                             ctx.setLineDash([]);
                         }
+                        ctx.globalAlpha = 0.3;
                         ctx.fillStyle = col;
-                        ctx.strokeStyle = "#0a0a14";
-                        ctx.lineWidth = Math.max(1, s * 1.2);
                         ctx.beginPath();
-                        ctx.arc(bx, by, 10 * s, 0, Math.PI * 2);
+                        ctx.arc(bx, by, 6.5 * s, 0, Math.PI * 2);
                         ctx.fill();
+                        ctx.globalAlpha = 0.9;
+                        ctx.strokeStyle = col;
+                        ctx.lineWidth = Math.max(1, s * 1.1);
                         ctx.stroke();
-                        ctx.fillStyle = "#0a0a14";
-                        ctx.font = "bold " + Math.round(11 * s) + "px 'Bebas Neue', 'Arial Black', sans-serif";
+                        ctx.globalAlpha = 1;
+                        ctx.fillStyle = col;
+                        ctx.font = "bold " + Math.round(8.5 * s) + "px 'Bebas Neue', 'Arial Black', sans-serif";
                         ctx.textAlign = "center";
                         ctx.textBaseline = "middle";
                         ctx.fillText(String(r.order), bx, by);
@@ -9202,18 +9339,38 @@ function PlaybookApp() {
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [alignMode, exitAlign]);
-    // Practice-script RUN-MODE keyboard nav: → / Space / n = next, ← / p = prev, Esc = exit.
-    // Counts valid (still-existing) plays in the active script so NEXT clamps correctly
-    // even if a referenced play was deleted from the playbook.
+    // RUN-MODE keyboard nav (practice scripts AND installs):
+    //   Space = PLAY IN ACTION (start/stop the current play),
+    //   → / n = next play, ← / p = prev play, Esc = exit.
+    // Counts valid (still-existing) plays so next/prev clamp correctly even if a
+    // referenced play was deleted from the playbook.
     useEffect(() => {
-        if (!runningScriptId)
+        if (!runningScriptId && !runningInstallId)
             return;
-        const s = scripts.find(sc => sc.id === runningScriptId);
-        if (!s)
-            return;
-        const flatCount = s.periods.reduce((n, per) => n + per.playIds.filter(pid => plays.find(p => p.id === pid)).length, 0);
+        let flatCount = 0;
+        if (runningScriptId) {
+            const s = scripts.find(sc => sc.id === runningScriptId);
+            if (!s)
+                return;
+            flatCount = s.periods.reduce((n, per) => n + per.playIds.filter(pid => plays.find(p => p.id === pid)).length, 0);
+        }
+        else {
+            const inst = installs.find(i => i.id === runningInstallId);
+            if (!inst)
+                return;
+            flatCount = inst.playIds.filter(pid => plays.find(p => p.id === pid)).length;
+        }
         const onKey = (e) => {
-            if (e.key === "ArrowRight" || e.key === " " || e.key === "n" || e.key === "N") {
+            const el = document.activeElement;
+            const tag = el && el.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el && el.isContentEditable))
+                return;
+            if (e.key === " " || e.code === "Space") {
+                e.preventDefault();
+                if (startAnimRef.current)
+                    startAnimRef.current(); // PLAY IN ACTION on the current run play
+            }
+            else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
                 e.preventDefault();
                 setRunStepIdx(i => Math.min(flatCount - 1, i + 1));
             }
@@ -9223,11 +9380,38 @@ function PlaybookApp() {
             }
             else if (e.key === "Escape") {
                 setRunningScriptId(null);
+                setRunningInstallId(null);
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [runningScriptId, scripts, plays]);
+    }, [runningScriptId, runningInstallId, scripts, installs, plays]);
+    // Spacebar = PLAY IN ACTION while editing (start/stop), matching the toolbar
+    // button. Ignored while typing in a field, while any standard modal is open
+    // (detected via the .mover overlay class, which covers HUDL, scripts,
+    // installs, print, save/edit, backup-restore, etc.), and during 3D / help /
+    // align / video export. Run-mode has its own Space handler above.
+    useEffect(() => {
+        if (runningScriptId || runningInstallId)
+            return;
+        const onKey = (e) => {
+            if (e.key !== " " && e.code !== "Space")
+                return;
+            const el = document.activeElement;
+            const tag = el && el.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el && el.isContentEditable))
+                return;
+            if (typeof document !== "undefined" && document.querySelector(".mover"))
+                return; // a modal dialog is open
+            if (show3D || showHelp || alignMode || exportingVideo)
+                return;
+            e.preventDefault();
+            if (startAnimRef.current)
+                startAnimRef.current();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [runningScriptId, runningInstallId, show3D, showHelp, alignMode, exportingVideo]);
     // Duplicate a play (deep copy: players, routes, zones, ball, LOS), then open it for renaming.
     const duplicatePlay = useCallback((play) => {
         const copy = JSON.parse(JSON.stringify(play));
@@ -9618,6 +9802,35 @@ function PlaybookApp() {
             delete tabSets[name];
             return { ...prev, customPersonnel: { ...cp, [tab]: (cp[tab] || []).filter(x => x !== name) }, personnelSets: { ...ps, [tab]: tabSets } };
         });
+    };
+    const renamePersonnelGroup = (oldName, newName) => {
+        const n = (newName || "").trim();
+        if (!n || n === oldName)
+            return;
+        setSortPrefs(prev => {
+            const cp = prev.customPersonnel || {};
+            const arr = cp[tab] || [];
+            if (!arr.includes(oldName) || arr.includes(n))
+                return prev;
+            const ps = prev.personnelSets || {};
+            const tabSets = { ...(ps[tab] || {}) };
+            if (tabSets[oldName] !== undefined) {
+                tabSets[n] = tabSets[oldName];
+                delete tabSets[oldName];
+            }
+            const next = {
+                ...prev,
+                customPersonnel: { ...cp, [tab]: arr.map(x => x === oldName ? n : x) },
+                personnelSets: { ...ps, [tab]: tabSets },
+            };
+            // carry the rename into the per-tab custom sort order if one exists
+            if (prev.personnel && prev.personnel.order && Array.isArray(prev.personnel.order[tab])) {
+                next.personnel = { ...prev.personnel, order: { ...prev.personnel.order, [tab]: prev.personnel.order[tab].map(x => x === oldName ? n : x) } };
+            }
+            return next;
+        });
+        if (personnel === oldName)
+            setPersonnel(n);
     };
     // Stamp a saved look (numbers/letters/colors) onto the current players by
     // position slot (origId). Positions are untouched. Like loading a formation,
@@ -10206,7 +10419,7 @@ function PlaybookApp() {
                                 const q = personnelQuery.trim().toLowerCase();
                                 const all = PERSONNEL_OPTIONS[tab] || [];
                                 const builtins = all.filter(o => !q || o.toLowerCase().includes(q));
-                                const customs = personnelCustomList.filter(o => !q || o.toLowerCase().includes(q));
+                                const customs = orderedNames(personnelCustomList, catSortPref("personnel")).filter(o => !q || o.toLowerCase().includes(q));
                                 const exact = all.some(o => o.toLowerCase() === q) || personnelCustomList.some(o => o.toLowerCase() === q);
                                 const pick = (o) => selectPersonnel(o);
                                 return (React.createElement("div", { style: { position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 50, minWidth: 176, maxHeight: 300, overflowY: "auto", background: "#15151f", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 8, boxShadow: "0 12px 32px rgba(0,0,0,0.55)", padding: 4 } },
@@ -10233,7 +10446,10 @@ function PlaybookApp() {
                                     setPersonnelQuery("");
                                 }
                             }, title: "Save the players' current numbers, letters & colors under this personnel \u2014 like saving a formation, but looks only (positions stay put). Pick or type a name first.", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
-                        personnelCustomList.length > 0 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("personnel"), title: "Manage custom personnel \u2014 search and delete groupings", style: { padding: "7px 9px" } }, "\uD83D\uDDD1")),
+                        personnelCustomList.length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("personnel"), title: "Reorder or delete your custom personnel (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
+                        personnel && personnelCustomList.includes(personnel) && (React.createElement(React.Fragment, null,
+                            React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "personnel", mode: "rename", original: personnel, value: personnel }), title: "Rename this custom personnel", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
+                            React.createElement("button", { className: "sbtn dim", onClick: () => { const nm = personnel; deletePersonnelGroup(nm); setPersonnel(""); }, title: "Delete this custom personnel", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         Object.keys(customForms[tab] || {}).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("formations"), title: "Reorder or delete your custom formations", style: { padding: "7px 9px" } }, "\u21C5")),
                         ((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]) && (React.createElement(React.Fragment, null,
                             !((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation]) && (React.createElement("button", { className: "sbtn dim", onClick: openEditFormation, title: "Edit this custom formation (rename or update layout)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270F")),
@@ -10268,12 +10484,13 @@ function PlaybookApp() {
                                         else
                                             setPendingCaptureRoute(true);
                                     }, title: "Save one route as a single you can drop on anyone \u2014 tap \u21B1+ then tap the player whose route you want (or select a player first)", style: { padding: "7px 9px", color: "#7dd3fc", borderColor: "rgba(56,189,248,0.4)" } }, "\u21B1+")),
-                                selIsCombo && (React.createElement(React.Fragment, null,
-                                    React.createElement("button", { className: "sbtn dim", onClick: () => {
+                                selectedRouteCombo && routePresets[selectedRouteCombo] && (React.createElement(React.Fragment, null,
+                                    React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: selIsCombo ? "routeCombo" : "routeSingle", mode: "rename", original: selectedRouteCombo, value: selectedRouteCombo }), title: "Rename this saved route", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
+                                    selIsCombo && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                             setDupSel(new Set([...Object.keys(FORMATIONS[tab] || {}), ...Object.keys(customForms[tab] || {})]));
                                             setRouteDupConfirm(selectedRouteCombo);
-                                        }, title: "Copy this combination onto the formations you pick \u2014 one saved combo per formation, named by formation.", style: { padding: "7px 9px", color: "#a5b4fc", borderColor: "rgba(99,102,241,0.45)" } }, "\uD83D\uDDC2"),
-                                    React.createElement("button", { className: "sbtn dim", onClick: () => deleteRoutePreset(selectedRouteCombo), title: "Delete this saved combination", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1")))));
+                                        }, title: "Copy this combination onto the formations you pick \u2014 one saved combo per formation, named by formation.", style: { padding: "7px 9px", color: "#a5b4fc", borderColor: "rgba(99,102,241,0.45)" } }, "\uD83D\uDDC2")),
+                                    React.createElement("button", { className: "sbtn dim", onClick: () => deleteRoutePreset(selectedRouteCombo), title: "Delete this saved route", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1")))));
                         })(),
                         React.createElement(SearchSelect, { value: selectedCoverage, width: 140, placeholder: "Coverage\u2026", title: "Coverage scheme \u2014 type to search", clearable: true, clearLabel: "NO COVERAGE", options: orderedNames(Object.keys(coveragePresets), catSortPref("coverages")).map(n => ({ value: n, label: n })), onPick: n => { if (n)
                                 applyCoverage(n);
@@ -10329,23 +10546,25 @@ function PlaybookApp() {
                                 }, title: "Duplicate this blitz for the formations you pick \u2014 one saved blitz per formation, named with the formation first and the blitz name at the end.", style: { padding: "7px 9px", color: "#a5b4fc", borderColor: "rgba(99,102,241,0.45)" } }, "\uD83D\uDDC2"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "blitz", mode: "rename", original: selectedBlitz, value: selectedBlitz, replaceLayout: false }), title: "Edit this blitz preset (rename or replace its routes)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetDeleteConfirm({ target: "blitz", name: selectedBlitz }), title: "Delete this blitz preset", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
-                        React.createElement(SearchSelect, { value: selectedScheme, width: 150, placeholder: "Scheme\u2026", borderColor: "rgba(168,85,247,0.35)", clearable: true, clearLabel: "NO SCHEME", title: "Scheme = coverage + blitz + blocking \u2014 type to search (matches the coverage/blitz names too)", options: orderedNames(Object.keys(schemePresets), catSortPref("schemes")).map(n => { const s = schemePresets[n]; const parts = []; if (s && s.coverage)
+                        React.createElement(SearchSelect, { value: selectedScheme, width: 150, placeholder: "Scheme\u2026", borderColor: "rgba(168,85,247,0.35)", clearable: true, clearLabel: "NO SCHEME", title: "Scheme = coverage + blitz + blocking + run \u2014 type to search (matches the coverage/blitz names too)", options: orderedNames(Object.keys(schemePresets), catSortPref("schemes")).map(n => { const s = schemePresets[n]; const parts = []; if (s && s.coverage)
                                 parts.push(`C:${s.coverage}`); if (s && s.blitz)
                                 parts.push(`B:${s.blitz}`); if (s && s.blocking && s.blocking.length)
-                                parts.push("BLK"); return { value: n, label: parts.length ? `${n} (${parts.join(" · ")})` : n }; }), onPick: n => { if (n)
+                                parts.push("BLK"); if (s && s.run && s.run.length)
+                                parts.push("RUN"); return { value: n, label: parts.length ? `${n} (${parts.join(" · ")})` : n }; }), onPick: n => { if (n)
                                 applyScheme(n);
                             else
                                 setSelectedScheme(""); } }),
                         React.createElement("button", { className: "sbtn dim", onClick: () => {
                                 const hasBlocking = routes.some(r => r.rtype === "blocking");
-                                if (!selectedCoverage && !selectedBlitz && !hasBlocking) {
-                                    alert("Pick a coverage and/or a blitz — or draw some blocking — first, then save it as a scheme.");
+                                const hasRun = routes.some(r => r.rtype === "run");
+                                if (!selectedCoverage && !selectedBlitz && !hasBlocking && !hasRun) {
+                                    alert("Pick a coverage and/or a blitz — or draw some blocking or run action — first, then save it as a scheme.");
                                     return;
                                 }
                                 const base = (selectedScheme && schemePresets[selectedScheme]) ? selectedScheme : `Scheme ${Object.keys(schemePresets).length + 1}`;
                                 const suggested = uniqueVariantName(base, Object.keys(schemePresets));
                                 setPresetNameEditor({ target: "scheme", mode: "save", value: suggested });
-                            }, title: "Save the current coverage + blitz + any blocking as a single scheme", style: { padding: "7px 9px", color: "#c4b5fd", borderColor: "rgba(168,85,247,0.3)" } }, "\uD83D\uDCBE"),
+                            }, title: "Save the current coverage + blitz + any blocking or run action as a single scheme", style: { padding: "7px 9px", color: "#c4b5fd", borderColor: "rgba(168,85,247,0.3)" } }, "\uD83D\uDCBE"),
                         Object.keys(schemePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("schemes"), title: "Reorder or delete schemes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px", borderColor: "rgba(168,85,247,0.3)" } }, "\u21C5")),
                         selectedScheme && schemePresets[selectedScheme] && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "scheme", mode: "rename", original: selectedScheme, value: selectedScheme, replaceLayout: false }), title: "Rename this scheme preset", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
@@ -10517,8 +10736,9 @@ function PlaybookApp() {
                                                     const col = ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff";
                                                     return (React.createElement("g", { key: route.id + "-order" },
                                                         moved && (React.createElement("line", { x1: bx, y1: by, x2: start.x, y2: start.y, stroke: col, strokeWidth: 1.2, strokeDasharray: "3,2", opacity: 0.7, style: { pointerEvents: "none" } })),
-                                                        React.createElement("circle", { cx: bx, cy: by, r: 10, fill: col, stroke: "#0a0a14", strokeWidth: 1.5, onMouseDown: (e) => startOrderDrag(e, route.id), onTouchStart: (e) => startOrderDrag(e, route.id), style: { cursor: "move", touchAction: "none" } }),
-                                                        React.createElement("text", { x: bx, y: by, dy: "0.36em", textAnchor: "middle", fill: "#0a0a14", fontSize: "11", fontWeight: "bold", style: { pointerEvents: "none", fontFamily: "'Bebas Neue',sans-serif", userSelect: "none" } }, route.order)));
+                                                        React.createElement("circle", { cx: bx, cy: by, r: 11, fill: "transparent", onMouseDown: (e) => startOrderDrag(e, route.id), onTouchStart: (e) => startOrderDrag(e, route.id), style: { cursor: "move", touchAction: "none" } }),
+                                                        React.createElement("circle", { cx: bx, cy: by, r: 6.5, fill: col, fillOpacity: 0.3, stroke: col, strokeOpacity: 0.9, strokeWidth: 1.2, style: { pointerEvents: "none" } }),
+                                                        React.createElement("text", { x: bx, y: by, dy: "0.34em", textAnchor: "middle", fill: col, fontSize: "8.5", fontWeight: "bold", style: { pointerEvents: "none", fontFamily: "'Bebas Neue',sans-serif", userSelect: "none" } }, route.order)));
                                                 })()));
                                         });
                                     })(),
@@ -11018,6 +11238,15 @@ function PlaybookApp() {
                                     boxShadow: "0 2px 14px rgba(0,0,0,0.4)" } },
                                 React.createElement("span", { style: { fontSize: 11 } }, "\u25AD"),
                                 "ALIGN"),
+                            React.createElement("button", { onClick: levelRoutes, title: "Snap each route's depth onto the nearest yard line \u2014 routes drawn at the same depth land on the exact same level. Each route scales from its player anchor (the player doesn't move). Undoable.", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 8, cursor: "pointer",
+                                    border: "1px solid rgba(74,222,128,0.5)",
+                                    background: "rgba(74,222,128,0.12)",
+                                    color: "#86efac",
+                                    fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
+                                    backdropFilter: "blur(8px)",
+                                    boxShadow: "0 2px 14px rgba(0,0,0,0.4)" } },
+                                React.createElement("span", { style: { fontSize: 11 } }, "\u2195"),
+                                "LEVEL RTS"),
                             React.createElement("button", { onClick: () => setShowOlLines(v => !v), title: showOlLines ? "Hide offensive line alignment lines" : "Show a vertical line through each offensive lineman as a defensive teaching aid", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 8, cursor: "pointer",
                                     border: `1px solid ${showOlLines ? "rgba(167,139,250,0.6)" : "rgba(255,255,255,0.16)"}`,
                                     background: showOlLines ? "rgba(167,139,250,0.18)" : "rgba(10,10,18,0.7)",
@@ -11061,7 +11290,7 @@ function PlaybookApp() {
                                 const hasAttachedZone = coverages.some(c => c.ctype === "zone" && c.attachedTo);
                                 const canPlay = routes.length > 0 || hasAttachedZone;
                                 return (React.createElement(React.Fragment, null,
-                                    React.createElement("button", { onClick: () => startAnim(), disabled: !canPlay, title: !canPlay ? "Draw a route or attach a zone to a player to animate the play" : "Play the action: routes run, then anyone with an attached zone drops into the zone center", style: { display: "flex", alignItems: "center", gap: 7, padding: "7px 12px", borderRadius: 8, cursor: canPlay ? "pointer" : "not-allowed",
+                                    React.createElement("button", { onClick: () => startAnim(), disabled: !canPlay, title: !canPlay ? "Draw a route or attach a zone to a player to animate the play" : "Play the action (Spacebar): routes run, then anyone with an attached zone drops into the zone center", style: { display: "flex", alignItems: "center", gap: 7, padding: "7px 12px", borderRadius: 8, cursor: canPlay ? "pointer" : "not-allowed",
                                             border: `1px solid ${canPlay ? "rgba(74,222,128,0.55)" : "rgba(255,255,255,0.12)"}`,
                                             background: canPlay ? "rgba(74,222,128,0.16)" : "rgba(10,10,18,0.5)",
                                             color: canPlay ? "#86efac" : "rgba(255,255,255,0.35)",
@@ -11111,6 +11340,28 @@ function PlaybookApp() {
                                 return null;
                             const ZONE_COLORS = ["#38bdf8", "#f59e0b", "#a855f7", "#22c55e", "#ef4444"];
                             const attP = z.attachedTo ? players.find(p => p.id === z.attachedTo) : null;
+                            // Spread this zone evenly across the full field width into `count`
+                            // equal columns, all at the SAME level (same y) and depth (same h)
+                            // as the original, sharing its shape/color/label. The original is
+                            // reused as the first column (keeps it selected); the rest are new
+                            // standalone field zones. 3 = thirds, 4 = fourths, 5 = fifths.
+                            const spreadZoneAcross = (count) => {
+                                const colW = FW / count;
+                                pushUndo();
+                                setCoverages(prev => {
+                                    const others = prev.filter(c => c.id !== z.id);
+                                    const made = [];
+                                    for (let i = 0; i < count; i++) {
+                                        const nz = { id: i === 0 ? z.id : uid(), ctype: "zone", shape: z.shape || "ellipse", x: i * colW, y: z.y, w: colW, h: z.h, color: z.color, label: z.label || "" };
+                                        if (z.rules && z.rules.length)
+                                            nz.rules = JSON.parse(JSON.stringify(z.rules));
+                                        made.push(nz);
+                                    }
+                                    return [...others, ...made];
+                                });
+                                setSelectedZoneId(z.id);
+                                setEditingZoneId(null);
+                            };
                             return (React.createElement("div", { ref: editZoneRef, style: { position: "absolute",
                                     ...(editZonePos ? { left: editZonePos.x, top: editZonePos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
                                     background: "rgba(10,10,18,0.94)", border: `1px solid ${z.color}aa`, padding: "7px 11px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 6, display: "flex", alignItems: "center", gap: 9, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", flexWrap: "wrap", maxWidth: "94%" } },
@@ -11163,6 +11414,11 @@ function PlaybookApp() {
                                         setSelectedZoneId(copy.id);
                                         setEditingZoneId(null);
                                     }, title: "Make a copy of this zone (same shape, color, label)", style: { padding: "3px 9px", borderRadius: 5, cursor: "pointer", border: "1px solid rgba(34,211,238,0.5)", background: "rgba(34,211,238,0.12)", color: "#67e8f9", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em" } }, "\u29C9 DUPLICATE"),
+                                !z.attachedTo && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
+                                    React.createElement("span", { style: { color: "rgba(255,255,255,0.45)", fontSize: 9, letterSpacing: "0.06em" } }, "SPREAD"),
+                                    [[2, "thirds", 3], [3, "fourths", 4], [4, "fifths", 5]].map(([mult, word, count]) => (React.createElement("button", { key: mult, onClick: () => spreadZoneAcross(count), title: `Spread this zone evenly across the field into ${word}, all at the same level — ${count} zones total (${mult}× more copies)`, style: { padding: "3px 8px", borderRadius: 5, cursor: "pointer", border: `1px solid ${z.color}77`, background: z.color + "18", color: z.color, fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.06em" } },
+                                        mult,
+                                        "\u00D7"))))),
                                 React.createElement("button", { onClick: () => { setCoverages(prev => prev.filter(c => c.id !== z.id)); setSelectedZoneId(null); setEditingZoneId(null); }, style: { padding: "3px 9px", borderRadius: 5, cursor: "pointer", border: "1px solid rgba(239,68,68,0.6)", background: "rgba(239,68,68,0.14)", color: "#f87171", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em" } }, "DELETE"),
                                 React.createElement("button", { onClick: () => { setSelectedZoneId(null); setEditingZoneId(null); }, style: { padding: "3px 8px", borderRadius: 5, cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "DONE")));
                         })(),
@@ -12864,11 +13120,13 @@ function PlaybookApp() {
                     : ed.target === "scheme" ? "Scheme"
                         : ed.target === "routeCombo" ? "Combination"
                             : ed.target === "routeSingle" ? "Single route"
-                                : "Blitz";
+                                : ed.target === "personnel" ? "Personnel"
+                                    : "Blitz";
                 const presets = ed.target === "coverage" ? coveragePresets
                     : ed.target === "scheme" ? schemePresets
                         : (ed.target === "routeCombo" || ed.target === "routeSingle") ? routePresets
-                            : blitzPresets;
+                            : ed.target === "personnel" ? Object.fromEntries(personnelCustomList.map(nm => [nm, 1]))
+                                : blitzPresets;
                 const trimmed = (ed.value || "").trim();
                 const isCollision = !!presets[trimmed] && (isSave ? true : trimmed !== ed.original);
                 const nameChanged = trimmed !== (ed.original || "");
@@ -12921,6 +13179,10 @@ function PlaybookApp() {
                             renameCoveragePreset(ed.original, trimmed);
                         else if (ed.target === "scheme")
                             renameSchemePreset(ed.original, trimmed);
+                        else if (ed.target === "routeCombo" || ed.target === "routeSingle")
+                            renameRoutePreset(ed.original, trimmed);
+                        else if (ed.target === "personnel")
+                            renamePersonnelGroup(ed.original, trimmed);
                         else
                             renameBlitzPreset(ed.original, trimmed);
                     }
@@ -12930,12 +13192,14 @@ function PlaybookApp() {
                     : ed.target === "scheme" ? "Cover 3 Mike Blitz, Quarters Edge Pressure"
                         : ed.target === "routeCombo" ? "Smash, Mesh, Four Verts, Flood"
                             : ed.target === "routeSingle" ? "Go, Post, Dig, Out, Slant"
-                                : "DT A-Gap, MLB Mike, Cross Dog";
+                                : ed.target === "personnel" ? "11 Personnel, Trips, Empty"
+                                    : "DT A-Gap, MLB Mike, Cross Dog";
                 const subjectHint = ed.target === "coverage" ? "zones"
                     : ed.target === "scheme" ? "coverage + blitz combo"
                         : ed.target === "routeCombo" ? "offensive routes"
                             : ed.target === "routeSingle" ? "single route"
-                                : "defensive routes";
+                                : ed.target === "personnel" ? "personnel grouping"
+                                    : "defensive routes";
                 const layoutSubject = ed.target === "coverage" ? "zones" : "blitz routes";
                 const titleAction = isSave ? "SAVE" : "EDIT";
                 const submitLabel = isSave
@@ -13259,8 +13523,8 @@ function PlaybookApp() {
                                             const moved = (r.orderOffX || 0) !== 0 || (r.orderOffY || 0) !== 0;
                                             return (React.createElement("g", null,
                                                 moved && React.createElement("line", { x1: bx, y1: by, x2: start.x, y2: start.y, stroke: col, strokeWidth: 1.2, strokeDasharray: "3,2", opacity: 0.7 }),
-                                                React.createElement("circle", { cx: bx, cy: by, r: 10, fill: col, stroke: "#0a0a14", strokeWidth: 1.5 }),
-                                                React.createElement("text", { x: bx, y: by, dy: "0.36em", textAnchor: "middle", fill: "#0a0a14", fontSize: "11", fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif" }, r.order)));
+                                                React.createElement("circle", { cx: bx, cy: by, r: 6.5, fill: col, fillOpacity: 0.3, stroke: col, strokeOpacity: 0.9, strokeWidth: 1.2 }),
+                                                React.createElement("text", { x: bx, y: by, dy: "0.34em", textAnchor: "middle", fill: col, fontSize: "8.5", fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif" }, r.order)));
                                         })()));
                                 });
                             })(),
@@ -13317,22 +13581,24 @@ function PlaybookApp() {
                                     React.createElement("line", { x1: bp.x, y1: bp.y - 4, x2: bp.x, y2: bp.y + 4, stroke: "#f5deb3", strokeWidth: "0.8" })));
                             })())),
                     React.createElement("div", { style: { padding: "12px 22px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
-                        React.createElement("button", { onClick: prev, disabled: idx === 0, style: { padding: "9px 22px", borderRadius: 7, cursor: idx === 0 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
+                        React.createElement("button", { onClick: prev, disabled: idx === 0, title: "Previous play  (\u2190  or  P)", style: { padding: "9px 22px", borderRadius: 7, cursor: idx === 0 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${idx === 0 ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.25)"}`,
                                 background: idx === 0 ? "transparent" : "rgba(255,255,255,0.05)",
                                 color: idx === 0 ? "rgba(255,255,255,0.3)" : "#fff",
                                 opacity: idx === 0 ? 0.5 : 1 } }, "\u2039 PREV"),
-                        React.createElement("button", { onClick: runPlayInAction, title: "Open this play in the editor and start the animation", style: { padding: "9px 22px", borderRadius: 7, cursor: "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
+                        React.createElement("button", { onClick: runPlayInAction, title: "Start the animation  (Spacebar)", style: { padding: "9px 22px", borderRadius: 7, cursor: "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: "1px solid rgba(168,85,247,0.65)",
                                 background: "linear-gradient(180deg,rgba(168,85,247,0.32),rgba(168,85,247,0.18))",
-                                color: "#e9d5ff", fontWeight: 600 } }, "\u25B6 PLAY IN ACTION"),
+                                color: "#e9d5ff", fontWeight: 600 } },
+                            "\u25B6 PLAY IN ACTION ",
+                            React.createElement("span", { style: { opacity: 0.55, fontSize: 10, letterSpacing: "0.08em" } }, "SPACE")),
                         React.createElement("button", { onClick: () => setLoopAnim(v => !v), title: loopAnim ? "Repeat is ON — the play replays until you stop it" : "Repeat: loop this play without leaving run mode", style: { padding: "9px 16px", borderRadius: 7, cursor: "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${loopAnim ? "rgba(74,222,128,0.65)" : "rgba(255,255,255,0.18)"}`,
                                 background: loopAnim ? "rgba(74,222,128,0.2)" : "rgba(255,255,255,0.05)",
                                 color: loopAnim ? "#86efac" : "rgba(255,255,255,0.6)", fontWeight: 600 } }, "\uD83D\uDD01 LOOP"),
                         React.createElement("div", { style: { flex: 1, maxWidth: 280, height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, overflow: "hidden", margin: "0 14px" } },
                             React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#22d3ee,#4ade80)", transition: "width 0.2s" } })),
-                        React.createElement("button", { onClick: next, disabled: idx === flat.length - 1, style: { padding: "9px 22px", borderRadius: 7, cursor: idx === flat.length - 1 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
+                        React.createElement("button", { onClick: next, disabled: idx === flat.length - 1, title: "Next play  (\u2192  or  N)", style: { padding: "9px 22px", borderRadius: 7, cursor: idx === flat.length - 1 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${idx === flat.length - 1 ? "rgba(74,222,128,0.25)" : "rgba(74,222,128,0.6)"}`,
                                 background: idx === flat.length - 1 ? "rgba(74,222,128,0.05)" : "rgba(74,222,128,0.18)",
                                 color: idx === flat.length - 1 ? "rgba(134,239,172,0.4)" : "#86efac",
@@ -13643,82 +13909,83 @@ function PlaybookApp() {
                                 }, className: "sbtn grn" }, "+ NEW INSTALL")))));
             })(),
             showHudl && (React.createElement("div", { className: "mover", onClick: () => setShowHudl(false) },
-                React.createElement("div", { className: "mbox", onClick: e => e.stopPropagation() },
-                    React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 } },
+                React.createElement("div", { className: "mbox", onClick: e => e.stopPropagation(), style: { maxHeight: "90vh", display: "flex", flexDirection: "column" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20, flexShrink: 0 } },
                         React.createElement("div", null,
                             React.createElement("div", { className: "hd", style: { fontSize: 24, color: "#fff", letterSpacing: "0.1em" } }, "HUDL INTEGRATION"),
                             React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.35)", marginTop: 3 } }, "Sync your playbook with Hudl.com")),
                         React.createElement("button", { onClick: () => setShowHudl(false), style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 22, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
-                    [
-                        { icon: "📝", title: "Practice Scripts", desc: `${scripts.length} script${scripts.length === 1 ? "" : "s"} · ordered play sequences organized into periods`, color: "#67e8f9", lbl: "OPEN", action: () => { setShowHudl(false); setShowScripts(true); } },
-                        { icon: "📋", title: "Installs", desc: `${installs.length} install${installs.length === 1 ? "" : "s"} · group plays & formations into named packages`, color: "#fbbf24", lbl: "OPEN", action: () => { setShowHudl(false); setShowInstalls(true); } },
-                        { icon: "💾", title: "Backup & Restore MINE", desc: "Copy your MINE library out as text (paste it into a note, text file, or email), then later paste it back to restore. Works regardless of any download/file-picker restrictions in the browser.", color: "#34d399", lbl: "OPEN", action: () => { setShowBackupRestore(true); } },
-                        { icon: "↑", title: "Export Playbook CSV", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} → spreadsheet/Hudl-friendly CSV (play list)`, color: "#4ade80", lbl: "EXPORT CSV", action: () => { exportCSV(); } },
-                        { icon: "⤓", title: "Export Full Playbook (JSON)", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} with all players, routes & coverages — re-importable`, color: "#22d3ee", lbl: "EXPORT JSON", action: () => { exportJSON(); } },
-                        { icon: "🖨", title: "Print / Export PDF", desc: "Print one play or a whole category — choose 'Save as PDF' to export a file", color: "#a78bfa", lbl: "PRINT / PDF", action: () => { setShowHudl(false); setPrintPlayId((currentPlay && currentPlay.id) || (plays[0] && plays[0].id) || null); setShowPrint(true); } },
-                        { icon: "⇗", title: "Open Hudl.com", desc: "Launch your Hudl account in a new tab", color: "#f59e0b", lbl: "OPEN HUDL", action: () => { window.open("https://www.hudl.com", "_blank"); setShowHudl(false); } },
-                    ].map((opt, i) => (React.createElement("div", { key: i, style: { background: "#1a1a28", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "13px 15px", marginBottom: 9, display: "flex", alignItems: "center", gap: 13 } },
-                        React.createElement("div", { style: { width: 38, height: 38, borderRadius: 9, border: `1px solid ${opt.color}40`, background: `${opt.color}12`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: opt.color, flexShrink: 0 } }, opt.icon),
-                        React.createElement("div", { style: { flex: 1 } },
-                            React.createElement("div", { style: { fontWeight: 600, fontSize: 14, color: "#fff" } }, opt.title),
-                            React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 2 } }, opt.desc)),
-                        React.createElement("button", { className: "sbtn", onClick: opt.action, style: { border: `1px solid ${opt.color}50`, background: `${opt.color}12`, color: opt.color, padding: "6px 14px", whiteSpace: "nowrap" } },
-                            React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.1em" } }, opt.lbl))))),
-                    React.createElement("div", { style: { background: "#1a1a28", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "13px 15px", marginBottom: 9, display: "flex", alignItems: "center", gap: 13 } },
-                        React.createElement("div", { style: { width: 38, height: 38, borderRadius: 9, border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#c4b5fd", flexShrink: 0 } }, "\u2193"),
-                        React.createElement("div", { style: { flex: 1 } },
-                            React.createElement("div", { style: { fontWeight: 600, fontSize: 14, color: "#fff" } }, "Import CSV"),
-                            React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 2 } }, "Upload a Hudl or Gridiron Pro CSV to import plays")),
-                        React.createElement("label", { style: { padding: "6px 14px", borderRadius: 7, border: "1px solid rgba(167,139,250,0.5)", background: "rgba(167,139,250,0.1)", color: "#c4b5fd", cursor: "pointer", whiteSpace: "nowrap" } },
-                            React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.1em" } }, "IMPORT"),
-                            React.createElement("input", { type: "file", accept: ".csv,.json", style: { display: "none" }, onChange: e => {
-                                    const f = e.target.files[0];
-                                    if (!f)
-                                        return;
-                                    const r = new FileReader();
-                                    r.onload = ev => {
-                                        try {
-                                            const text = ev.target.result;
-                                            let imported = [];
-                                            if (f.name.toLowerCase().endsWith(".json") || text.trim().startsWith("{") || text.trim().startsWith("[")) {
-                                                const data = JSON.parse(text);
-                                                const arr = Array.isArray(data) ? data : (data.plays || []);
-                                                imported = arr.map(p => {
-                                                    const primary = (Array.isArray(p.formations) && p.formations[0]) || p.formation || "Pro Set";
-                                                    const formations = (Array.isArray(p.formations) && p.formations.length) ? p.formations.filter(Boolean) : [primary];
-                                                    return { id: uid(), name: p.name || "Imported Play", formation: primary, formations,
-                                                        category: (p.category || "offense").toLowerCase(), type: Array.isArray(p.type) ? p.type : (p.type ? [p.type] : ["Custom"]),
-                                                        tags: p.tags || [], players: p.players || [], routes: p.routes || [], coverages: p.coverages || [],
-                                                        ballX: p.ballX, losY: p.losY, notes: p.notes || "" };
-                                                });
+                    React.createElement("div", { style: { overflowY: "auto", overflowX: "hidden", minHeight: 0, flexShrink: 1, paddingRight: 4 } },
+                        [
+                            { icon: "📝", title: "Practice Scripts", desc: `${scripts.length} script${scripts.length === 1 ? "" : "s"} · ordered play sequences organized into periods`, color: "#67e8f9", lbl: "OPEN", action: () => { setShowHudl(false); setShowScripts(true); } },
+                            { icon: "📋", title: "Installs", desc: `${installs.length} install${installs.length === 1 ? "" : "s"} · group plays & formations into named packages`, color: "#fbbf24", lbl: "OPEN", action: () => { setShowHudl(false); setShowInstalls(true); } },
+                            { icon: "💾", title: "Backup & Restore MINE", desc: "Copy your MINE library out as text (paste it into a note, text file, or email), then later paste it back to restore. Works regardless of any download/file-picker restrictions in the browser.", color: "#34d399", lbl: "OPEN", action: () => { setShowBackupRestore(true); } },
+                            { icon: "↑", title: "Export Playbook CSV", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} → spreadsheet/Hudl-friendly CSV (play list)`, color: "#4ade80", lbl: "EXPORT CSV", action: () => { exportCSV(); } },
+                            { icon: "⤓", title: "Export Full Playbook (JSON)", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} with all players, routes & coverages — re-importable`, color: "#22d3ee", lbl: "EXPORT JSON", action: () => { exportJSON(); } },
+                            { icon: "🖨", title: "Print / Export PDF", desc: "Print one play or a whole category — choose 'Save as PDF' to export a file", color: "#a78bfa", lbl: "PRINT / PDF", action: () => { setShowHudl(false); setPrintPlayId((currentPlay && currentPlay.id) || (plays[0] && plays[0].id) || null); setShowPrint(true); } },
+                            { icon: "⇗", title: "Open Hudl.com", desc: "Launch your Hudl account in a new tab", color: "#f59e0b", lbl: "OPEN HUDL", action: () => { window.open("https://www.hudl.com", "_blank"); setShowHudl(false); } },
+                        ].map((opt, i) => (React.createElement("div", { key: i, style: { background: "#1a1a28", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "13px 15px", marginBottom: 9, display: "flex", alignItems: "center", gap: 13 } },
+                            React.createElement("div", { style: { width: 38, height: 38, borderRadius: 9, border: `1px solid ${opt.color}40`, background: `${opt.color}12`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: opt.color, flexShrink: 0 } }, opt.icon),
+                            React.createElement("div", { style: { flex: 1 } },
+                                React.createElement("div", { style: { fontWeight: 600, fontSize: 14, color: "#fff" } }, opt.title),
+                                React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 2 } }, opt.desc)),
+                            React.createElement("button", { className: "sbtn", onClick: opt.action, style: { border: `1px solid ${opt.color}50`, background: `${opt.color}12`, color: opt.color, padding: "6px 14px", whiteSpace: "nowrap" } },
+                                React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.1em" } }, opt.lbl))))),
+                        React.createElement("div", { style: { background: "#1a1a28", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "13px 15px", marginBottom: 9, display: "flex", alignItems: "center", gap: 13 } },
+                            React.createElement("div", { style: { width: 38, height: 38, borderRadius: 9, border: "1px solid rgba(167,139,250,0.4)", background: "rgba(167,139,250,0.1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#c4b5fd", flexShrink: 0 } }, "\u2193"),
+                            React.createElement("div", { style: { flex: 1 } },
+                                React.createElement("div", { style: { fontWeight: 600, fontSize: 14, color: "#fff" } }, "Import CSV"),
+                                React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 2 } }, "Upload a Hudl or Gridiron Pro CSV to import plays")),
+                            React.createElement("label", { style: { padding: "6px 14px", borderRadius: 7, border: "1px solid rgba(167,139,250,0.5)", background: "rgba(167,139,250,0.1)", color: "#c4b5fd", cursor: "pointer", whiteSpace: "nowrap" } },
+                                React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.1em" } }, "IMPORT"),
+                                React.createElement("input", { type: "file", accept: ".csv,.json", style: { display: "none" }, onChange: e => {
+                                        const f = e.target.files[0];
+                                        if (!f)
+                                            return;
+                                        const r = new FileReader();
+                                        r.onload = ev => {
+                                            try {
+                                                const text = ev.target.result;
+                                                let imported = [];
+                                                if (f.name.toLowerCase().endsWith(".json") || text.trim().startsWith("{") || text.trim().startsWith("[")) {
+                                                    const data = JSON.parse(text);
+                                                    const arr = Array.isArray(data) ? data : (data.plays || []);
+                                                    imported = arr.map(p => {
+                                                        const primary = (Array.isArray(p.formations) && p.formations[0]) || p.formation || "Pro Set";
+                                                        const formations = (Array.isArray(p.formations) && p.formations.length) ? p.formations.filter(Boolean) : [primary];
+                                                        return { id: uid(), name: p.name || "Imported Play", formation: primary, formations,
+                                                            category: (p.category || "offense").toLowerCase(), type: Array.isArray(p.type) ? p.type : (p.type ? [p.type] : ["Custom"]),
+                                                            tags: p.tags || [], players: p.players || [], routes: p.routes || [], coverages: p.coverages || [],
+                                                            ballX: p.ballX, losY: p.losY, notes: p.notes || "" };
+                                                    });
+                                                }
+                                                else {
+                                                    const lines = text.split("\r").join("").split("\n").filter(l => l.trim());
+                                                    imported = lines.slice(1).map(line => {
+                                                        const c = parseCSVLine(line);
+                                                        // CSV "Formation" column may be a single name or pipe-separated list
+                                                        const formationsRaw = (c[1] || "Pro Set").split("|").map(s => s.trim()).filter(Boolean);
+                                                        const primary = formationsRaw[0] || "Pro Set";
+                                                        return { id: uid(), name: c[0] || "Imported Play", formation: primary, formations: formationsRaw,
+                                                            category: (c[2] || "offense").toLowerCase(), type: c[3] ? c[3].split(" / ") : ["Custom"],
+                                                            tags: [], players: [], routes: [], coverages: [], notes: c[4] || "" };
+                                                    });
+                                                }
+                                                if (!imported.length) {
+                                                    alert("No plays found in that file.");
+                                                    return;
+                                                }
+                                                setPlays(prev => [...prev, ...imported]);
+                                                setShowHudl(false);
                                             }
-                                            else {
-                                                const lines = text.split("\r").join("").split("\n").filter(l => l.trim());
-                                                imported = lines.slice(1).map(line => {
-                                                    const c = parseCSVLine(line);
-                                                    // CSV "Formation" column may be a single name or pipe-separated list
-                                                    const formationsRaw = (c[1] || "Pro Set").split("|").map(s => s.trim()).filter(Boolean);
-                                                    const primary = formationsRaw[0] || "Pro Set";
-                                                    return { id: uid(), name: c[0] || "Imported Play", formation: primary, formations: formationsRaw,
-                                                        category: (c[2] || "offense").toLowerCase(), type: c[3] ? c[3].split(" / ") : ["Custom"],
-                                                        tags: [], players: [], routes: [], coverages: [], notes: c[4] || "" };
-                                                });
+                                            catch (err) {
+                                                alert("Import failed — check that the file is a valid Gridiron Pro CSV or JSON export.");
                                             }
-                                            if (!imported.length) {
-                                                alert("No plays found in that file.");
-                                                return;
-                                            }
-                                            setPlays(prev => [...prev, ...imported]);
-                                            setShowHudl(false);
-                                        }
-                                        catch (err) {
-                                            alert("Import failed — check that the file is a valid Gridiron Pro CSV or JSON export.");
-                                        }
-                                    };
-                                    r.readAsText(f);
-                                } }))),
-                    React.createElement("div", { style: { marginTop: 4, padding: "10px 12px", background: "rgba(245,158,11,0.05)", borderRadius: 8, border: "1px solid rgba(245,158,11,0.12)" } },
-                        React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(245,158,11,0.65)", lineHeight: 1.65 } }, "\uD83D\uDCCB CSV export is a play-list table for spreadsheets or Hudl. JSON export captures the full playbook \u2014 every player, route, and coverage \u2014 and can be re-imported here to restore your plays exactly. Only saved plays are exported, so press SAVE first. Double-click any player on the field to rename them.")))))),
+                                        };
+                                        r.readAsText(f);
+                                    } }))),
+                        React.createElement("div", { style: { marginTop: 4, padding: "10px 12px", background: "rgba(245,158,11,0.05)", borderRadius: 8, border: "1px solid rgba(245,158,11,0.12)" } },
+                            React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(245,158,11,0.65)", lineHeight: 1.65 } }, "\uD83D\uDCCB CSV export is a play-list table for spreadsheets or Hudl. JSON export captures the full playbook \u2014 every player, route, and coverage \u2014 and can be re-imported here to restore your plays exactly. Only saved plays are exported, so press SAVE first. Double-click any player on the field to rename them."))))))),
         React.createElement("div", { className: "print-sheet" }, printList.map(p => {
             const zoneCount = (p.coverages || []).filter(c => c.ctype === "zone").length;
             return (React.createElement("div", { key: p.id, className: "print-play" },
@@ -14498,7 +14765,24 @@ if (typeof window !== "undefined")
 <body>
 <div id="root"></div>
 
-<script type="text/babel">
+<script>
+  /* Force Babel's CLASSIC JSX runtime (React.createElement). Recent
+     @babel/standalone builds default to the AUTOMATIC runtime, which injects
+     `import {jsx} from "react/jsx-runtime"` into the transpiled output — an
+     import statement is illegal in a classic <script>, so Babel threw
+     "Cannot use import statement outside a module" and the page stayed black.
+     Registering our own preset with runtime:"classic" keeps the output
+     import-free. (env is kept to match the prior default transform.) */
+  if (window.Babel && Babel.registerPreset && Babel.availablePresets) {
+    Babel.registerPreset("gp-react", {
+      presets: [
+        [Babel.availablePresets["react"], { runtime: "classic" }],
+        Babel.availablePresets["env"]
+      ]
+    });
+  }
+</script>
+<script type="text/babel" data-presets="gp-react" data-type="script">
 const { useState, useEffect, useCallback } = React;
 
 // You do NOT need to edit this file. The site asks for your Supabase keys on
@@ -14890,11 +15174,52 @@ function TeamCloud({ teamId, role, userId, teamName }) {
 function Dashboard({ session, memberships, active, setActive, reload, onOpenEditor, loadingEditor, editorErr }) {
   const m = memberships[active];
   const canManage = m.role === "admin" || m.role === "coadmin";
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [nameErr, setNameErr] = useState("");
+  const saveName = async () => {
+    const nm = nameDraft.trim();
+    if (!nm) { setNameErr("Enter a name."); return; }
+    if (nm === (m.teams?.name || "")) { setEditingName(false); setNameErr(""); return; }
+    setSavingName(true); setNameErr("");
+    try {
+      // .select() back so we can tell an RLS-blocked update (0 rows, no error)
+      // apart from a real one.
+      const { data, error } = await db.from("teams").update({ name: nm }).eq("id", m.team_id).select();
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        setNameErr("Couldn't save — your account may not have permission, or the database is missing the latest schema. Re-run schema.sql in Supabase (it adds the team-rename rule), then try again.");
+        return;
+      }
+      setEditingName(false);
+      await reload();
+    } catch (e) {
+      setNameErr(friendlyError(e));
+    } finally {
+      setSavingName(false);
+    }
+  };
   return (
     <div className="card">
       <div className="row" style={{justifyContent:"space-between",alignItems:"flex-start"}}>
         <div>
-          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,letterSpacing:"0.04em",lineHeight:1}}>{m.teams?.name || "My Team"}</div>
+          {editingName ? (
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <input value={nameDraft} onChange={e=>setNameDraft(e.target.value)} autoFocus maxLength={60}
+                onKeyDown={e=>{ if(e.key==="Enter") saveName(); if(e.key==="Escape"){ setEditingName(false); setNameErr(""); } }}
+                placeholder="School / team name"
+                style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,letterSpacing:"0.03em",padding:"4px 10px",minWidth:180}} />
+              <button className="mini" disabled={savingName} onClick={saveName}>{savingName ? "Saving…" : "Save"}</button>
+              <button className="mini" disabled={savingName} onClick={()=>{ setEditingName(false); setNameErr(""); }}>Cancel</button>
+            </div>
+          ) : (
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,letterSpacing:"0.04em",lineHeight:1}}>{m.teams?.name || "My Team"}</div>
+              {canManage && <button className="mini" title="Edit your school / team name" onClick={()=>{ setNameDraft(m.teams?.name || ""); setNameErr(""); setEditingName(true); }}>✎ Rename</button>}
+            </div>
+          )}
+          {nameErr && <div className="msg err" style={{marginTop:6}}>{nameErr}</div>}
           <div className="row" style={{gap:8,marginTop:7}}>
             <RolePill role={m.role} />
             <span style={{fontSize:12,color:"var(--faint)"}}>{session.user.email}</span>
@@ -15040,7 +15365,29 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+// Top-level boundary for the SHELL (auth + dashboard). PlaybookApp has its own
+// boundary; this one catches anything in the dashboard/auth tree so a crash
+// shows a readable error instead of a silent black screen.
+class ShellErrorBoundary extends React.Component {
+  constructor(p){ super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err){ return { err }; }
+  render(){
+    if (this.state.err) {
+      const e = this.state.err;
+      return (
+        <div style={{minHeight:"100vh",background:"#0a0a14",color:"#fca5a5",fontFamily:"monospace",padding:24,overflow:"auto"}}>
+          <h2 style={{color:"#f87171",marginBottom:12,fontFamily:"monospace"}}>Dashboard hit an error</h2>
+          <pre style={{whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.6}}>{String((e && e.stack) || (e && e.message) || e)}</pre>
+          <button onClick={()=>location.reload()}
+            style={{marginTop:16,padding:"8px 16px",borderRadius:8,border:"1px solid #f87171",background:"transparent",color:"#fca5a5",cursor:"pointer",fontFamily:"monospace"}}>Reload</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ShellErrorBoundary><App /></ShellErrorBoundary>);
 </script>
 </body>
 </html>
