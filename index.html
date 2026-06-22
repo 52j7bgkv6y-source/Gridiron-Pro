@@ -131,6 +131,9 @@ const ROUTE_TYPES_BY_TAB = {
     defense: ["pass", "run", "preSnapMotion", "postSnapMotion", "blocking", "showBlitz", "hideBlitz", "option"],
     special: ["pass", "run", "preSnapMotion", "postSnapMotion", "blocking", "option"],
 };
+// Every route type, shown in the ROUTE tool regardless of which tab you're on,
+// so offense and defense can both draw any route.
+const ALL_ROUTE_TYPES = ["pass", "run", "preSnapMotion", "postSnapMotion", "blocking", "showBlitz", "hideBlitz", "option"];
 const ROUTE_LABELS = {
     pass: "PASS",
     run: "RUN",
@@ -1474,18 +1477,29 @@ function AddPlayPicker({ available, onAdd, summaryLabel, secondary }) {
 //    standalone editor, where there is no team backend. The panel mounts when an
 //    install is opened and unmounts when it's closed, so its lifecycle doubles
 //    as the per-player study-time clock.
-function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach }) {
+function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActive }) {
     const installId = install.id;
     const [myRow, setMyRow] = useState(null);
     const [rows, setRows] = useState(null);
     const [questions, setQuestions] = useState(null);
     const [err, setErr] = useState("");
-    const [busy, setBusy] = useState(false);
     const [askPlay, setAskPlay] = useState((plays[0] && plays[0].id) || "");
     const [askBody, setAskBody] = useState("");
     const [sending, setSending] = useState(false);
     const [sent, setSent] = useState(false);
     const startRef = useRef(Date.now());
+    // When the player returns from this install's RUN, refresh so the new
+    // completion % / time appear automatically.
+    const prevRunRef = useRef(runActive);
+    useEffect(() => {
+        if (prevRunRef.current && !runActive) {
+            loadMine();
+            if (isCoach)
+                loadCoach();
+        }
+        prevRunRef.current = runActive;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [runActive]);
     const fmt = (s) => {
         s = Math.round(s || 0);
         if (s < 60)
@@ -1523,9 +1537,9 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach }) {
         if (!db || !teamId || !userId)
             return;
         try {
-            const r = await db.from("install_progress").select("seconds,completed,completed_at")
+            const r = await db.from("install_progress").select("seconds,completed,completed_at,plays_done")
                 .eq("team_id", teamId).eq("install_id", installId).eq("user_id", userId);
-            setMyRow((r.data && r.data[0]) || { seconds: 0, completed: false });
+            setMyRow((r.data && r.data[0]) || { seconds: 0, completed: false, plays_done: [] });
         }
         catch (e) { /* ignore */ }
     }, [db, teamId, installId, userId]);
@@ -1535,7 +1549,7 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach }) {
         setErr("");
         try {
             const pr = await db.from("install_progress")
-                .select("user_id,display_name,seconds,completed,completed_at")
+                .select("user_id,display_name,seconds,completed,completed_at,plays_done")
                 .eq("team_id", teamId).eq("install_id", installId);
             setRows(pr.data || []);
             const qq = await db.from("play_questions").select("*")
@@ -1556,14 +1570,6 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach }) {
         return () => { clearInterval(iv); flush(false); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [installId]);
-    const markComplete = useCallback(async () => {
-        setBusy(true);
-        await flush(true);
-        await loadMine();
-        if (isCoach)
-            await loadCoach();
-        setBusy(false);
-    }, [flush, loadMine, loadCoach, isCoach]);
     const send = useCallback(async () => {
         if (!db || !teamId || !askBody.trim())
             return;
@@ -1599,18 +1605,39 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach }) {
         return null; // standalone editor: no team backend
     const card = { background: "rgba(10,10,18,0.5)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "12px 14px", marginTop: 12 };
     const head = { fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, letterSpacing: "0.08em", color: "#e2e8f0", marginBottom: 8 };
+    const ids = plays.map(p => p.id);
+    const totalPlays = ids.length;
+    const doneCount = (row) => {
+        const d = (row && Array.isArray(row.plays_done)) ? row.plays_done : [];
+        return d.filter(pid => ids.indexOf(pid) !== -1).length;
+    };
+    const pctOf = (n) => totalPlays > 0 ? Math.round((n / totalPlays) * 100) : 0;
+    const myDone = doneCount(myRow);
+    const myPct = pctOf(myDone);
     return (React.createElement("div", { style: { marginTop: 14 } },
         React.createElement("div", { style: card },
             React.createElement("div", { style: head }, "YOUR PROGRESS"),
-            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
-                React.createElement("button", { onClick: markComplete, disabled: busy || (myRow && myRow.completed), style: { padding: "7px 14px", borderRadius: 8, cursor: (busy || (myRow && myRow.completed)) ? "default" : "pointer",
-                        border: "1px solid " + ((myRow && myRow.completed) ? "rgba(74,222,128,0.6)" : "rgba(74,222,128,0.4)"),
-                        background: (myRow && myRow.completed) ? "rgba(74,222,128,0.2)" : "rgba(74,222,128,0.08)",
-                        color: "#86efac", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.06em" } }, (myRow && myRow.completed) ? "✓ COMPLETED" : "MARK COMPLETE"),
-                React.createElement("span", { style: { fontSize: 12, color: "#94a3b8" } },
-                    "Time studied: ",
-                    React.createElement("b", { style: { color: "#cbd5e1" } }, fmt(myRow ? myRow.seconds : 0)),
-                    myRow && myRow.completed && myRow.completed_at ? "  ·  done " + when(myRow.completed_at) : ""))),
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" } },
+                React.createElement("div", { style: { flex: 1, minWidth: 170 } },
+                    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: "#cbd5e1", marginBottom: 5 } },
+                        React.createElement("span", null, (myRow && myRow.completed) ? "✓ Completed" : "Plays completed"),
+                        React.createElement("span", null,
+                            React.createElement("b", null,
+                                myDone,
+                                "/",
+                                totalPlays),
+                            " \u00B7 ",
+                            myPct,
+                            "%")),
+                    React.createElement("div", { style: { height: 8, borderRadius: 99, background: "rgba(255,255,255,0.1)", overflow: "hidden" } },
+                        React.createElement("div", { style: { height: "100%", width: myPct + "%", background: (myRow && myRow.completed) ? "#4ade80" : "#a78bfa", transition: "width .3s" } }))),
+                React.createElement("span", { style: { fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" } },
+                    "Time: ",
+                    React.createElement("b", { style: { color: "#cbd5e1" } }, fmt(myRow ? myRow.seconds : 0)))),
+            React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 8 } },
+                "Click through this install's ",
+                React.createElement("b", { style: { color: "#94a3b8" } }, "\u25B6 RUN"),
+                " \u2014 plays complete automatically as you go.")),
         React.createElement("div", { style: card },
             React.createElement("div", { style: head }, "ASK A COACH ABOUT A PLAY"),
             React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" } },
@@ -1631,13 +1658,22 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach }) {
                 React.createElement("button", { onClick: loadCoach, title: "Refresh", style: { border: "1px solid rgba(255,255,255,0.18)", background: "transparent", color: "#94a3b8", borderRadius: 6, fontSize: 11, padding: "3px 9px", cursor: "pointer", letterSpacing: "0.06em" } }, "\u21BB REFRESH")),
             rows === null ? React.createElement("div", { style: { fontSize: 12, color: "#94a3b8" } }, "Loading\u2026")
                 : rows.length === 0 ? React.createElement("div", { style: { fontSize: 12, color: "#94a3b8" } }, "No one has opened this install yet.")
-                    : rows.slice().sort((a, b) => (Number(b.completed) - Number(a.completed)) || (b.seconds - a.seconds)).map(r => (React.createElement("div", { key: r.user_id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" } },
-                        React.createElement("span", { style: { fontSize: 13, color: "#e2e8f0" } },
-                            React.createElement("span", { style: { color: r.completed ? "#4ade80" : "rgba(148,163,184,0.5)", marginRight: 7 } }, r.completed ? "✓" : "○"),
-                            r.display_name || "Unnamed"),
-                        React.createElement("span", { style: { fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" } },
-                            fmt(r.seconds),
-                            r.completed && r.completed_at ? "  ·  " + when(r.completed_at) : "")))))),
+                    : rows.slice().sort((a, b) => (Number(b.completed) - Number(a.completed)) || (doneCount(b) - doneCount(a)) || (b.seconds - a.seconds)).map(r => {
+                        const n = doneCount(r);
+                        return (React.createElement("div", { key: r.user_id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" } },
+                            React.createElement("span", { style: { fontSize: 13, color: "#e2e8f0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                                React.createElement("span", { style: { color: r.completed ? "#4ade80" : "rgba(148,163,184,0.5)", marginRight: 7 } }, r.completed ? "✓" : "○"),
+                                r.display_name || "Unnamed"),
+                            React.createElement("span", { style: { fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" } },
+                                React.createElement("b", { style: { color: r.completed ? "#86efac" : "#cbd5e1" } },
+                                    n,
+                                    "/",
+                                    totalPlays),
+                                " \u00B7 ",
+                                pctOf(n),
+                                "%  \u00B7  ",
+                                fmt(r.seconds))));
+                    }))),
         isCoach && (React.createElement("div", { style: card },
             React.createElement("div", { style: head },
                 "PLAYER QUESTIONS",
@@ -2773,6 +2809,7 @@ function PlaybookApp() {
     const [runningScriptId, setRunningScriptId] = useState(null); // null = not running
     const [runningInstallId, setRunningInstallId] = useState(null); // null = not presenting an install
     const [runStepIdx, setRunStepIdx] = useState(0); // current play idx in flattened sequence
+    const [runSeen, setRunSeen] = useState([]); // play_ids the player has viewed in the running install (for auto-completion %)
     const [zoom, setZoom] = useState(1);
     const [viewCenter, setViewCenter] = useState({ x: FW / 2, y: LOS_Y });
     const [panning, setPanning] = useState(false);
@@ -4706,8 +4743,8 @@ function PlaybookApp() {
         const fnames = Object.keys(FORMATIONS[tab] || {});
         const first = fnames[0] || "";
         setPlayTypes(tab === "defense" ? ["Zone"] : tab === "special" ? ["Regular"] : ["Pass"]);
-        // If current routeType isn't valid for the new tab, default to "pass"
-        if (!ROUTE_TYPES_BY_TAB[tab].includes(routeType))
+        // All route types are valid on every tab now, so keep the current one.
+        if (!ALL_ROUTE_TYPES.includes(routeType))
             setRouteType("pass");
         // Defense-only tools shouldn't stay active on other tabs
         if (tab !== "defense" && (tool === "zone" || tool === "man"))
@@ -9667,21 +9704,39 @@ function PlaybookApp() {
                         ctx.stroke();
                     }
                     ctx.setLineDash([]);
-                    // Zone label — sized to fit the zone, positioned by labelOffX/Y.
+                    // Zone label — rendered EXACTLY like the 2D editor: the same
+                    // fit-to-zone font size and the same word/character wrapping, so a
+                    // long label like "Roll/Wall" wraps onto a line underneath instead of
+                    // shrinking, and the editor's auto-contrast text + halo are matched.
                     if (c.label) {
-                        const lcx = (zcx + (c.labelOffX || 0)) * s;
-                        const lcy = (zcy + (c.labelOffY || 0)) * s;
-                        const labelLen = c.label.length;
-                        const fontSize = Math.max(10, Math.min(c.h * 0.55, (c.w * 1.6) / Math.max(2, labelLen), 36)) * s;
-                        ctx.font = "bold " + Math.round(fontSize) + "px 'JetBrains Mono', 'Bebas Neue', monospace";
+                        const info = fitZoneLabelAtOffset(c);
+                        const fontPx = info.fontSize * s;
+                        const interiorRgb = blendColors(parseColor(baseCol), parseColor("#1d7d40"), 0.14);
+                        const lum = relLuminance(interiorRgb);
+                        const useWhite = (1.05 / (lum + 0.05)) >= ((lum + 0.05) / 0.05);
+                        const textFill = useWhite ? "#ffffff" : "#0a0a14";
+                        const haloColor = useWhite ? "rgba(8,8,20,0.92)" : "rgba(248,250,252,0.95)";
+                        ctx.font = "bold " + Math.round(fontPx) + "px 'JetBrains Mono', monospace";
                         ctx.textAlign = "center";
                         ctx.textBaseline = "middle";
-                        ctx.strokeStyle = "rgba(0,0,0,0.6)";
-                        ctx.lineWidth = fontSize * 0.22;
                         ctx.lineJoin = "round";
-                        ctx.strokeText(c.label, lcx, lcy);
-                        ctx.fillStyle = baseCol;
-                        ctx.fillText(c.label, lcx, lcy);
+                        ctx.lineWidth = fontPx * 0.26;
+                        ctx.strokeStyle = haloColor;
+                        ctx.fillStyle = textFill;
+                        try {
+                            ctx.letterSpacing = (info.letterSpacing * s) + "px";
+                        }
+                        catch (e) { }
+                        const nLines = info.lines.length;
+                        for (let li = 0; li < nLines; li++) {
+                            const yLine = (info.lcy - (nLines - 1) * info.lineH / 2 + li * info.lineH) * s;
+                            ctx.strokeText(info.lines[li], info.lcx * s, yLine);
+                            ctx.fillText(info.lines[li], info.lcx * s, yLine);
+                        }
+                        try {
+                            ctx.letterSpacing = "0px";
+                        }
+                        catch (e) { }
                     }
                 });
                 // Man-coverage links — dashed line between defender and target
@@ -10244,7 +10299,56 @@ function PlaybookApp() {
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [runningScriptId, runningInstallId, scripts, installs, plays]);
-    // Spacebar = PLAY IN ACTION while editing (start/stop), matching the toolbar
+    // ── Per-player install completion tracking (cloud only) ──
+    // When a player opens an install's RUN, seed runSeen from what they've
+    // already viewed; clear it when not running an install.
+    useEffect(() => {
+        if (!runningInstallId || !teamDB || !teamId || !myUserId) {
+            setRunSeen([]);
+            return;
+        }
+        setRunSeen([]); // reset for the newly-opened install, then merge in server-side history
+        let cancelled = false;
+        (async () => {
+            try {
+                const r = await teamDB.from("install_progress").select("plays_done")
+                    .eq("team_id", teamId).eq("install_id", runningInstallId).eq("user_id", myUserId);
+                const done = (r.data && r.data[0] && r.data[0].plays_done) || [];
+                if (!cancelled && Array.isArray(done)) {
+                    setRunSeen(prev => Array.from(new Set([...(prev || []), ...done])));
+                }
+            }
+            catch (e) { /* offline / not yet recorded — start fresh */ }
+        })();
+        return () => { cancelled = true; };
+    }, [runningInstallId, teamDB, teamId, myUserId]);
+    // As the player steps through the install's RUN, mark the current play seen
+    // (deduped locally + persisted). Completion flips on automatically server-side
+    // once every play has been viewed.
+    useEffect(() => {
+        if (!runningInstallId || !teamDB || !teamId)
+            return;
+        const inst = installs.find(i => i.id === runningInstallId);
+        if (!inst)
+            return;
+        const flatPlays = inst.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
+        const total = flatPlays.length;
+        if (total === 0)
+            return;
+        const i = Math.max(0, Math.min(total - 1, runStepIdx));
+        const cur = flatPlays[i];
+        if (!cur)
+            return;
+        const pid = cur.id;
+        setRunSeen(prev => (prev && prev.indexOf(pid) !== -1) ? prev : [...(prev || []), pid]);
+        (async () => {
+            try {
+                await teamDB.rpc("mark_play_seen", { p_team: teamId, p_install: runningInstallId, p_play: pid, p_total: total });
+            }
+            catch (e) { /* best-effort */ }
+        })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [runningInstallId, runStepIdx, installs, plays, teamDB, teamId]);
     // button. Ignored while typing in a field, while any standard modal is open
     // (detected via the .mover overlay class, which covers HUDL, scripts,
     // installs, print, save/edit, backup-restore, etc.), and during 3D / help /
@@ -11054,7 +11158,7 @@ function PlaybookApp() {
     .rtbtn.run{border-color:rgba(245,158,11,0.4);color:#fcd34d;}.rtbtn.run.on{background:rgba(245,158,11,0.18);border-color:#f59e0b;}
     .rtbtn.motion{border-color:rgba(167,139,250,0.4);color:#c4b5fd;}.rtbtn.motion.on{background:rgba(167,139,250,0.18);border-color:#a78bfa;}
     .mover{position:fixed;inset:0;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;z-index:1000;}
-    .mbox{background:#101018;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:26px;max-width:470px;width:92%;}
+    .mbox{background:#101018;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:26px;max-width:470px;width:92%;max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;}
     @media(min-width:769px){.mob-hide{display:none!important}}
     @media(max-width:768px){
       .dsk{display:none!important}
@@ -11071,6 +11175,13 @@ function PlaybookApp() {
       button{min-height:34px;}
       .tbtn{min-height:48px;}
       select.inp,input.inp{font-size:16px!important;}
+      /* keep the page from scrolling sideways on a phone */
+      .app-screen{overflow-x:hidden;max-width:100vw;}
+      /* full-width modals on a phone, content scrolls inside */
+      .mbox{width:96%!important;max-width:96vw!important;max-height:92vh!important;padding:18px!important;border-radius:14px!important;}
+      /* floating on-field panels: never wider/taller than the phone, scroll if needed,
+         and sit clear of the fixed bottom toolbar */
+      .mobsheet{max-width:94vw!important;max-height:56vh!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch;}
     }
     .print-sheet{display:none;}
     @media print{
@@ -11923,7 +12034,7 @@ function PlaybookApp() {
                             const PRESETS = ["#22c55e", "#ef4444", "#3b82f6", "#fbbf24", "#a78bfa", "#fb923c", "#22d3ee", "#ec4899", "#f1f5f9", "#0a0a14"];
                             const upd = (patch) => setPlayers(ps => ps.map(p => p.id === sel.id ? { ...p, ...patch } : p));
                             const curColor = sel.color || roleColor(sel.role);
-                            return (React.createElement("div", { ref: propPanelRef, style: { position: "absolute", ...(propPanelPos ? { left: propPanelPos.x, top: propPanelPos.y } : { bottom: 18, left: 22 }), background: "rgba(10,10,18,0.92)", border: "1px solid rgba(255,255,255,0.08)", padding: "10px 12px", borderRadius: 10, backdropFilter: "blur(8px)", zIndex: 6, minWidth: 206, maxWidth: 240, pointerEvents: (dragging || draggingLOS || draggingBall || zoneDrag) ? "none" : "auto" } },
+                            return (React.createElement("div", { ref: propPanelRef, className: "mobsheet", style: { position: "absolute", ...(propPanelPos ? { left: propPanelPos.x, top: propPanelPos.y } : { bottom: 18, left: 22 }), background: "rgba(10,10,18,0.92)", border: "1px solid rgba(255,255,255,0.08)", padding: "10px 12px", borderRadius: 10, backdropFilter: "blur(8px)", zIndex: 6, minWidth: 206, maxWidth: 240, pointerEvents: (dragging || draggingLOS || draggingBall || zoneDrag) ? "none" : "auto" } },
                                 React.createElement("div", { onMouseDown: (e) => startPanelDrag(e, propPanelRef, setPropPanelPos), onTouchStart: (e) => startPanelDrag(e, propPanelRef, setPropPanelPos), title: "Drag to move this panel", style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, cursor: "move", touchAction: "none" } },
                                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
                                         React.createElement("span", { style: { color: "rgba(255,255,255,0.3)", fontSize: 12, lineHeight: 1, letterSpacing: "-1px", userSelect: "none" } }, "\u283F"),
@@ -12005,7 +12116,7 @@ function PlaybookApp() {
                             const col = ((_a = ROUTE_CFG[sel.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff";
                             const lbl = (ROUTE_LABELS && ROUTE_LABELS[sel.rtype]) || sel.rtype;
                             const upd = (patch) => setRoutes(rs => rs.map(r => r.id === sel.id ? { ...r, ...patch } : r));
-                            return (React.createElement("div", { ref: routePanelRef, style: { position: "absolute", ...(routePanelPos ? { left: routePanelPos.x, top: routePanelPos.y } : { bottom: 18, left: 22 }),
+                            return (React.createElement("div", { ref: routePanelRef, className: "mobsheet", style: { position: "absolute", ...(routePanelPos ? { left: routePanelPos.x, top: routePanelPos.y } : { bottom: 18, left: 22 }),
                                     background: "rgba(10,10,18,0.92)", border: "1px solid rgba(255,255,255,0.08)",
                                     padding: "10px 12px", borderRadius: 10, backdropFilter: "blur(8px)", zIndex: 6,
                                     minWidth: 220, maxWidth: 260, pointerEvents: (dragging || draggingLOS || draggingBall || zoneDrag) ? "none" : "auto" } },
@@ -12393,14 +12504,20 @@ function PlaybookApp() {
                         ].filter(t => !t.defOnly || tab === "defense").map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { minWidth: 54, flexShrink: 0, color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                             React.createElement("span", { style: { fontSize: 17 } }, t.icon),
                             t.lbl))),
-                        tool === "route" && ROUTE_TYPES_BY_TAB[tab].map(rt => {
+                        tool === "route" && ALL_ROUTE_TYPES.map(rt => {
                             const cfg = ROUTE_CFG[rt];
                             const isOn = routeType === rt;
                             return (React.createElement("button", { key: rt, onClick: () => setRouteType(rt), style: { flexShrink: 0, padding: "4px 9px", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.04em", background: isOn ? `${cfg.color}28` : "transparent", border: `1px solid ${isOn ? cfg.color : cfg.color + "55"}`, color: isOn ? "#fff" : cfg.color, transition: "all 0.12s" } }, ROUTE_LABELS[rt]));
                         }),
                         React.createElement("button", { className: "tbtn", style: { borderColor: "rgba(239,68,68,0.3)", color: "rgba(239,68,68,0.6)", flexShrink: 0 }, onClick: () => { pushUndo(players, routes); setPlayers([]); setRoutes([]); } },
                             React.createElement("span", { style: { fontSize: 17 } }, "\uD83D\uDDD1"),
-                            "CLEAR"))),
+                            "CLEAR"),
+                        React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true); } },
+                            React.createElement("span", { style: { fontSize: 17 } }, "\u21BA"),
+                            "RESET"),
+                        React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: undo },
+                            React.createElement("span", { style: { fontSize: 17 } }, "\u21A9"),
+                            "UNDO"))),
                 React.createElement("div", { className: "dsk", style: { width: 74, background: "#0c0c17", borderLeft: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "10px 6px", overflowY: "auto" } },
                     React.createElement("div", { className: "hd", style: { fontSize: 10, color: "#3a3a4a", letterSpacing: "0.12em", marginBottom: 2 } }, "TOOLS"),
                     [
@@ -12411,7 +12528,7 @@ function PlaybookApp() {
                         t.lbl))),
                     tool === "route" && (React.createElement("div", { style: { borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 7, width: "100%", display: "flex", flexDirection: "column", gap: 4, alignItems: "center" } },
                         React.createElement("div", { className: "mono", style: { fontSize: 8, color: "#444", letterSpacing: "0.05em" } }, "TYPE"),
-                        ROUTE_TYPES_BY_TAB[tab].map(rt => {
+                        ALL_ROUTE_TYPES.map(rt => {
                             const cfg = ROUTE_CFG[rt];
                             const isOn = routeType === rt;
                             return (React.createElement("button", { key: rt, onClick: () => setRouteType(rt), style: { width: "100%", padding: "4px 6px", borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.04em", background: isOn ? `${cfg.color}28` : "transparent", border: `1px solid ${isOn ? cfg.color : cfg.color + "55"}`, color: isOn ? "#fff" : cfg.color, transition: "all 0.12s" } }, ROUTE_LABELS[rt]));
@@ -12904,7 +13021,7 @@ function PlaybookApp() {
             show3D && walk3dData && React.createElement(Walkthrough3D, { data: walk3dData, onClose: () => { setShow3D(false); setWalk3dData(null); } }),
             showDefRec && (() => {
                 const rec = getDefenseRec();
-                return (React.createElement("div", { ref: defRecRef, style: { position: "fixed", ...(defRecPos ? { left: defRecPos.x, top: defRecPos.y } : { top: 70, left: 14 }), zIndex: 2650, width: 338, maxHeight: "calc(100vh - 100px)", display: "flex", flexDirection: "column", background: "#0b0f1c", border: "1px solid rgba(96,165,250,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.55)", fontFamily: "system-ui,sans-serif", overflow: "hidden" } },
+                return (React.createElement("div", { ref: defRecRef, className: "mobsheet", style: { position: "fixed", ...(defRecPos ? { left: defRecPos.x, top: defRecPos.y } : { top: 70, left: 14 }), zIndex: 2650, width: 338, maxHeight: "calc(100vh - 100px)", display: "flex", flexDirection: "column", background: "#0b0f1c", border: "1px solid rgba(96,165,250,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.55)", fontFamily: "system-ui,sans-serif", overflow: "hidden" } },
                     React.createElement("div", { onMouseDown: (e) => startPanelDrag(e, defRecRef, setDefRecPos), onTouchStart: (e) => startPanelDrag(e, defRecRef, setDefRecPos), style: { display: "flex", alignItems: "center", gap: 8, padding: "11px 13px", cursor: "move", touchAction: "none", borderBottom: "1px solid rgba(255,255,255,0.07)", userSelect: "none" } },
                         React.createElement("span", { style: { color: "rgba(255,255,255,0.35)", fontSize: 14, letterSpacing: "-1px" } }, "\u283F"),
                         React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: "0.06em", color: "#93c5fd", flex: 1 } }, "\uD83D\uDEE1 DEFENSE CALL"),
@@ -12971,7 +13088,7 @@ function PlaybookApp() {
                         })(),
                         React.createElement("div", { style: { marginTop: 8, fontSize: 10, color: "rgba(255,255,255,0.35)", lineHeight: 1.45, fontStyle: "italic" } }, "A starting point \u2014 adjust to your personnel and game plan."))))));
             })(),
-            showBallPanel && (React.createElement("div", { ref: ballPanelRef, style: { position: "fixed", ...(ballPanelPos ? { left: ballPanelPos.x, top: ballPanelPos.y } : { top: 70, right: 14 }), zIndex: 2600, width: 300, maxHeight: "calc(100vh - 100px)", overflowY: "auto", background: "#0c0c16", border: "1px solid rgba(218,165,32,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.5)", padding: 14, fontFamily: "system-ui,sans-serif" } },
+            showBallPanel && (React.createElement("div", { ref: ballPanelRef, className: "mobsheet", style: { position: "fixed", ...(ballPanelPos ? { left: ballPanelPos.x, top: ballPanelPos.y } : { top: 70, right: 14 }), zIndex: 2600, width: 300, maxHeight: "calc(100vh - 100px)", overflowY: "auto", background: "#0c0c16", border: "1px solid rgba(218,165,32,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.5)", padding: 14, fontFamily: "system-ui,sans-serif" } },
                 React.createElement("div", { onMouseDown: (e) => startPanelDrag(e, ballPanelRef, setBallPanelPos), onTouchStart: (e) => startPanelDrag(e, ballPanelRef, setBallPanelPos), title: "Drag to move this panel", style: { display: "flex", alignItems: "center", marginBottom: 10, cursor: "move", touchAction: "none" } },
                     React.createElement("span", { style: { color: "rgba(255,255,255,0.32)", fontSize: 14, lineHeight: 1, letterSpacing: "-1px", userSelect: "none", marginRight: 6 } }, "\u283F"),
                     React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: "0.06em", color: "#fde68a" } }, "\uD83C\uDFC8 BALL MECHANICS"),
@@ -14288,6 +14405,11 @@ function PlaybookApp() {
                         fn();
                 };
                 const pct = ((idx + 1) / flat.length) * 100;
+                // Completion progress (installs only): how many distinct plays in this
+                // install the player has actually clicked through, vs position above.
+                const isInstallRun = !!runningInstallId;
+                const seenInInst = isInstallRun ? flat.reduce((n, f) => n + ((runSeen || []).indexOf(f.play.id) !== -1 ? 1 : 0), 0) : 0;
+                const donePct = (isInstallRun && flat.length) ? Math.round((seenInInst / flat.length) * 100) : 0;
                 // Compute a tight bounding box around EVERY piece of the play —
                 // players' resting positions, every point along every route
                 // (start AND endpoint, so a blitz route that goes deep into the
@@ -14570,8 +14692,18 @@ function PlaybookApp() {
                                 border: `1px solid ${loopAnim ? "rgba(74,222,128,0.65)" : "rgba(255,255,255,0.18)"}`,
                                 background: loopAnim ? "rgba(74,222,128,0.2)" : "rgba(255,255,255,0.05)",
                                 color: loopAnim ? "#86efac" : "rgba(255,255,255,0.6)", fontWeight: 600 } }, "\uD83D\uDD01 LOOP"),
-                        React.createElement("div", { style: { flex: 1, maxWidth: 280, height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, overflow: "hidden", margin: "0 14px" } },
-                            React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#22d3ee,#4ade80)", transition: "width 0.2s" } })),
+                        React.createElement("div", { style: { flex: 1, maxWidth: 300, margin: "0 14px", display: "flex", flexDirection: "column", gap: 3 } },
+                            isInstallRun && (React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", color: donePct === 100 ? "#86efac" : "rgba(255,255,255,0.72)" } },
+                                React.createElement("span", null, donePct === 100 ? "✓ INSTALL COMPLETE" : "COMPLETED"),
+                                React.createElement("span", null,
+                                    seenInInst,
+                                    "/",
+                                    flat.length,
+                                    " PLAYS \u00B7 ",
+                                    donePct,
+                                    "%"))),
+                            React.createElement("div", { style: { height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, overflow: "hidden" } },
+                                React.createElement("div", { style: { height: "100%", width: `${isInstallRun ? donePct : pct}%`, background: isInstallRun ? (donePct === 100 ? "#4ade80" : "linear-gradient(90deg,#a78bfa,#22d3ee)") : "linear-gradient(90deg,#22d3ee,#4ade80)", transition: "width 0.3s" } }))),
                         React.createElement("button", { onClick: next, disabled: idx === flat.length - 1, title: "Next play  (\u2192  or  N)", style: { padding: "9px 22px", borderRadius: 7, cursor: idx === flat.length - 1 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${idx === flat.length - 1 ? "rgba(74,222,128,0.25)" : "rgba(74,222,128,0.6)"}`,
                                 background: idx === flat.length - 1 ? "rgba(74,222,128,0.05)" : "rgba(74,222,128,0.18)",
@@ -14785,7 +14917,7 @@ function PlaybookApp() {
                                         color: playsInInstall.length === 0 ? "rgba(167,139,250,0.4)" : "#c4b5fd",
                                         opacity: playsInInstall.length === 0 ? 0.5 : 1 } }, "\uD83D\uDDA8 PDF"))),
                             React.createElement("div", { style: { padding: "14px 22px 16px", overflowY: "auto", flex: 1 } },
-                                React.createElement(InstallTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, install: openInst, plays: playsInInstall, isCoach: effRole !== "player" }),
+                                React.createElement(InstallTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, install: openInst, plays: playsInInstall, isCoach: effRole !== "player", runActive: runningInstallId === openInst.id }),
                                 installViewMode === "cards" ? (React.createElement("div", null,
                                     formationsInInstall.length > 0 && (React.createElement("div", { style: { marginBottom: 14 } },
                                         React.createElement("div", { className: "hd", style: { fontSize: 11, color: "#67e8f9", letterSpacing: "0.1em", marginBottom: 6 } }, "FORMATIONS"),
