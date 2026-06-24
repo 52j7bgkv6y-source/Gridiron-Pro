@@ -1204,8 +1204,8 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
     const idBase = play.id || `t${Math.round((vb.x + vb.y) * 1000) % 99999}`;
     const markerId = (rt) => `arr-${rt}-${idBase}`;
     return (React.createElement("svg", { width: w, height: h, viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, preserveAspectRatio: "xMidYMid slice", style: { display: "block", background: "#16401f", borderRadius: 6 } },
-        React.createElement("defs", null, Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: markerId(rt), markerWidth: "6", markerHeight: "6", refX: "0.8", refY: "3", orient: "auto" },
-            React.createElement("line", { x1: "0.8", y1: "0.5", x2: "0.8", y2: "5.5", stroke: cfg.color, strokeWidth: "2", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: markerId(rt), markerWidth: "6", markerHeight: "6", refX: "4.6", refY: "2.3", orient: "auto" },
+        React.createElement("defs", null, Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: markerId(rt), markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
+            React.createElement("line", { x1: "0.5", y1: "0.4", x2: "0.5", y2: "3.6", stroke: cfg.color, strokeWidth: "1.4", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: markerId(rt), markerWidth: "6", markerHeight: "6", refX: "4.6", refY: "2.3", orient: "auto" },
             React.createElement("path", { d: "M0,0 L0,4.6 L6,2.3 z", fill: cfg.color }))))),
         Array.from({ length: 20 }, (_, i) => (React.createElement("rect", { key: `mow${i}`, x: 0, y: EZ + (FIELD_DIM / 20) * i, width: FW, height: FIELD_DIM / 20, fill: i % 2 === 0 ? "#1d7d40" : "#176a37" }))),
         React.createElement("rect", { x: 0, y: 0, width: FW, height: EZ, fill: "rgba(255,255,255,0.06)" }),
@@ -1247,7 +1247,7 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
             const dash = (cfg && cfg.dash && cfg.dash !== "none") ? cfg.dash : undefined;
             const first = r.points && r.points[0];
             return (React.createElement("g", { key: i },
-                React.createElement("polyline", { points: pts, fill: "none", stroke: col, strokeWidth: "3.5", strokeLinejoin: "round", strokeLinecap: "round", strokeDasharray: dash, markerEnd: cfg ? `url(#${markerId(r.rtype)})` : undefined }),
+                React.createElement("polyline", { points: pts, fill: "none", stroke: col, strokeWidth: "3.5", strokeLinejoin: "round", strokeLinecap: "round", strokeDasharray: dash, markerEnd: (cfg && !routes.some(o => o.attachedToMotion === r.id && !o.showParentEnd)) ? `url(#${markerId(r.rtype)})` : undefined }),
                 r.optionOf && first && (React.createElement("circle", { cx: first.x, cy: first.y, r: 4.5, fill: ((_a = ROUTE_CFG.option) === null || _a === void 0 ? void 0 : _a.color) || "#14b8a6", stroke: "#fff", strokeWidth: 1.4 }))));
         }),
         covs.filter(c => c.ctype === "zone").map((z, i) => {
@@ -1722,6 +1722,15 @@ function PlaybookApp() {
     const [loopAnim, setLoopAnim] = useState(false);
     const loopRef = useRef(false);
     useEffect(() => { loopRef.current = loopAnim; }, [loopAnim]);
+    // hideRoutesInAction: when ON, the drawn route lines/arrows disappear during
+    // PLAY IN ACTION so you watch the players develop the play with no path
+    // spoilers. Routes reappear the instant the animation stops, so editing is
+    // unaffected.
+    const [hideRoutesInAction, setHideRoutesInAction] = useState(false);
+    // Mirror into a ref so the GIF encoder's canvas draw loop (a closure) always
+    // reads the live value at export time.
+    const hideRoutesRef = useRef(hideRoutesInAction);
+    hideRoutesRef.current = hideRoutesInAction;
     // preSnapMode controls how pre-snap motion routes are sequenced during
     // PLAY IN ACTION. "all" = every preSnapMotion route fires together
     // before the snap. "sequential" = pre-snap motions fire one at a
@@ -2011,8 +2020,21 @@ function PlaybookApp() {
         });
     }, [players, personnel]);
     const [playNotes, setPlayNotes] = useState("");
+    // Per-position install notes: { [playerId]: { assign, align } }, plus a toggle
+    // for whether the install RUN shows the notes screen after this play.
+    const [positionNotes, setPositionNotes] = useState({});
+    const [showNotes, setShowNotes] = useState(false);
+    const [notesEditorOpen, setNotesEditorOpen] = useState(false);
+    const [runNotesShown, setRunNotesShown] = useState(false); // run viewer: showing the notes screen for the current step
     const [showHudl, setShowHudl] = useState(false);
     const [mobilePanel, setMobilePanel] = useState(null);
+    // Full-screen "show it off" mode in the 2D editor — hides all chrome and
+    // blows the field up to fill the screen. Field stays fully interactive.
+    const [fieldFullscreen, setFieldFullscreen] = useState(false);
+    // Frozen full-screen viewBox: computed from the play at rest and held FIXED
+    // while PLAY IN ACTION runs, so the camera never chases the moving players —
+    // the 5-yard margins are what keep the whole motion in frame.
+    const fsVbRef = useRef(null);
     const [showPlaybook, setShowPlaybook] = useState(false); // full playbook browser modal
     const [playbookSearch, setPlaybookSearch] = useState("");
     const [playbookCat, setPlaybookCat] = useState("all");
@@ -2257,7 +2279,144 @@ function PlaybookApp() {
         const bt = Math.max(0, Math.min(1, re / ANIM_DURATION_MS));
         return computeBallAnimPos(bt, lookup, rpoBallSteps(steps, rep));
     };
-    // ── Shared live-player sampler (single source for GIF export + 3D Sync) ──
+    // ── "Pushed" players ─────────────────────────────────────────────────
+    // A player can be attached to another player's route so the runner drives
+    // them along — e.g. a blocker pushing a defender back. The pushed player
+    // moves by the SAME displacement vector as the runner (keeping their
+    // initial offset), so they stay locked together. Run as a post-pass AFTER
+    // the per-player route/zone/man interpolation in BOTH the on-screen tick and
+    // the shared sampler, so it looks identical in PLAY IN ACTION, the GIF, RUN,
+    // and 3D. `pushedBy` on a player holds the id of the runner pushing them.
+    const applyPush = useCallback((arr) => {
+        const startsMap = animStartPosRef.current;
+        if (!startsMap || !arr || !arr.length)
+            return arr;
+        let any = false;
+        for (let i = 0; i < arr.length; i++) {
+            if (arr[i] && arr[i].pushedBy) {
+                any = true;
+                break;
+            }
+        }
+        if (!any)
+            return arr;
+        const cur = new Map();
+        for (const p of arr)
+            cur.set(p.id, p);
+        const rbp = animRouteByPlayerRef.current; // runner → route (this rep)
+        const radOf = (pl) => Math.max(8, Math.min(22, 9.5 * ((pl && pl.sizeMul) || 1)));
+        return arr.map(p => {
+            if (!p || !p.pushedBy)
+                return p;
+            const pusher = cur.get(p.pushedBy); // runner's CURRENT position
+            const ps = startsMap.get(p.pushedBy); // runner's start
+            const ms = startsMap.get(p.id); // pushed player's start
+            if (!pusher || !ps || !ms)
+                return p;
+            const R = (radOf(pusher) + radOf(p)) * 0.65; // tighter — engage on real contact
+            // The runner's traveled path: his route if he has one, else the straight
+            // line he has covered from his start to where he is now.
+            const route = rbp && rbp.get(p.pushedBy);
+            const pts = (route && route.points && route.points.length >= 2) ? route.points : [ps, pusher];
+            // If this push RELEASES when the runner chains into a follow-up, only push
+            // along the parent portion of the path (up to the junction); otherwise push
+            // the whole way (windowEnd = Infinity).
+            let windowEnd = Infinity, Jx = 0, Jy = 0;
+            if (p.pushRelease && route && route.junctionIdx != null) {
+                const ji = Math.max(0, Math.min(route.junctionIdx, pts.length - 1));
+                let ja = 0;
+                for (let i = 1; i <= ji; i++)
+                    ja += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+                windowEnd = ja;
+                Jx = pts[ji].x;
+                Jy = pts[ji].y;
+            }
+            // Contact point C — the FIRST place along that path that comes within
+            // touching range of where the pushed player stands. Sampled along each
+            // segment so contact registers mid-segment, not only at vertices. Purely
+            // distance-based, so a block closing from any direction engages on arrival.
+            let contactArc = -1, Cx = 0, Cy = 0, acc = 0;
+            const STEP = 3;
+            for (let i = 1; i < pts.length && contactArc < 0; i++) {
+                const ax = pts[i - 1].x, ay = pts[i - 1].y, bx = pts[i].x, by = pts[i].y;
+                const segLen = Math.hypot(bx - ax, by - ay);
+                const steps = Math.max(1, Math.ceil(segLen / STEP));
+                for (let s = (i === 1 ? 0 : 1); s <= steps; s++) {
+                    const t = s / steps, x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+                    if (Math.hypot(x - ms.x, y - ms.y) <= R) {
+                        contactArc = acc + segLen * t;
+                        Cx = x;
+                        Cy = y;
+                        break;
+                    }
+                }
+                acc += segLen;
+            }
+            // No contact, or contact only after the runner has released into the
+            // follow-up → never push him.
+            if (contactArc < 0 || contactArc > windowEnd)
+                return { ...p, x: ms.x, y: ms.y };
+            // Has the runner reached the contact point yet? Project his current
+            // position onto the path and compare arc lengths.
+            let curArc = 0, bestD = Infinity, acc2 = 0;
+            for (let i = 1; i < pts.length; i++) {
+                const ax = pts[i - 1].x, ay = pts[i - 1].y, bx = pts[i].x, by = pts[i].y;
+                const dx = bx - ax, dy = by - ay;
+                const seg2 = dx * dx + dy * dy || 1e-6, segLen = Math.sqrt(seg2);
+                let t = ((pusher.x - ax) * dx + (pusher.y - ay) * dy) / seg2;
+                t = Math.max(0, Math.min(1, t));
+                const px = ax + dx * t, py = ay + dy * t;
+                const d = Math.hypot(pusher.x - px, pusher.y - py);
+                if (d < bestD) {
+                    bestD = d;
+                    curArc = acc2 + segLen * t;
+                }
+                acc2 += segLen;
+            }
+            const effArc = Math.min(curArc, windowEnd);
+            if (effArc < contactArc - 0.001)
+                return { ...p, x: ms.x, y: ms.y }; // not in contact yet → hold
+            // Engaged. Past the junction (release case) freeze him where he was driven
+            // to; otherwise drive with the runner, keeping the spacing they met at.
+            const ex = (curArc > windowEnd) ? Jx : pusher.x;
+            const ey = (curArc > windowEnd) ? Jy : pusher.y;
+            return { ...p, x: ms.x + (ex - Cx), y: ms.y + (ey - Cy) };
+        });
+    }, []);
+    // Remaps a route's linear progress so the runner DWELLS at a chain junction
+    // (block endpoint) for route.holdMs before continuing into the follow-up.
+    // Returns an arc fraction (0..1) for the polyline sampler, with each leg
+    // eased independently so the dwell is an honest slice of real time, not
+    // distorted by whole-route easing. No hold → plain eased progress.
+    const holdArcFrac = useCallback((route, lp) => {
+        const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+        const pts = route && route.points;
+        if (!pts || pts.length < 2)
+            return ease(lp);
+        let total = 0;
+        const segs = [];
+        for (let i = 1; i < pts.length; i++) {
+            const dx = pts[i].x - pts[i - 1].x, dy = pts[i].y - pts[i - 1].y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            segs.push(d);
+            total += d;
+        }
+        if (total === 0)
+            return ease(lp);
+        const ji = Math.max(0, Math.min(route.junctionIdx, pts.length - 1));
+        let jArc = 0;
+        for (let i = 0; i < ji; i++)
+            jArc += segs[i];
+        const jf = jArc / total; // junction as a fraction of the path
+        const h = Math.max(0, Math.min(0.85, (route.holdMs || 0) / ANIM_DURATION_MS));
+        const t1 = (1 - h) * jf, t2 = t1 + h; // reach junction, then hold until t2
+        if (lp <= t1)
+            return jf <= 0 ? 0 : ease(t1 > 0 ? lp / t1 : 1) * jf;
+        if (lp <= t2)
+            return jf; // dwell at the block endpoint
+        const rem = 1 - t2;
+        return jf + (1 - jf) * ease(rem > 0 ? (lp - t2) / rem : 1); // run the follow-up
+    }, []);
     // Returns the full player array at a given animation time. Reads the same
     // plan refs startAnim populates and runs the same route/zone/motion interp
     // the on-screen tick uses, so GIF and 3D-Sync match PLAY IN ACTION exactly.
@@ -2444,7 +2603,8 @@ function PlaybookApp() {
                     const sp = route.points[0];
                     return sp ? { ...p, x: sp.x, y: sp.y } : p;
                 }
-                let t = easeFn(Math.min(1, le / Math.max(1, dur)));
+                const lp = Math.min(1, le / Math.max(1, dur));
+                let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp) : easeFn(lp);
                 if (catchCap)
                     t = Math.min(catchCap.cf, t);
                 const pos = pointOnPolyline(route.points, t);
@@ -2458,7 +2618,7 @@ function PlaybookApp() {
                 y: start.y + (zoneT.cy - start.y) * t,
             };
         });
-        return applyManCoverage(__mainOut, localElapsed / ANIM_DURATION_MS);
+        return applyPush(applyManCoverage(__mainOut, localElapsed / ANIM_DURATION_MS));
     }, [routes]);
     // ── Man-to-man coverage follow ───────────────────────────────────────
     // During the MAIN (post-snap) phase a man defender RUNS WITH the receiver
@@ -2809,6 +2969,9 @@ function PlaybookApp() {
     const [runningScriptId, setRunningScriptId] = useState(null); // null = not running
     const [runningInstallId, setRunningInstallId] = useState(null); // null = not presenting an install
     const [runStepIdx, setRunStepIdx] = useState(0); // current play idx in flattened sequence
+    // Whenever the play changes (or a run starts/stops), drop back to the field —
+    // the notes screen is always reached by advancing PAST the play.
+    useEffect(() => { setRunNotesShown(false); }, [runStepIdx, runningInstallId, runningScriptId]);
     const [runSeen, setRunSeen] = useState([]); // play_ids the player has viewed in the running install (for auto-completion %)
     const [zoom, setZoom] = useState(1);
     const [viewCenter, setViewCenter] = useState({ x: FW / 2, y: LOS_Y });
@@ -2862,6 +3025,13 @@ function PlaybookApp() {
     // to visually connect pre/post-snap motion routes with show/hide
     // blitz routes so coaches can show motion → blitz triggers.
     const [linkingFromId, setLinkingFromId] = useState(null);
+    // pushLinkRouteId: when set (to a route id), the next player tap attaches that
+    // player as a "pushed" player driven along by the route's runner.
+    const [pushLinkRouteId, setPushLinkRouteId] = useState(null);
+    // If the selection moves off the route we were attaching a pushed player to,
+    // drop out of push-link mode so a later player tap can't attach to a stale route.
+    useEffect(() => { if (pushLinkRouteId && pushLinkRouteId !== selectedId)
+        setPushLinkRouteId(null); }, [selectedId, pushLinkRouteId]);
     const svgRef = useRef(null);
     const lastClickRef = useRef({ time: 0, x: 0, y: 0 });
     // Tracks the parent-route attachment for an in-progress OPTION route.
@@ -5055,6 +5225,12 @@ function PlaybookApp() {
         // returning here just suppresses everything else.
         if (linkingFromId)
             return;
+        // Push-link mode: a push target must be a PLAYER (handled in onPlayerDown).
+        // Clicking empty space cancels the mode instead of drawing anything.
+        if (pushLinkRouteId) {
+            setPushLinkRouteId(null);
+            return;
+        }
         if (tool === "pan") {
             const cx = e.touches ? e.touches[0].clientX : e.clientX;
             const cy = e.touches ? e.touches[0].clientY : e.clientY;
@@ -5075,19 +5251,25 @@ function PlaybookApp() {
             setPlayers(prev => [...prev, { id: uid(), label: isOff ? "O" : "X", role: "default", x: pt.x, y: ny, ptype: isOff ? "offense" : "defense" }]);
         }
         else if (tool === "route") {
-            // OPTION routes can only start by snapping onto an existing route.
-            // If the user clicks empty field with route type set to OPTION but no
-            // existing route is within snap distance, the click is ignored —
-            // option routes without a parent are not allowed.
+            // OPTION routes: snapping onto an existing route branches from that point.
+            // Drawing on empty field is now also allowed — the option attaches to the
+            // nearest player's primary route (branching from its start) so it animates
+            // as that player's second-rep look.
             if (routeType === "option" && !drawingRoute) {
                 const snap = findNearestRoutePoint(pt);
-                if (!snap)
-                    return;
-                routeOwnerRef.current = null;
-                optionDrawRef.current = { optionOf: snap.routeId, attachIdx: snap.idx };
+                if (snap) {
+                    routeOwnerRef.current = null;
+                    optionDrawRef.current = { optionOf: snap.routeId, attachIdx: snap.idx };
+                }
+                else {
+                    const oid = findRouteOwnerId(pt);
+                    const prim = oid && routes.find(r => r.ownerId === oid && !r.optionOf && !r.attachedToMotion && r.rtype !== "preSnapMotion" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz" && r.points && r.points.length >= 2);
+                    routeOwnerRef.current = oid || null;
+                    optionDrawRef.current = { optionOf: prim ? prim.id : null, attachIdx: 0 };
+                }
                 setDrawingRoute(true);
-                setRoutePoints([snap.point]);
-                setGestureStartPos(snap.point);
+                setRoutePoints([snap ? snap.point : pt]);
+                setGestureStartPos(snap ? snap.point : pt);
                 setFreeDrawingGesture(false);
                 return;
             }
@@ -5122,7 +5304,7 @@ function PlaybookApp() {
             // Clicking empty field with a defender selected cancels the man-link in-progress
             setManFromId(null);
         }
-    }, [tool, getSVGPt, players, routes, pushUndo, viewCenter, drawingRoute, manFromId, losY, routeType, findNearestRoutePoint, findRouteOwnerId, linkingFromId, selectedBlitz, selectedCoverage]);
+    }, [tool, getSVGPt, players, routes, pushUndo, viewCenter, drawingRoute, manFromId, losY, routeType, findNearestRoutePoint, findRouteOwnerId, linkingFromId, selectedBlitz, selectedCoverage, pushLinkRouteId]);
     const onSVGMove = useCallback((e) => {
         if (panning && panStart) {
             const ccx = e.touches ? e.touches[0].clientX : e.clientX;
@@ -5599,6 +5781,32 @@ function PlaybookApp() {
         const player = players.find(p => p.id === pid);
         if (!player)
             return;
+        // Push-link mode: the next player tap becomes a "pushed" player driven
+        // along by the selected route's runner. Resolve the runner (explicit
+        // ownerId, else the player nearest the route's start) and pin this player
+        // to them. Can't push the runner with their own route.
+        if (pushLinkRouteId) {
+            const route = routes.find(r => r.id === pushLinkRouteId);
+            setPushLinkRouteId(null);
+            if (route) {
+                let ownerId = route.ownerId;
+                if (ownerId == null && route.points && route.points[0]) {
+                    const sp = route.points[0];
+                    let best = null, bestD = Infinity;
+                    players.forEach(pl => { const dx = pl.x - sp.x, dy = pl.y - sp.y; const d = dx * dx + dy * dy; if (d < bestD) {
+                        bestD = d;
+                        best = pl;
+                    } });
+                    ownerId = best ? best.id : null;
+                }
+                if (ownerId && ownerId !== pid) {
+                    pushUndo(players, routes);
+                    setPlayers(prev => prev.map(p => p.id === pid ? { ...p, pushedBy: ownerId } : p));
+                    setSelectedId(pushLinkRouteId);
+                }
+            }
+            return;
+        }
         // Routes: a single route picked from the Routes dropdown is "in hand" — the
         // next player click drops it on that player, anchored at his spot so it runs
         // the same depth/angle from wherever he lines up. Replaces any drawn route he
@@ -5679,19 +5887,26 @@ function PlaybookApp() {
             setDragging(true);
         }
         else if (tool === "route") {
-            // OPTION routes branch from an existing route, never directly from
-            // a player. When the user is in option mode, try to snap to a route
-            // point near the clicked player (in case a route passes through the
-            // player's location). If nothing is nearby, the click is ignored.
+            // OPTION routes: in option mode, clicking a player now starts the option
+            // FROM that player (tied to his own primary route, branching from its
+            // start) — draw the alternative on its own. If a route point happens to
+            // sit right on the player, snap to it and branch there instead.
             if (routeType === "option" && !drawingRoute) {
                 const snap = findNearestRoutePoint({ x: player.x, y: player.y });
-                if (!snap)
-                    return;
-                routeOwnerRef.current = null;
-                optionDrawRef.current = { optionOf: snap.routeId, attachIdx: snap.idx };
+                if (snap) {
+                    routeOwnerRef.current = null;
+                    optionDrawRef.current = { optionOf: snap.routeId, attachIdx: snap.idx };
+                    setRoutePoints([snap.point]);
+                    setGestureStartPos(snap.point);
+                }
+                else {
+                    const prim = routes.find(r => r.ownerId === player.id && !r.optionOf && !r.attachedToMotion && r.rtype !== "preSnapMotion" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz" && r.points && r.points.length >= 2);
+                    routeOwnerRef.current = player.id;
+                    optionDrawRef.current = { optionOf: prim ? prim.id : null, attachIdx: 0 };
+                    setRoutePoints([{ x: player.x, y: player.y }]);
+                    setGestureStartPos({ x: player.x, y: player.y });
+                }
                 setDrawingRoute(true);
-                setRoutePoints([snap.point]);
-                setGestureStartPos(snap.point);
                 setFreeDrawingGesture(false);
                 return;
             }
@@ -5725,14 +5940,14 @@ function PlaybookApp() {
         }
         else if (tool === "erase") {
             pushUndo(players, routes);
-            setPlayers(prev => prev.filter(p => p.id !== pid));
+            setPlayers(prev => prev.filter(p => p.id !== pid).map(p => p.pushedBy === pid ? { ...p, pushedBy: undefined } : p));
             // Cascade: drop man-links referencing this player, and detach any zones attached to it.
             setCoverages(prev => prev
                 .filter(c => c.ctype !== "man" || (c.fromId !== pid && c.toId !== pid))
                 .map(c => (c.ctype === "zone" && c.attachedTo === pid) ? { ...c, attachedTo: null } : c));
             setSelectedId(null);
         }
-    }, [tool, players, routes, getSVGPt, pushUndo, drawingRoute, manFromId, manMode, attachingZoneId, playingAnim, alignMode, alignSelIds, routeType, findNearestRoutePoint, pendingAssignRoute, pendingCaptureRoute]);
+    }, [tool, players, routes, getSVGPt, pushUndo, drawingRoute, manFromId, manMode, attachingZoneId, playingAnim, alignMode, alignSelIds, routeType, findNearestRoutePoint, pendingAssignRoute, pendingCaptureRoute, pushLinkRouteId]);
     // Select a zone and begin moving it (mode 'move'), resizing a corner
     // (mode 'resize'), or moving its label inside the zone (mode 'labelmove').
     // Start dragging a text annotation (SELECT tool only). Mirrors startZoneDrag.
@@ -6198,19 +6413,21 @@ function PlaybookApp() {
             setCoverages(covToSave);
             setRoutes(routesToSave);
         }
-        const play = { id: (currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) || uid(), name: playName, category: tab, formation, formations, personnel, personnelLooks: JSON.parse(JSON.stringify(personnelLooks)), type: playTypes, tags: [], levels: (currentPlay && Array.isArray(currentPlay.levels)) ? currentPlay.levels : [], players: JSON.parse(JSON.stringify(players)), routes: JSON.parse(JSON.stringify(routesToSave)), coverages: JSON.parse(JSON.stringify(covToSave)), texts: JSON.parse(JSON.stringify(texts)), ballX, losY, ballPlan: JSON.parse(JSON.stringify(ballPlan)), notes: playNotes, coverage: selectedCoverage || null, blitz: selectedBlitz || null, autoAssign };
+        const play = { id: (currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) || uid(), name: playName, category: tab, formation, formations, personnel, personnelLooks: JSON.parse(JSON.stringify(personnelLooks)), type: playTypes, tags: [], levels: (currentPlay && Array.isArray(currentPlay.levels)) ? currentPlay.levels : [], players: JSON.parse(JSON.stringify(players)), routes: JSON.parse(JSON.stringify(routesToSave)), coverages: JSON.parse(JSON.stringify(covToSave)), texts: JSON.parse(JSON.stringify(texts)), ballX, losY, ballPlan: JSON.parse(JSON.stringify(ballPlan)), notes: playNotes, positionNotes: JSON.parse(JSON.stringify(positionNotes || {})), showNotes: !!showNotes, coverage: selectedCoverage || null, blitz: selectedBlitz || null, autoAssign };
         setPlays(prev => { const i = prev.findIndex(p => p.id === play.id); if (i >= 0) {
             const u = [...prev];
             u[i] = play;
             return u;
         } return [...prev, play]; });
         setCurrentPlay(play);
-    }, [playName, tab, formation, personnel, personnelLooks, playTypes, players, routes, coverages, texts, ballX, losY, ballPlan, playNotes, currentPlay, selectedCoverage, selectedBlitz, autoAssign, assignZonesToDefenders, sortPrefs]);
+    }, [playName, tab, formation, personnel, personnelLooks, playTypes, players, routes, coverages, texts, ballX, losY, ballPlan, playNotes, positionNotes, showNotes, currentPlay, selectedCoverage, selectedBlitz, autoAssign, assignZonesToDefenders, sortPrefs]);
     const loadPlay = useCallback((play) => {
         setCurrentPlay(play);
         setPlayName(play.name);
         setPlayTypes(toTypeArr(play.type));
         setPlayNotes(play.notes || "");
+        setPositionNotes(play.positionNotes || {});
+        setShowNotes(!!play.showNotes);
         setSelectedId(null);
         setPersonnel(play.personnel || "");
         setPersonnelLooks(play.personnelLooks && typeof play.personnelLooks === "object" ? play.personnelLooks : {});
@@ -6297,6 +6514,8 @@ function PlaybookApp() {
         setCurrentPlay(null);
         setPlayName("New Play");
         setPlayNotes("");
+        setPositionNotes({});
+        setShowNotes(false);
         setSelectedId(null);
         setPersonnel("");
         setPersonnelLooks({});
@@ -6346,6 +6565,8 @@ function PlaybookApp() {
         setCurrentPlay(null);
         setPlayName("New Play");
         setPlayNotes("");
+        setPositionNotes({});
+        setShowNotes(false);
         setSelectedId(null);
         setBallX(BALL_X);
         setBallPlan({ snapTo: null, steps: [], reads: {} });
@@ -6390,7 +6611,7 @@ function PlaybookApp() {
         if (removedIds.size === 0 && !routes.some(routeGone) && !texts.some(textGone) && !(isDef && coverages.length > 0))
             return; // that side is already empty
         pushUndo();
-        setPlayers(prev => prev.filter(keep));
+        setPlayers(prev => prev.filter(keep).map(p => (p.pushedBy && removedIds.has(p.pushedBy)) ? { ...p, pushedBy: undefined } : p));
         setRoutes(prev => prev.filter(r => !routeGone(r)));
         setTexts(prev => prev.filter(t => !textGone(t)));
         if (selectedId && removedIds.has(selectedId))
@@ -7134,7 +7355,7 @@ function PlaybookApp() {
             const followUpOffsets = r.points.map(pt => ({ dx: pt.x - mEnd.x, dy: pt.y - mEnd.y }));
             if (followUpOffsets.length < 2)
                 return;
-            const fu = { rtype: r.rtype || undefined, pointOffsets: followUpOffsets, order: (r.order == null ? null : r.order), orderOffX: (r.orderOffX == null ? null : r.orderOffX), orderOffY: (r.orderOffY == null ? null : r.orderOffY) };
+            const fu = { rtype: r.rtype || undefined, pointOffsets: followUpOffsets, order: (r.order == null ? null : r.order), orderOffX: (r.orderOffX == null ? null : r.orderOffX), orderOffY: (r.orderOffY == null ? null : r.orderOffY), showParentEnd: r.showParentEnd || undefined };
             if (slot.kind === "blitzer")
                 blitzers[slot.index].followUp = fu;
             else
@@ -7233,6 +7454,8 @@ function PlaybookApp() {
                 attachedToMotion: motionNewId,
                 ownerId,
             };
+            if (followUp.showParentEnd)
+                fuRoute.showParentEnd = true;
             if (followUp.order != null) {
                 fuRoute.order = followUp.order;
                 if (followUp.orderOffX != null)
@@ -8153,7 +8376,7 @@ function PlaybookApp() {
         // get their own animation phase (Phase 0) that runs BEFORE the main
         // phase. The user picks whether all pre-snap motions go simultaneously
         // or one at a time (sequential, ordered by each route's `order` field).
-        const allPrimaries = routes.filter(r => !r.optionOf);
+        const allPrimaries = routes.filter(r => !r.optionOf && r.rtype !== "option");
         const preSnapRoutes = allPrimaries.filter(r => r.rtype === "preSnapMotion");
         const primaries = allPrimaries.filter(r => r.rtype !== "preSnapMotion");
         const optionRoutes = routes.filter(r => r.optionOf);
@@ -8164,6 +8387,19 @@ function PlaybookApp() {
             const list = optionsByParent.get(opt.optionOf) || [];
             list.push(opt);
             optionsByParent.set(opt.optionOf, list);
+        });
+        // Standalone options — drawn on their own (rtype "option", owned by a player
+        // but with no explicit parent). Keyed by owner so they attach to that
+        // player's primary at the start (branch index 0), regardless of draw order.
+        const optionsByOwner = new Map(); // ownerId -> [standalone option routes]
+        routes.forEach(r => {
+            if (r.rtype !== "option" || r.optionOf || !r.ownerId)
+                return;
+            if (!r.points || r.points.length < 2)
+                return;
+            const list = optionsByOwner.get(r.ownerId) || [];
+            list.push({ ...r, attachIdx: 0 });
+            optionsByOwner.set(r.ownerId, list);
         });
         // Match each PRIMARY route to its assigned player.
         //
@@ -8370,15 +8606,19 @@ function PlaybookApp() {
             // Intentionally NOT deleting from routeByPlayer when no follow-up
             // — see comment above.
         });
-        // Post-snap motion players with a follow-up: combine the motion's
-        // points + the follow-up's points into a single synthetic route
+        // Post-snap motion AND blocking players with a follow-up: combine the
+        // parent's points + the follow-up's points into a single synthetic route
         // for the main phase, so the player runs the entire chain as one
         // continuous interpolation. (The two render as separate paths in
-        // the SVG with the motion losing its arrowhead, but animation-wise
-        // they're one path.)
+        // the SVG with the parent losing its arrowhead/block bar, but
+        // animation-wise they're one path. Blocking lets a lineman block, then
+        // release into a route — pull, screen, leak out, etc.)
         primaries.forEach(motion => {
-            if (motion.rtype !== "postSnapMotion")
-                return;
+            // Any primary route can carry a follow-up now (primaries already exclude
+            // pre-snap motion, which is chained separately above). So block→release,
+            // a curl→comeback, a hitch→go — any route flows into its follow-up.
+            if (motion.optionOf)
+                return; // options branch via the rep-2 path, not here
             const followUp = followUpByMotion.get(motion.id);
             if (!followUp)
                 return;
@@ -8395,6 +8635,8 @@ function PlaybookApp() {
                 ...motion,
                 id: `${motion.id}__chain__${followUp.id}`,
                 points: combinedPoints,
+                junctionIdx: Math.max(0, motion.points.length - 1), // where the parent ends / follow-up begins
+                holdMs: (motion.rtype === "blocking" && followUp.holdBlock) ? 1000 : 0, // optional 1s block hold
             });
         });
         // Per-route pre-snap timings. PRESNAP_PER_MOTION_MS is the time each
@@ -8485,7 +8727,11 @@ function PlaybookApp() {
         // the primary again in the second pass.
         const optionRouteByPlayer = new Map();
         routeByPlayer.forEach((parentRoute, playerId) => {
-            const opts = optionsByParent.get(parentRoute.id);
+            let opts = optionsByParent.get(parentRoute.id);
+            // No option branched off this primary by id? Pick up a standalone option
+            // this player drew on his own.
+            if (!opts || opts.length === 0)
+                opts = optionsByOwner.get(playerId);
             if (!opts || opts.length === 0) {
                 optionRouteByPlayer.set(playerId, parentRoute);
                 return;
@@ -8668,7 +8914,7 @@ function PlaybookApp() {
         animStartPosRef.current = starts;
         animRouteByPlayerRef.current = routeByPlayer;
         animOptionRouteByPlayerRef.current = optionRouteByPlayer;
-        animHasOptionsRef.current = optionsByParent.size > 0;
+        animHasOptionsRef.current = optionsByParent.size > 0 || optionsByOwner.size > 0;
         // RPO: flagged on the ball plan AND it has both a give (handoff/pitch) and a
         // throw (pass). Drives the two-rep give / fake-throw ball across every
         // surface (the tick, GIF and 3D all reach this setup through startAnim).
@@ -9112,7 +9358,8 @@ function PlaybookApp() {
                             const sp = route.points[0];
                             return sp ? { ...p, x: sp.x, y: sp.y } : p;
                         }
-                        let t = ease(Math.min(1, le / Math.max(1, dur)));
+                        const lp = Math.min(1, le / Math.max(1, dur));
+                        let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp) : ease(lp);
                         if (catchCap)
                             t = Math.min(catchCap.cf, t);
                         const pos = pointOnRoute(route.points, t);
@@ -9129,7 +9376,7 @@ function PlaybookApp() {
                         y: start.y + (zoneT.cy - start.y) * t,
                     };
                 });
-                return applyManCoverage(__mainNext, localElapsed / ANIM_DURATION_MS);
+                return applyPush(applyManCoverage(__mainNext, localElapsed / ANIM_DURATION_MS));
             });
             animRAFRef.current = requestAnimationFrame(tick);
         };
@@ -9778,9 +10025,11 @@ function PlaybookApp() {
                 // routes that have a follow-up attached get NO arrowhead, so
                 // the chain to the follow-up reads as one continuous play.
                 const motionsWithFollowUpCv = new Set();
-                rts.forEach(r => { if (r && r.attachedToMotion)
+                rts.forEach(r => { if (r && r.attachedToMotion && !r.showParentEnd)
                     motionsWithFollowUpCv.add(r.attachedToMotion); });
                 rts.forEach(r => {
+                    if (hideRoutesRef.current)
+                        return; // HIDE ROUTES — players only, no path spoilers
                     if (!r.points || r.points.length < 2)
                         return;
                     const col = ROUTE_COLORS[r.rtype] || ROUTE_COLORS.pass;
@@ -9810,7 +10059,7 @@ function PlaybookApp() {
                         const ang = Math.atan2(last.y - prev.y, last.x - prev.x);
                         const cfgEnd = ROUTE_CFG[r.rtype];
                         if (cfgEnd && cfgEnd.endStyle === "block")
-                            drawBlockBar(last.x * s, last.y * s, ang, 10 * s);
+                            drawBlockBar(last.x * s, last.y * s, ang, 6.7 * s);
                         else
                             drawArrowhead(last.x * s, last.y * s, ang, 15 * s);
                     }
@@ -10008,7 +10257,7 @@ function PlaybookApp() {
             // phase. startAnim() (just above) already computed the exact pre-snap
             // length into animPreSnapTotalRef — including the get-set/moving split —
             // so reuse it instead of recomputing, guaranteeing the GIF matches.
-            const hasOptionsForTiming = routes.some(r => r && r.optionOf);
+            const hasOptionsForTiming = routes.some(r => r && (r.optionOf || (r.rtype === "option" && r.ownerId)));
             // RPO also needs the two-rep window (give, then fake + throw), even with no
             // option routes — otherwise the GIF would stop after the run rep.
             const isRPOForTiming = !!(ballPlan && ballPlan.rpo)
@@ -10260,19 +10509,23 @@ function PlaybookApp() {
     useEffect(() => {
         if (!runningScriptId && !runningInstallId)
             return;
-        let flatCount = 0;
+        let flatPlays = [];
         if (runningScriptId) {
             const s = scripts.find(sc => sc.id === runningScriptId);
             if (!s)
                 return;
-            flatCount = s.periods.reduce((n, per) => n + per.playIds.filter(pid => plays.find(p => p.id === pid)).length, 0);
+            s.periods.forEach(per => per.playIds.forEach(pid => { const p = plays.find(pp => pp.id === pid); if (p)
+                flatPlays.push(p); }));
         }
         else {
             const inst = installs.find(i => i.id === runningInstallId);
             if (!inst)
                 return;
-            flatCount = inst.playIds.filter(pid => plays.find(p => p.id === pid)).length;
+            inst.playIds.forEach(pid => { const p = plays.find(pp => pp.id === pid); if (p)
+                flatPlays.push(p); });
         }
+        const flatCount = flatPlays.length;
+        const hasNotes = (pl) => !!(pl && pl.showNotes && pl.positionNotes && Object.values(pl.positionNotes).some(n => n && ((n.assign && n.assign.trim()) || (n.align && n.align.trim()))));
         const onKey = (e) => {
             const el = document.activeElement;
             const tag = el && el.tagName;
@@ -10285,11 +10538,20 @@ function PlaybookApp() {
             }
             else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
                 e.preventDefault();
-                setRunStepIdx(i => Math.min(flatCount - 1, i + 1));
+                if (!runNotesShown && hasNotes(flatPlays[Math.max(0, Math.min(flatCount - 1, runStepIdx))])) {
+                    setRunNotesShown(true);
+                }
+                else {
+                    setRunNotesShown(false);
+                    setRunStepIdx(i => Math.min(flatCount - 1, i + 1));
+                }
             }
             else if (e.key === "ArrowLeft" || e.key === "p" || e.key === "P") {
                 e.preventDefault();
-                setRunStepIdx(i => Math.max(0, i - 1));
+                if (runNotesShown)
+                    setRunNotesShown(false);
+                else
+                    setRunStepIdx(i => Math.max(0, i - 1));
             }
             else if (e.key === "Escape") {
                 setRunningScriptId(null);
@@ -10298,7 +10560,18 @@ function PlaybookApp() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [runningScriptId, runningInstallId, scripts, installs, plays]);
+    }, [runningScriptId, runningInstallId, scripts, installs, plays, runStepIdx, runNotesShown]);
+    // Hide the cloud shell's own bottom-left "← Dashboard" button while a RUN
+    // (install / practice script) is on screen — the kiosk shows its own top-left
+    // one, so two stacked Dashboard buttons over the nav looked wrong.
+    useEffect(() => {
+        if (typeof document === "undefined")
+            return;
+        const set = (v) => { const b = document.getElementById("gp-dash-btn"); if (b)
+            b.style.display = v; };
+        set((runningInstallId || runningScriptId) ? "none" : "");
+        return () => set("");
+    }, [runningInstallId, runningScriptId]);
     // ── Per-player install completion tracking (cloud only) ──
     // When a player opens an install's RUN, seed runSeen from what they've
     // already viewed; clear it when not running an install.
@@ -10542,6 +10815,10 @@ function PlaybookApp() {
         }, 180);
     }, [printMode, printCategory, printPlayId, plays]);
     const exportCSV = useCallback(() => {
+        if (!capsRef.current.exportOther) {
+            alert("Your role can view the playbook but can't export it.");
+            return;
+        }
         if (!plays.length) {
             alert("No saved plays to export yet.\n\nBuild a play, then press SAVE to add it to your playbook before exporting.");
             return;
@@ -10559,6 +10836,10 @@ function PlaybookApp() {
     }, [plays]);
     // Full-fidelity export — players, routes, coverages, ball spot. Round-trips perfectly on import.
     const exportJSON = useCallback(() => {
+        if (!capsRef.current.exportOther) {
+            alert("Your role can view the playbook but can't export it.");
+            return;
+        }
         if (!plays.length) {
             alert("No saved plays to export yet.\n\nBuild a play, then press SAVE to add it to your playbook before exporting.");
             return;
@@ -11184,6 +11465,15 @@ function PlaybookApp() {
       .mobsheet{max-width:94vw!important;max-height:56vh!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch;}
     }
     .print-sheet{display:none;}
+    /* Full-screen "show off" mode — hide every bit of chrome, field fills screen */
+    .field-fs .app-header,
+    .field-fs .editor-bar,
+    .field-fs .gp-mobtabs,
+    .field-fs .dsk,
+    .field-fs .mob-toolbar{display:none!important;}
+    .field-fs .field-col{overflow:hidden!important;padding-bottom:0!important;}
+    .field-fs .field-wrap{padding:0!important;}
+    .field-fs .field-svg{width:100vw!important;height:100vh!important;max-width:100vw!important;max-height:100vh!important;aspect-ratio:auto!important;border:none!important;border-radius:0!important;}
     @media print{
       @page{margin:12mm;}
       html,body{background:#fff!important;}
@@ -11206,7 +11496,7 @@ function PlaybookApp() {
     .print-foot{margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#94a3b8;letter-spacing:0.08em;}
   `;
     return (React.createElement(React.Fragment, null,
-        React.createElement("div", { className: "app-screen", style: { fontFamily: "'Barlow Condensed',sans-serif", background: "#090912", color: "#e2e2e2", height: "100vh", display: "flex", flexDirection: "column" } },
+        React.createElement("div", { className: "app-screen" + (fieldFullscreen ? " field-fs" : ""), style: { fontFamily: "'Barlow Condensed',sans-serif", background: "#090912", color: "#e2e2e2", height: "100vh", display: "flex", flexDirection: "column" } },
             React.createElement("style", { dangerouslySetInnerHTML: { __html: STYLES } }),
             saveError && !mineLoadFailed && (React.createElement("div", { style: { position: "sticky", top: 0, zIndex: 2000, background: "linear-gradient(180deg,#7f1d1d,#5b1414)", borderBottom: "1px solid rgba(248,113,113,0.55)", padding: "12px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", boxShadow: "0 4px 18px rgba(0,0,0,0.45)" } },
                 React.createElement("div", { style: { flex: "1 1 320px", minWidth: 0 } },
@@ -11308,7 +11598,8 @@ function PlaybookApp() {
                             React.createElement("line", { x1: "12", y1: "6.2", x2: "12", y2: "17.8", stroke: "#0c0c17", strokeWidth: "1.8" }))),
                     React.createElement("span", { className: "hd brand-text", style: { fontSize: 20, color: "#fff" } }, "GRIDIRON"),
                     React.createElement("span", { className: "hd brand-text", style: { fontSize: 20, color: "#f59e0b" } }, "PRO")),
-                React.createElement("div", { style: { display: "flex", gap: 3, flex: 1, minWidth: 0 } }, ["offense", "defense", "special"].map(t => (React.createElement("button", { key: t, className: `tab ${tab === t ? "on" : ""}`, onClick: () => setTab(t) }, t === "special" ? "SPECIAL" : t.toUpperCase())))),
+                React.createElement("div", { className: "dsk", style: { display: "flex", gap: 3, flex: 1, minWidth: 0 } }, ["offense", "defense", "special"].map(t => (React.createElement("button", { key: t, className: `tab ${tab === t ? "on" : ""}`, onClick: () => setTab(t) }, t === "special" ? "SPECIAL" : t.toUpperCase())))),
+                React.createElement("div", { className: "mob-hide", style: { display: "none", flex: 1 } }),
                 React.createElement("button", { onClick: () => setMobilePanel(mobilePanel === "lib" ? null : "lib"), className: "mob-hide sbtn dim", style: { display: "none", padding: "6px 12px", fontSize: 13, flexShrink: 0 } }, "\u2630 PLAYS"),
                 React.createElement("div", { className: "scope-pill", title: "Team Default playbook", style: { display: "none", alignItems: "center", flexShrink: 0, background: "#0a0a14", borderRadius: 7, padding: 2, border: "1px solid rgba(255,255,255,0.08)" } },
                     React.createElement("button", { onClick: () => setPlaybookScope("personal"), style: { padding: "5px 10px", borderRadius: 5, border: "none", cursor: "pointer",
@@ -11336,8 +11627,9 @@ function PlaybookApp() {
                     React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.06em" } }, "HELP")),
                 React.createElement("button", { className: "sbtn amb", onClick: () => setShowHudl(true), style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", flexShrink: 0 } },
                     React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round" },
-                        React.createElement("path", { d: "M5 12h14M12 5l7 7-7 7" })),
-                    React.createElement("span", { className: "hd hudl-text", style: { fontSize: 15 } }, "HUDL"))),
+                        React.createElement("path", { d: "M4 7h16M4 12h16M4 17h16" })),
+                    React.createElement("span", { className: "hd hudl-text", style: { fontSize: 15 } }, "MENU"))),
+            React.createElement("div", { className: "mob-hide gp-mobtabs", style: { display: "none", gap: 4, padding: "6px 8px", background: "#0c0c17", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0 } }, ["offense", "defense", "special"].map(t => (React.createElement("button", { key: t, className: `tab ${tab === t ? "on" : ""}`, onClick: () => setTab(t), style: { flex: 1, textAlign: "center" } }, t === "special" ? "SPECIAL" : t.toUpperCase())))),
             React.createElement("div", { style: { flex: 1, display: "flex", overflow: "hidden", minHeight: 0 } },
                 React.createElement("div", { className: "dsk", style: { width: 215, background: "#0c0c17", borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", overflow: "hidden" } },
                     React.createElement("div", { style: { padding: "10px 11px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" } },
@@ -11364,8 +11656,8 @@ function PlaybookApp() {
                         filteredPlays.map(play => (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => loadPlay(play) },
                             React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
                                 React.createElement("span", { style: { fontWeight: 600, fontSize: 14, color: "#fff" } }, play.name),
-                                React.createElement("button", { onClick: e => { e.stopPropagation(); setPlays(p => p.filter(x => x.id !== play.id)); if ((currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id)
-                                        newPlay(); }, style: { background: "none", border: "none", color: "rgba(239,68,68,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "1px 4px", borderRadius: 3 } }, "\u2715")),
+                                caps.deleteContent && (React.createElement("button", { onClick: e => { e.stopPropagation(); setPlays(p => p.filter(x => x.id !== play.id)); if ((currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id)
+                                        newPlay(); }, style: { background: "none", border: "none", color: "rgba(239,68,68,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "1px 4px", borderRadius: 3 } }, "\u2715"))),
                             React.createElement("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } },
                                 React.createElement("span", { className: "badge", style: { background: "rgba(245,158,11,0.12)", color: "#fcd34d", border: "1px solid rgba(245,158,11,0.25)" } }, play.formation),
                                 play.personnel && React.createElement("span", { className: "badge", style: { background: "rgba(168,85,247,0.12)", color: "#d8b4fe", border: "1px solid rgba(168,85,247,0.28)" } }, play.personnel),
@@ -11381,7 +11673,7 @@ function PlaybookApp() {
                                         color: on ? "#bae6fd" : "rgba(255,255,255,0.32)" } }, s));
                             }))))))),
                 React.createElement("div", { className: "field-col", style: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: "#09090f" } },
-                    React.createElement("div", { style: { display: "flex", gap: 7, padding: "7px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", alignItems: "center", flexWrap: "wrap", background: "#0c0c17" } },
+                    React.createElement("div", { className: "editor-bar", style: { display: "flex", gap: 7, padding: "7px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", alignItems: "center", flexWrap: "wrap", background: "#0c0c17" } },
                         React.createElement("button", { className: "sbtn dim", onClick: () => cyclePlay(-1), disabled: filteredPlays.length < 2, title: "Load the previous saved play in this list", style: { padding: "7px 9px", fontSize: 15, lineHeight: 1, opacity: filteredPlays.length < 2 ? 0.35 : 1, cursor: filteredPlays.length < 2 ? "default" : "pointer" } }, "\u2039"),
                         React.createElement("input", { className: "inp", value: playName, onChange: e => setPlayName(e.target.value), placeholder: "Play Name", style: { width: 130 } }),
                         React.createElement("button", { className: "sbtn dim", onClick: () => cyclePlay(1), disabled: filteredPlays.length < 2, title: "Load the next saved play in this list", style: { padding: "7px 9px", fontSize: 15, lineHeight: 1, opacity: filteredPlays.length < 2 ? 0.35 : 1, cursor: filteredPlays.length < 2 ? "default" : "pointer" } }, "\u203A"),
@@ -11576,6 +11868,9 @@ function PlaybookApp() {
                                         React.createElement("span", { style: { whiteSpace: "nowrap" } }, t)));
                                 })))),
                         React.createElement("input", { className: "inp", value: playNotes, onChange: e => setPlayNotes(e.target.value), placeholder: "Notes\u2026", style: { flex: 1, minWidth: 90 } }),
+                        React.createElement("button", { className: "sbtn dim", onClick: () => setNotesEditorOpen(true), title: "Install notes \u2014 write each position's assignment and alignment. Toggle them to show on the screen after this play during an install RUN.", style: { padding: "7px 11px", color: showNotes ? "#fcd34d" : "rgba(255,255,255,0.7)", borderColor: showNotes ? "rgba(245,158,11,0.5)" : undefined } },
+                            "\uD83D\uDCCB NOTES",
+                            showNotes ? " ●" : ""),
                         React.createElement("button", { className: "sbtn grn", onClick: savePlay }, "SAVE"),
                         React.createElement("button", { className: "sbtn dim", onClick: newFromCurrent, title: "New \u2014 duplicates the current play so you can save a copy" }, "NEW"),
                         React.createElement("button", { className: "sbtn dim", onClick: clearPlay, title: "Clear \u2014 wipe the field and drop in this tab's default look (Tornado Front on defense, Deuce Right on offense), staying on the tab you're on" }, "CLEAR"),
@@ -11585,8 +11880,9 @@ function PlaybookApp() {
                         React.createElement("button", { className: "sbtn dim", onClick: flipTeams, title: "Flip offense / defense \u2014 mirrors every player, route, and zone across the LOS and swaps team sides", style: { padding: "7px 10px" } }, "\u21C5"),
                         React.createElement("button", { className: "sbtn dim", onClick: flipLR, title: "Mirror left \u2194 right \u2014 same play, opposite hash", style: { padding: "7px 10px" } }, "\u21C6"),
                         React.createElement("button", { className: "sbtn dim", onClick: flipPlayLR, title: "Flip the PLAY, not the formation \u2014 mirror the routes, zones, ball and labels left \u2194 right but keep every player where he lines up, handing each mirrored job to whoever now sits there. On a symmetric look the left/right players trade jobs (blitz off the other edge, coverage rotates). Use plain \u21C6 to mirror the players too.", style: { padding: "7px 10px", color: "#7dd3fc", borderColor: "rgba(125,211,252,0.4)" } }, "\u21C6 PLAY")),
-                    React.createElement("div", { style: { display: "flex", gap: 6, padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", alignItems: "center", flexWrap: "wrap", background: "#0a0a14" } },
+                    React.createElement("div", { className: "editor-bar", style: { display: "flex", gap: 6, padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", alignItems: "center", flexWrap: "wrap", background: "#0a0a14" } },
                         React.createElement("span", { className: "hd", style: { fontSize: 11, color: "#555", letterSpacing: "0.12em", marginRight: 4 } }, "VIEW"),
+                        React.createElement("button", { onClick: () => setFieldFullscreen(true), title: "Full screen \u2014 blow the field up to fill the screen to show it off. Tap \u2715 to exit.", style: { padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em", border: "1px solid rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.12)", color: "#fbbf24" } }, "\u26F6 FULL SCREEN"),
                         [
                             { key: "split80", lbl: "80yd" },
                             { key: "split50", lbl: "50yd" },
@@ -11660,10 +11956,47 @@ function PlaybookApp() {
                             const range = getFieldViewRange(fieldView, splitOffset);
                             const aspectW = FW;
                             const aspectH = range.yEnd - range.yStart;
-                            return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: `${vbX} ${vbY} ${vbW} ${vbH}`, style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
+                            // Full-screen "show off": frame 5 yards past the furthest player/
+                            // route/zone/text vertically, full field width sideline-to-sideline,
+                            // and let CSS + "slice" fill the screen so there's no black border.
+                            let fsVB = null;
+                            if (fieldFullscreen) {
+                                if (playingAnim && fsVbRef.current) {
+                                    // Mid-animation: reuse the frozen frame so the view holds still.
+                                    fsVB = fsVbRef.current;
+                                }
+                                else {
+                                    let mnY = Infinity, mxY = -Infinity;
+                                    const incY = (y) => { if (typeof y === "number") {
+                                        if (y < mnY)
+                                            mnY = y;
+                                        if (y > mxY)
+                                            mxY = y;
+                                    } };
+                                    players.forEach(p => incY(p.y));
+                                    routes.forEach(r => (r.points || []).forEach(pt => incY(pt.y)));
+                                    coverages.forEach(c => { if (c.ctype !== "zone")
+                                        return; let cy = c.y + c.h / 2; if (c.attachedTo) {
+                                        const ap = players.find(p => p.id === c.attachedTo);
+                                        if (ap)
+                                            cy = ap.y + (c.offY || 0);
+                                    } incY(cy - c.h / 2); incY(cy + c.h / 2); });
+                                    texts.forEach(t => { incY(t.y); incY(t.y + 16); });
+                                    if (mnY === Infinity)
+                                        fsVB = `0 0 ${FW} ${FH}`;
+                                    else {
+                                        const PAD = 5 * YARD;
+                                        const by = Math.max(0, mnY - PAD);
+                                        const byEnd = Math.min(FH, mxY + PAD);
+                                        fsVB = `0 ${by} ${FW} ${byEnd - by}`;
+                                    }
+                                    fsVbRef.current = fsVB; // remember the rest frame to freeze during PLAY IN ACTION
+                                }
+                            }
+                            return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: fsVB || `${vbX} ${vbY} ${vbW} ${vbH}`, preserveAspectRatio: fieldFullscreen ? "xMidYMid slice" : "xMidYMid meet", style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
                                 React.createElement("defs", null,
-                                    Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "6", markerHeight: "6", refX: "0.8", refY: "3", orient: "auto" },
-                                        React.createElement("line", { x1: "0.8", y1: "0.5", x2: "0.8", y2: "5.5", stroke: cfg.color, strokeWidth: "2", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "5", markerHeight: "5", refX: "3.6", refY: "1.8", orient: "auto" },
+                                    Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
+                                        React.createElement("line", { x1: "0.5", y1: "0.4", x2: "0.5", y2: "3.6", stroke: cfg.color, strokeWidth: "1.4", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "5", markerHeight: "5", refX: "3.6", refY: "1.8", orient: "auto" },
                                         React.createElement("path", { d: "M0,0 L0,3.6 L4.7,1.8 z", fill: cfg.color })))),
                                     React.createElement("radialGradient", { id: "turfVig", cx: "50%", cy: "50%", r: "75%" },
                                         React.createElement("stop", { offset: "55%", stopColor: "rgba(0,0,0,0)" }),
@@ -11684,30 +12017,30 @@ function PlaybookApp() {
                                         Math.round(((FH - EZ - losY) / FIELD_DIM) * 100),
                                         " yd"),
                                     React.createElement("g", { transform: `translate(${FW - 26},${losY})` },
-                                        React.createElement("rect", { x: -13, y: -9, width: 26, height: 18, rx: "3", fill: draggingLOS ? "rgba(245,158,11,0.45)" : "rgba(245,158,11,0.22)", stroke: "#fbbf24", strokeWidth: "1.2", style: { cursor: "ns-resize" }, onMouseDown: startLosDrag, onTouchStart: startLosDrag }),
+                                        React.createElement("rect", { x: -13, y: -9, width: 26, height: 18, rx: "3", fill: draggingLOS ? "rgba(245,158,11,0.45)" : "rgba(245,158,11,0.22)", stroke: "#fbbf24", strokeWidth: "1.2", style: { cursor: "ns-resize" }, pointerEvents: tool === "select" ? "auto" : "none", onMouseDown: startLosDrag, onTouchStart: startLosDrag }),
                                         React.createElement("g", { pointerEvents: "none" },
                                             React.createElement("line", { x1: -6, y1: -4, x2: 6, y2: -4, stroke: "#fbbf24", strokeWidth: "1.4" }),
                                             React.createElement("line", { x1: -6, y1: 0, x2: 6, y2: 0, stroke: "#fbbf24", strokeWidth: "1.4" }),
                                             React.createElement("line", { x1: -6, y1: 4, x2: 6, y2: 4, stroke: "#fbbf24", strokeWidth: "1.4" }))),
-                                    React.createElement("rect", { x: 32, y: losY - 7, width: FW - 72, height: 14, fill: "transparent", style: { cursor: "ns-resize" }, onMouseDown: startLosDrag, onTouchStart: startLosDrag }),
+                                    React.createElement("rect", { x: 32, y: losY - 7, width: FW - 72, height: 14, fill: "transparent", style: { cursor: "ns-resize" }, pointerEvents: tool === "select" ? "auto" : "none", onMouseDown: startLosDrag, onTouchStart: startLosDrag }),
                                     React.createElement("g", { transform: `translate(28,${losY})`, opacity: "0.55", pointerEvents: "none" },
                                         React.createElement("line", { x1: 0, y1: 20, x2: 0, y2: -20, stroke: "#fbbf24", strokeWidth: "1.5" }),
                                         React.createElement("path", { d: "M-4,-15 L0,-22 L4,-15 z", fill: "#fbbf24" })),
-                                    !playingAnim && (React.createElement("g", { style: { cursor: "ew-resize" }, onMouseDown: startBallDrag, onTouchStart: startBallDrag },
+                                    !playingAnim && (React.createElement("g", { style: { cursor: "ew-resize" }, pointerEvents: tool === "select" ? "auto" : "none", onMouseDown: startBallDrag, onTouchStart: startBallDrag },
                                         React.createElement("circle", { cx: ballX, cy: losY, r: 15, fill: "transparent" }),
                                         draggingBall && (React.createElement("line", { x1: ballX, y1: losY - 26, x2: ballX, y2: losY + 26, stroke: "#fde68a", strokeWidth: "1", strokeDasharray: "3,3", opacity: "0.6", pointerEvents: "none" })),
                                         React.createElement("ellipse", { cx: ballX, cy: losY, rx: 7, ry: 5, fill: "#8B4513", stroke: draggingBall ? "#fde68a" : "#daa520", strokeWidth: "2" }),
                                         React.createElement("line", { x1: ballX - 6, y1: losY, x2: ballX + 6, y2: losY, stroke: "#f5deb3", strokeWidth: "0.8", pointerEvents: "none" }),
                                         React.createElement("line", { x1: ballX, y1: losY - 4, x2: ballX, y2: losY + 4, stroke: "#f5deb3", strokeWidth: "0.8", pointerEvents: "none" })))),
                                 React.createElement("g", null,
-                                    (() => {
+                                    !(playingAnim && hideRoutesInAction) && (() => {
                                         // Pre-compute the set of motion routes that have a
                                         // follow-up attached. The motion's arrowhead is omitted
                                         // for those so the chain to the follow-up reads as one
                                         // continuous play. (Set lookup is O(1) per route below
                                         // — building it once avoids O(n²) over routes.map.)
                                         const motionsWithFollowUp = new Set();
-                                        routes.forEach(r => { if (r.attachedToMotion)
+                                        routes.forEach(r => { if (r.attachedToMotion && !r.showParentEnd)
                                             motionsWithFollowUp.add(r.attachedToMotion); });
                                         return routes.map(route => {
                                             var _a, _b, _c, _d;
@@ -11830,6 +12163,20 @@ function PlaybookApp() {
                                             React.createElement("text", { x: mx, y: my + 3, textAnchor: "middle", fill: m.color, fontSize: "8.5", fontFamily: "'JetBrains Mono',monospace", fontWeight: "bold", style: { pointerEvents: "none", userSelect: "none" } }, mLetter)));
                                     }),
                                     showOlLines && players.filter(p => p.ptype === "offense" && p.role === "OL").map(p => (React.createElement("line", { key: `olline-${p.id}`, x1: p.x, y1: EZ, x2: p.x, y2: FH - EZ, stroke: "rgba(250,250,255,0.40)", strokeWidth: "1.2", strokeDasharray: "3,4", pointerEvents: "none" }))),
+                                    !playingAnim && players.map(pp => {
+                                        if (!pp.pushedBy)
+                                            return null;
+                                        const pusher = players.find(p => p.id === pp.pushedBy);
+                                        if (!pusher)
+                                            return null;
+                                        const ang = Math.atan2(pp.y - pusher.y, pp.x - pusher.x);
+                                        const tipX = pp.x - Math.cos(ang) * 9, tipY = pp.y - Math.sin(ang) * 9;
+                                        const bx = tipX - Math.cos(ang) * 5, by = tipY - Math.sin(ang) * 5;
+                                        const nx = -Math.sin(ang) * 3.2, ny = Math.cos(ang) * 3.2;
+                                        return (React.createElement("g", { key: "push-" + pp.id, pointerEvents: "none" },
+                                            React.createElement("line", { x1: pusher.x, y1: pusher.y, x2: pp.x, y2: pp.y, stroke: "#f87171", strokeWidth: 1.4, strokeDasharray: "3 3", opacity: 0.65 }),
+                                            React.createElement("polygon", { points: `${tipX},${tipY} ${bx + nx},${by + ny} ${bx - nx},${by - ny}`, fill: "#f87171", opacity: 0.85 })));
+                                    }),
                                     players.map(player => {
                                         const isOff = player.ptype === "offense";
                                         const isSel = selectedId === player.id;
@@ -12044,6 +12391,14 @@ function PlaybookApp() {
                                             " \u00B7 ",
                                             sel.role === "default" ? "PLAYER" : sel.role)),
                                     React.createElement("button", { onClick: () => setSelectedId(null), onMouseDown: e => e.stopPropagation(), onTouchStart: e => e.stopPropagation(), title: "Close", style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px" } }, "\u2715")),
+                                sel.pushedBy && (() => {
+                                    const runner = players.find(p => p.id === sel.pushedBy);
+                                    return (React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", marginBottom: 8, padding: "6px 8px", borderRadius: 6, border: "1px solid rgba(248,113,113,0.3)", background: "rgba(248,113,113,0.1)" } },
+                                        React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#fca5a5", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                                            "\u219C pushed by ",
+                                            runner ? (runner.label || runner.role || "player") : "—"),
+                                        React.createElement("button", { onClick: () => upd({ pushedBy: undefined }), title: "Stop this player being pushed \u2014 he holds where he lines up.", style: { padding: "3px 9px", cursor: "pointer", border: "1px solid rgba(248,113,113,0.4)", background: "rgba(248,113,113,0.15)", color: "#fca5a5", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "\u2715")));
+                                })(),
                                 React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em", marginBottom: 4 } }, "COLOR"),
                                 React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 } },
                                     PRESETS.map(c => (React.createElement("button", { key: c, onClick: () => upd({ color: c }), title: c, style: { width: 20, height: 20, borderRadius: 4, background: c, cursor: "pointer", border: curColor === c ? "2px solid #fbbf24" : "1px solid rgba(255,255,255,0.12)", padding: 0 } }))),
@@ -12174,24 +12529,80 @@ function PlaybookApp() {
                                     React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.35)", lineHeight: 1.5 } }, (sel.motionStyle || "set") === "moving"
                                         ? "Still in motion at the snap — keeps gliding as the play starts."
                                         : "Stops and sets before the snap (default)."))),
-                                (sel.rtype === "preSnapMotion" || sel.rtype === "postSnapMotion") && (() => {
+                                !sel.optionOf && (() => {
                                     const followUp = routes.find(r => r.attachedToMotion === sel.id);
                                     const followUpLabel = followUp ? (ROUTE_LABELS[followUp.rtype] || followUp.rtype) : "";
+                                    const isBlock = sel.rtype === "blocking";
                                     return (React.createElement(React.Fragment, null,
                                         React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em", marginTop: 10, marginBottom: 4 } }, "FOLLOW-UP ROUTE"),
-                                        followUp ? (React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-                                            React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#86efac", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
-                                                "\u2713 ",
-                                                followUpLabel),
-                                            React.createElement("button", { onClick: () => setRoutes(rs => rs.map(r => r.id === followUp.id ? { ...r, attachedToMotion: undefined } : r)), title: "Detach the follow-up. Motion's arrowhead returns; the other route becomes a normal independent route again.", style: { padding: "4px 10px", cursor: "pointer", border: "1px solid rgba(248,113,113,0.4)",
-                                                    background: "rgba(248,113,113,0.12)", color: "#fca5a5",
-                                                    fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "\u2715 DETACH"))) : linkingFromId === sel.id ? (React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                                        followUp ? (React.createElement(React.Fragment, null,
+                                            React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                                                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#86efac", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                                                    "\u2713 ",
+                                                    followUpLabel),
+                                                React.createElement("button", { onClick: () => setRoutes(rs => rs.map(r => r.id === followUp.id ? { ...r, attachedToMotion: undefined, showParentEnd: undefined, holdBlock: undefined } : r)), title: "Detach the follow-up. The parent's arrowhead / block bar returns; the other route becomes a normal independent route again.", style: { padding: "4px 10px", cursor: "pointer", border: "1px solid rgba(248,113,113,0.4)",
+                                                        background: "rgba(248,113,113,0.12)", color: "#fca5a5",
+                                                        fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "\u2715 DETACH")),
+                                            React.createElement("button", { onClick: () => setRoutes(rs => rs.map(r => r.id === followUp.id ? { ...r, showParentEnd: !r.showParentEnd } : r)), title: followUp.showParentEnd
+                                                    ? (isBlock ? "Block bar is SHOWN where the block ends, then the route continues — block, then release." : "The endpoint marker is SHOWN where this route ends, then the follow-up continues from there.")
+                                                    : (isBlock ? "No block bar — the block flows straight into the follow-up as one continuous line." : "No endpoint marker — this route flows straight into the follow-up as one continuous line."), style: { width: "100%", marginTop: 6, padding: "5px 10px", cursor: "pointer", borderRadius: 4,
+                                                    border: `1px solid ${followUp.showParentEnd ? "rgba(220,38,38,0.55)" : "rgba(255,255,255,0.15)"}`,
+                                                    background: followUp.showParentEnd ? "rgba(220,38,38,0.15)" : "rgba(10,10,18,0.5)",
+                                                    color: followUp.showParentEnd ? "#fca5a5" : "rgba(255,255,255,0.6)",
+                                                    fontFamily: "'JetBrains Mono',monospace", fontSize: 10 } }, followUp.showParentEnd
+                                                ? (isBlock ? "▣ BLOCK ENDPOINT: SHOWN" : "▣ ENDPOINT: SHOWN")
+                                                : (isBlock ? "▢ BLOCK ENDPOINT: HIDDEN" : "▢ ENDPOINT: HIDDEN")),
+                                            isBlock && (React.createElement("button", { onClick: () => setRoutes(rs => rs.map(r => r.id === followUp.id ? { ...r, holdBlock: !r.holdBlock } : r)), title: followUp.holdBlock
+                                                    ? "Holding the block: the player drives to the block endpoint, holds for 1 second, then releases into the follow-up."
+                                                    : "No hold — the player flows from the block straight into the follow-up. Tap to hold the block for 1 second at the endpoint first.", style: { width: "100%", marginTop: 6, padding: "5px 10px", cursor: "pointer", borderRadius: 4,
+                                                    border: `1px solid ${followUp.holdBlock ? "rgba(245,158,11,0.55)" : "rgba(255,255,255,0.15)"}`,
+                                                    background: followUp.holdBlock ? "rgba(245,158,11,0.15)" : "rgba(10,10,18,0.5)",
+                                                    color: followUp.holdBlock ? "#fcd34d" : "rgba(255,255,255,0.6)",
+                                                    fontFamily: "'JetBrains Mono',monospace", fontSize: 10 } }, followUp.holdBlock ? "▣ HOLD BLOCK 1s" : "▢ HOLD BLOCK 1s")))) : linkingFromId === sel.id ? (React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
                                             React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#fcd34d", flex: 1 } }, "Click the follow-up route\u2026"),
                                             React.createElement("button", { onClick: () => setLinkingFromId(null), style: { padding: "4px 10px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)",
                                                     background: "rgba(10,10,18,0.5)", color: "rgba(255,255,255,0.65)",
-                                                    fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "CANCEL"))) : (React.createElement("button", { onClick: () => setLinkingFromId(sel.id), title: "Pick another route to chain after this motion. During PLAY IN ACTION the player will run the motion, then continue along the follow-up. The motion's arrowhead is removed so the two flow as one path.", style: { width: "100%", padding: "6px 10px", cursor: "pointer",
+                                                    fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "CANCEL"))) : (React.createElement("button", { onClick: () => setLinkingFromId(sel.id), title: isBlock
+                                                ? "Pick another route to chain after this block. During PLAY IN ACTION the player blocks, then continues along the follow-up. Use the toggle to show the block bar where the block ends, or flow straight through."
+                                                : (sel.rtype === "preSnapMotion"
+                                                    ? "Pick another route to chain after this motion. During PLAY IN ACTION the player will run the motion, then continue along the follow-up. The motion's arrowhead is removed so the two flow as one path."
+                                                    : "Pick another route to chain after this one. During PLAY IN ACTION the player runs this route, then continues along the follow-up. Use the toggle to show the endpoint where they meet, or flow straight through as one path."), style: { width: "100%", padding: "6px 10px", cursor: "pointer",
                                                 border: "1px solid rgba(96,165,250,0.4)", background: "rgba(96,165,250,0.12)",
                                                 color: "#93c5fd", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "\uD83D\uDD17 ATTACH FOLLOW-UP ROUTE"))));
+                                })(),
+                                (() => {
+                                    let ownerId = sel.ownerId;
+                                    if (ownerId == null && sel.points && sel.points[0]) {
+                                        const sp = sel.points[0];
+                                        let best = null, bestD = Infinity;
+                                        players.forEach(pl => { const dx = pl.x - sp.x, dy = pl.y - sp.y; const d = dx * dx + dy * dy; if (d < bestD) {
+                                            bestD = d;
+                                            best = pl;
+                                        } });
+                                        ownerId = best ? best.id : null;
+                                    }
+                                    const pushed = ownerId ? players.filter(p => p.pushedBy === ownerId) : [];
+                                    const linking = pushLinkRouteId === sel.id;
+                                    const hasFollowUp = !!routes.find(r => r.attachedToMotion === sel.id);
+                                    return (React.createElement(React.Fragment, null,
+                                        React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em", marginTop: 10, marginBottom: 4 } }, "PUSHED PLAYERS"),
+                                        pushed.length > 0 && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginBottom: 6 } }, pushed.map(pp => (React.createElement("div", { key: pp.id, style: { display: "flex", flexDirection: "column", gap: 4 } },
+                                            React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                                                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#fca5a5", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                                                    "\u219C ",
+                                                    pp.label || pp.role || "player",
+                                                    " driven along"),
+                                                React.createElement("button", { onClick: () => setPlayers(prev => prev.map(p => p.id === pp.id ? { ...p, pushedBy: undefined } : p)), title: "Detach \u2014 this player stops being pushed and stays where it lines up.", style: { padding: "4px 10px", cursor: "pointer", border: "1px solid rgba(248,113,113,0.4)", background: "rgba(248,113,113,0.12)", color: "#fca5a5", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "\u2715")),
+                                            hasFollowUp && (React.createElement("button", { onClick: () => setPlayers(prev => prev.map(p => p.id === pp.id ? { ...p, pushRelease: !p.pushRelease } : p)), title: pp.pushRelease
+                                                    ? "RELEASING: the runner stops driving this player the moment he chains into the follow-up route — the player holds where he was driven to."
+                                                    : "PUSHING THROUGH: the runner keeps driving this player along the follow-up route too. Tap to release him when the follow-up begins instead.", style: { padding: "3px 8px", cursor: "pointer", borderRadius: 4,
+                                                    border: `1px solid ${pp.pushRelease ? "rgba(245,158,11,0.55)" : "rgba(255,255,255,0.15)"}`,
+                                                    background: pp.pushRelease ? "rgba(245,158,11,0.15)" : "rgba(10,10,18,0.5)",
+                                                    color: pp.pushRelease ? "#fcd34d" : "rgba(255,255,255,0.55)",
+                                                    fontFamily: "'JetBrains Mono',monospace", fontSize: 9, textAlign: "left" } }, pp.pushRelease ? "▣ RELEASE AT FOLLOW-UP" : "▢ RELEASE AT FOLLOW-UP"))))))),
+                                        linking ? (React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                                            React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#fcd34d", flex: 1 } }, "Click the player to push\u2026"),
+                                            React.createElement("button", { onClick: () => setPushLinkRouteId(null), style: { padding: "4px 10px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "rgba(10,10,18,0.5)", color: "rgba(255,255,255,0.65)", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "CANCEL"))) : (React.createElement("button", { onClick: () => { setLinkingFromId(null); setPushLinkRouteId(sel.id); }, title: "Pick a player to be driven along by this route's runner \u2014 they move with the runner keeping their spacing, like a blocker pushing a defender. Works for any route.", style: { width: "100%", padding: "6px 10px", cursor: "pointer", border: "1px solid rgba(248,113,113,0.4)", background: "rgba(248,113,113,0.12)", color: "#fca5a5", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "\u21C4 PUSH A PLAYER"))));
                                 })()));
                         })(),
                         linkingFromId && (React.createElement("div", { ref: linkBannerRef, style: { position: "absolute", ...(linkBannerPos ? { left: linkBannerPos.x, top: linkBannerPos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
@@ -12273,7 +12684,7 @@ function PlaybookApp() {
                                     boxShadow: "0 2px 14px rgba(0,0,0,0.4)" } },
                                 React.createElement("span", { style: { fontSize: 11 } }, "\u2503"),
                                 showOlLines ? "OL LINES ON" : "OL LINES")))),
-                        React.createElement(DraggablePanel, { style: { position: "absolute", top: 14, right: 14, zIndex: 8, display: "flex", alignItems: "center", gap: 6, pointerEvents: "auto" } },
+                        React.createElement(DraggablePanel, { style: { position: "absolute", top: fieldFullscreen ? 64 : 14, right: 14, zIndex: 8, display: "flex", alignItems: "center", gap: 6, pointerEvents: "auto" } },
                             !playingAnim && (React.createElement("div", { style: { display: "flex", alignItems: "center", background: "rgba(10,10,18,0.7)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, padding: 2, backdropFilter: "blur(6px)" } },
                                 React.createElement("button", { onClick: () => setAnimTimingMode("sync"), title: "All routes finish at the same moment (uniform pacing)", style: { padding: "4px 8px", borderRadius: 5, border: "none", cursor: "pointer",
                                         background: animTimingMode === "sync" ? "rgba(74,222,128,0.2)" : "transparent",
@@ -12325,6 +12736,14 @@ function PlaybookApp() {
                                             backdropFilter: "blur(8px)", boxShadow: "0 2px 14px rgba(0,0,0,0.4)" } },
                                         React.createElement("span", { style: { fontSize: 12 } }, "\uD83D\uDD01"),
                                         "LOOP"),
+                                    React.createElement("button", { onClick: () => setHideRoutesInAction(v => !v), title: hideRoutesInAction ? "Route lines are hidden while the play is in action — tap to bring them back" : "Hide the route lines while the play is in action so you can watch just the players develop the play", style: { display: "flex", alignItems: "center", gap: 6, padding: "7px 11px", borderRadius: 8, cursor: "pointer",
+                                            border: `1px solid ${hideRoutesInAction ? "rgba(251,191,36,0.55)" : "rgba(255,255,255,0.12)"}`,
+                                            background: hideRoutesInAction ? "rgba(251,191,36,0.16)" : "rgba(10,10,18,0.5)",
+                                            color: hideRoutesInAction ? "#fcd34d" : "rgba(255,255,255,0.5)",
+                                            fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.08em",
+                                            backdropFilter: "blur(8px)", boxShadow: "0 2px 14px rgba(0,0,0,0.4)" } },
+                                        React.createElement("span", { style: { fontSize: 12 } }, "\u3030"),
+                                        "HIDE ROUTES"),
                                     caps.exportGif && (React.createElement("button", { onClick: exportPlayAsVideo, disabled: !canPlay || exportingVideo || playingAnim, title: !canPlay ? "Draw a route or attach a zone to a player first" : exportingVideo ? "Building the animation…" : "Export the play in action as an animated GIF you can download and drop into Google Slides (Insert → Image)", style: { display: "flex", alignItems: "center", gap: 7, padding: "7px 12px", borderRadius: 8,
                                             cursor: (canPlay && !exportingVideo && !playingAnim) ? "pointer" : "not-allowed",
                                             border: `1px solid ${(canPlay && !exportingVideo && !playingAnim) ? "rgba(167,139,250,0.55)" : "rgba(255,255,255,0.12)"}`,
@@ -12562,7 +12981,7 @@ function PlaybookApp() {
                 React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 10 } }, filteredPlays.map(play => (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => { loadPlay(play); setMobilePanel(null); } },
                     React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
                         React.createElement("span", { style: { fontWeight: 600, fontSize: 15, color: "#fff" } }, play.name),
-                        React.createElement("button", { onClick: e => { e.stopPropagation(); setPlays(p => p.filter(x => x.id !== play.id)); }, style: { background: "none", border: "none", color: "rgba(239,68,68,0.5)", cursor: "pointer", fontSize: 13 } }, "\u2715")),
+                        caps.deleteContent && (React.createElement("button", { onClick: e => { e.stopPropagation(); setPlays(p => p.filter(x => x.id !== play.id)); }, style: { background: "none", border: "none", color: "rgba(239,68,68,0.5)", cursor: "pointer", fontSize: 13 } }, "\u2715"))),
                     React.createElement("div", { style: { display: "flex", gap: 4 } },
                         React.createElement("span", { className: "badge", style: { background: "rgba(245,158,11,0.12)", color: "#fcd34d", border: "1px solid rgba(245,158,11,0.25)" } }, play.formation),
                         play.personnel && React.createElement("span", { className: "badge", style: { background: "rgba(168,85,247,0.12)", color: "#d8b4fe", border: "1px solid rgba(168,85,247,0.28)" } }, play.personnel),
@@ -12748,7 +13167,7 @@ function PlaybookApp() {
                                     border: `1px solid ${multiSelect ? "#4ade80" : "rgba(74,222,128,0.4)"}`,
                                     background: multiSelect ? "rgba(74,222,128,0.18)" : "rgba(74,222,128,0.08)",
                                     color: multiSelect ? "#86efac" : "#4ade80" } }, multiSelect ? "✓ SELECTING" : "☑ SELECT"),
-                            React.createElement("button", { onClick: () => {
+                            caps.exportOther && (React.createElement("button", { onClick: () => {
                                     if (playbookCat === "all")
                                         setPrintMode("all");
                                     else {
@@ -12757,7 +13176,7 @@ function PlaybookApp() {
                                     }
                                     setPrintPlayId((currentPlay && currentPlay.id) || (plays[0] && plays[0].id) || null);
                                     setShowPrint(true);
-                                }, style: { padding: "7px 13px", borderRadius: 7, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em", border: "1px solid rgba(34,211,238,0.5)", background: "rgba(34,211,238,0.12)", color: "#67e8f9" } }, "\uD83D\uDDA8 PRINT / PDF")),
+                                }, style: { padding: "7px 13px", borderRadius: 7, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em", border: "1px solid rgba(34,211,238,0.5)", background: "rgba(34,211,238,0.12)", color: "#67e8f9" } }, "\uD83D\uDDA8 PRINT / PDF"))),
                         multiSelect && (() => {
                             const visibleIds = list.map(p => p.id);
                             const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedPlayIds.has(id));
@@ -12902,10 +13321,10 @@ function PlaybookApp() {
                                                 color: playbookScope === "personal" ? "#fcd34d" : "#86efac",
                                                 fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, playbookScope === "personal" ? "→ DEFAULT" : "→ MINE"),
                                         React.createElement("button", { onClick: () => { setRenamingPlayId(play.id); setRenameVal(play.name || ""); }, title: "Rename this play", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(255,255,255,0.18)", background: "transparent", color: "rgba(255,255,255,0.7)", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\u270E"),
-                                        React.createElement("button", { onClick: () => { setPlays(prev => prev.filter(x => x.id !== play.id)); if (currentPlay && currentPlay.id === play.id) {
+                                        caps.deleteContent && (React.createElement("button", { onClick: () => { setPlays(prev => prev.filter(x => x.id !== play.id)); if (currentPlay && currentPlay.id === play.id) {
                                                 setCurrentPlay(null);
                                             } if (renamingPlayId === play.id)
-                                                setRenamingPlayId(null); }, title: "Delete this play", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(239,68,68,0.45)", background: "rgba(239,68,68,0.1)", color: "#f87171", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\uD83D\uDDD1")))));
+                                                setRenamingPlayId(null); }, title: "Delete this play", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(239,68,68,0.45)", background: "rgba(239,68,68,0.1)", color: "#f87171", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\uD83D\uDDD1"))))));
                         })))))));
             })(),
             showFilmModal && (React.createElement("div", { className: "mover", style: { zIndex: 1200 }, onClick: () => setShowFilmModal(false) },
@@ -13288,6 +13707,7 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: doPrint, disabled: printCount === 0, className: "sbtn grn", style: { flex: 1, opacity: printCount === 0 ? 0.4 : 1, cursor: printCount === 0 ? "not-allowed" : "pointer" } }, "\uD83D\uDDA8 PRINT / SAVE AS PDF"),
                             React.createElement("button", { onClick: () => setShowPrint(false), className: "sbtn dim" }, "CANCEL")))));
             })(),
+            fieldFullscreen && (React.createElement("button", { onClick: () => setFieldFullscreen(false), title: "Exit full screen", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
             canPreviewRoles && (React.createElement("div", { style: { position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9998, display: "flex", alignItems: "center", gap: 8, background: "rgba(12,12,22,0.94)", border: "1px solid rgba(167,139,250,0.55)", borderRadius: 999, padding: "5px 7px 5px 13px", boxShadow: "0 8px 28px rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontFamily: "system-ui,sans-serif" } },
                 React.createElement("span", { style: { fontSize: 10, letterSpacing: "0.13em", fontFamily: "'Bebas Neue',sans-serif", color: "#c4b5fd" } }, "VIEWING AS"),
                 React.createElement("select", { value: effRole, onChange: e => setViewAsRole(e.target.value === realRole ? null : e.target.value), title: "Preview the playbook exactly as each role sees it \u2014 you'll only be able to do what that role can do", style: { background: "#15151f", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 999, color: "#fff", fontSize: 12, padding: "4px 10px", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", cursor: "pointer" } }, ROLE_ORDER_APP.map(r => React.createElement("option", { key: r, value: r },
@@ -13655,6 +14075,50 @@ function PlaybookApp() {
                                 ")")),
                             nothing && (React.createElement("button", { onClick: () => { setShowRecover(false); setShowBackupRestore(true); }, style: { padding: "10px 16px", borderRadius: 8, cursor: "pointer", border: "1px solid rgba(167,139,250,0.6)", background: "rgba(167,139,250,0.16)", color: "#ddd6fe", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.06em", fontWeight: 700 } }, "OPEN BACKUP & RESTORE")),
                             React.createElement("button", { onClick: () => setShowRecover(false), className: "sbtn dim" }, "CLOSE")))));
+            })(),
+            notesEditorOpen && (() => {
+                const close = () => setNotesEditorOpen(false);
+                const setNote = (pid, field, val) => setPositionNotes(prev => ({ ...prev, [pid]: { ...(prev[pid] || {}), [field]: val } }));
+                const list = [...players].sort((a, b) => {
+                    const ao = a.ptype === "defense" ? 1 : 0, bo = b.ptype === "defense" ? 1 : 0;
+                    if (ao !== bo)
+                        return ao - bo;
+                    return String(a.label || "").localeCompare(String(b.label || ""));
+                });
+                return (React.createElement("div", { onClick: close, style: { position: "fixed", inset: 0, background: "rgba(6,6,12,0.82)", zIndex: 2147483646, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+                    React.createElement("div", { onClick: e => e.stopPropagation(), style: { width: "min(720px,96vw)", maxHeight: "90vh", display: "flex", flexDirection: "column", background: "#12121c", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, boxShadow: "0 18px 60px rgba(0,0,0,0.6)" } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.08)" } },
+                            React.createElement("div", { style: { flex: 1 } },
+                                React.createElement("div", { className: "hd", style: { fontSize: 18, color: "#fff", letterSpacing: "0.08em" } }, "INSTALL NOTES"),
+                                React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.5)", marginTop: 2 } },
+                                    playName || "This play",
+                                    " \u2014 each position's assignment & alignment")),
+                            React.createElement("button", { onClick: close, className: "sbtn dim", style: { padding: "6px 14px" } }, "DONE")),
+                        React.createElement("div", { style: { padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)" } },
+                            React.createElement("button", { onClick: () => setShowNotes(v => !v), style: { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 12px", cursor: "pointer", borderRadius: 8,
+                                    border: `1px solid ${showNotes ? "rgba(245,158,11,0.5)" : "rgba(255,255,255,0.14)"}`,
+                                    background: showNotes ? "rgba(245,158,11,0.12)" : "rgba(10,10,18,0.5)",
+                                    color: showNotes ? "#fcd34d" : "rgba(255,255,255,0.7)", fontFamily: "'JetBrains Mono',monospace", fontSize: 12, textAlign: "left" } },
+                                React.createElement("span", { style: { fontSize: 15 } }, showNotes ? "▣" : "▢"),
+                                React.createElement("span", null, "Show the notes screen after this play during an install RUN"))),
+                        React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: "8px 20px 18px" } },
+                            list.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", padding: "24px 0", textAlign: "center" } }, "No players on the field yet.")) : (React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } },
+                                React.createElement("thead", null,
+                                    React.createElement("tr", null,
+                                        React.createElement("th", { style: { textAlign: "left", padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em", width: 48 } }, "POS"),
+                                        React.createElement("th", { style: { textAlign: "left", padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em" } }, "ASSIGNMENT"),
+                                        React.createElement("th", { style: { textAlign: "left", padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em" } }, "ALIGNMENT"))),
+                                React.createElement("tbody", null, list.map(pl => {
+                                    const n = positionNotes[pl.id] || {};
+                                    return (React.createElement("tr", { key: pl.id },
+                                        React.createElement("td", { style: { padding: "4px 6px", verticalAlign: "top" } },
+                                            React.createElement("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 26, height: 26, borderRadius: 6, background: pl.color || "#475569", color: "#0a0a14", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, fontWeight: 700, padding: "0 6px" } }, pl.label || pl.role || "?")),
+                                        React.createElement("td", { style: { padding: "4px 6px" } },
+                                            React.createElement("textarea", { value: n.assign || "", onChange: e => setNote(pl.id, "assign", e.target.value), placeholder: "What they do\u2026", rows: 2, style: { width: "100%", resize: "vertical", background: "rgba(10,10,18,0.6)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, color: "#e8e8ee", fontFamily: "'JetBrains Mono',monospace", fontSize: 12, padding: "6px 8px", lineHeight: 1.4 } })),
+                                        React.createElement("td", { style: { padding: "4px 6px" } },
+                                            React.createElement("textarea", { value: n.align || "", onChange: e => setNote(pl.id, "align", e.target.value), placeholder: "Where they line up\u2026", rows: 2, style: { width: "100%", resize: "vertical", background: "rgba(10,10,18,0.6)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, color: "#e8e8ee", fontFamily: "'JetBrains Mono',monospace", fontSize: 12, padding: "6px 8px", lineHeight: 1.4 } }))));
+                                })))),
+                            React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 14 } }, "Press SAVE on the play to keep these notes.")))));
             })(),
             showBackupRestore && (() => {
                 const close = () => { setShowBackupRestore(false); setRestorePasteText(""); setCopyStatus(""); };
@@ -14388,8 +14852,25 @@ function PlaybookApp() {
                 const idx = Math.max(0, Math.min(flat.length - 1, runStepIdx));
                 const step = flat[idx];
                 const exit = () => { setRunningScriptId(null); setRunningInstallId(null); };
-                const next = () => setRunStepIdx(i => Math.min(flat.length - 1, i + 1));
-                const prev = () => setRunStepIdx(i => Math.max(0, i - 1));
+                // A play earns a notes screen when its toggle is on AND at least one
+                // position actually has an assignment or alignment written.
+                const stepHasNotes = (pl) => !!(pl && pl.showNotes && pl.positionNotes && Object.values(pl.positionNotes).some(n => n && ((n.assign && n.assign.trim()) || (n.align && n.align.trim()))));
+                const notesNow = runNotesShown && stepHasNotes(step.play);
+                const next = () => {
+                    if (!runNotesShown && stepHasNotes(step.play)) {
+                        setRunNotesShown(true);
+                        return;
+                    } // play → its notes screen
+                    setRunNotesShown(false);
+                    setRunStepIdx(i => Math.min(flat.length - 1, i + 1));
+                };
+                const prev = () => {
+                    if (runNotesShown) {
+                        setRunNotesShown(false);
+                        return;
+                    } // notes → back to its play
+                    setRunStepIdx(i => Math.max(0, i - 1));
+                };
                 // PLAY IN ACTION from run mode — the editor state is ALREADY in
                 // sync with the visible play (auto-load useEffect handles that),
                 // so we just call the current startAnim via its ref. We don't
@@ -14451,9 +14932,7 @@ function PlaybookApp() {
                     });
                     if (minX === Infinity)
                         return { x: 0, y: 0, w: FW, h: FH };
-                    // Include the LOS *y* (the dashed line spans the full width anyway) so
-                    // it stays on screen — but DON'T let it pull the horizontal bounds
-                    // toward field-center, or a play run from a hash drifts to mid-screen.
+                    // Include the LOS *y* so the line stays on screen.
                     const lY = (typeof play.losY === "number") ? play.losY : (typeof losY === "number" ? losY : null);
                     if (lY !== null) {
                         if (lY < minY)
@@ -14461,36 +14940,12 @@ function PlaybookApp() {
                         if (lY > maxY)
                             maxY = lY;
                     }
-                    const PAD = 40;
-                    // Vertical: tight around the action — resting spots + full routes, so
-                    // every step of the animation stays in frame.
-                    let by = Math.max(0, minY - PAD);
-                    let bh = Math.min(FH - by, (maxY - minY) + 2 * PAD);
-                    // Horizontal: CENTER ON THE BALL'S HASH so a play run from a hash sits
-                    // on that hash instead of being yanked to mid-screen. The width is
-                    // symmetric about the hash and wide enough to hold every player on
-                    // both sides.
-                    const hashX = (typeof play.ballX === "number") ? play.ballX : FW / 2;
-                    let halfW = Math.max(hashX - minX, maxX - hashX) + PAD;
-                    // Widen to a landscape aspect if the play is tall/narrow — stays hash-centered.
-                    const TARGET_ASPECT = 1.55;
-                    if (2 * halfW < bh * TARGET_ASPECT)
-                        halfW = (bh * TARGET_ASPECT) / 2;
-                    let bw = 2 * halfW;
-                    let bx = hashX - halfW;
-                    // Keep the box on the field: full width if it would overflow both
-                    // sides, otherwise slide it just inside the nearest sideline.
-                    if (bw >= FW) {
-                        bx = 0;
-                        bw = FW;
-                    }
-                    else {
-                        if (bx < 0)
-                            bx = 0;
-                        else if (bx + bw > FW)
-                            bx = FW - bw;
-                    }
-                    return { x: bx, y: by, w: bw, h: bh };
+                    // RUN framing: cover the WHOLE field width, and show exactly 5 yards
+                    // of room past the top/bottom edges of the play (clamped to the field).
+                    const PAD_Y = 5 * YARD;
+                    const by = Math.max(0, minY - PAD_Y);
+                    const byEnd = Math.min(FH, maxY + PAD_Y);
+                    return { x: 0, y: by, w: FW, h: byEnd - by };
                 };
                 const vb = computePlayBounds(step.play);
                 // SOURCE OF TRUTH for what this viewer draws. At rest we render the
@@ -14520,8 +14975,8 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: exit, className: "sbtn dim", style: { padding: "6px 14px" } }, "EXIT"))),
                     React.createElement("div", { style: { flex: 1, position: "relative", overflow: "hidden", background: "#0d1f12" } },
                         React.createElement("svg", { viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, preserveAspectRatio: "xMidYMid meet", style: { width: "100%", height: "100%", display: "block" } },
-                            React.createElement("defs", null, Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `run-arr-${rt}`, markerWidth: "6", markerHeight: "6", refX: "0.8", refY: "3", orient: "auto" },
-                                React.createElement("line", { x1: "0.8", y1: "0.5", x2: "0.8", y2: "5.5", stroke: cfg.color, strokeWidth: "2", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `run-arr-${rt}`, markerWidth: "6", markerHeight: "6", refX: "4.6", refY: "2.3", orient: "auto" },
+                            React.createElement("defs", null, Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `run-arr-${rt}`, markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
+                                React.createElement("line", { x1: "0.5", y1: "0.4", x2: "0.5", y2: "3.6", stroke: cfg.color, strokeWidth: "1.4", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `run-arr-${rt}`, markerWidth: "6", markerHeight: "6", refX: "4.6", refY: "2.3", orient: "auto" },
                                 React.createElement("path", { d: "M0,0 L0,4.6 L6,2.3 z", fill: cfg.color }))))),
                             React.createElement("rect", { x: 0, y: 0, width: FW, height: FH, fill: "#1d7d40" }),
                             Array.from({ length: 20 }, (_, i) => (React.createElement("rect", { key: `mow${i}`, x: 0, y: EZ + (FIELD_DIM / 20) * i, width: FW, height: FIELD_DIM / 20, fill: i % 2 === 0 ? "#1d7d40" : "#176a37" }))),
@@ -14597,9 +15052,9 @@ function PlaybookApp() {
                                     React.createElement("circle", { cx: mx, cy: my, r: 6, fill: col, fillOpacity: "0.3", stroke: col, strokeWidth: 1 }),
                                     React.createElement("text", { x: mx, y: my, dy: "0.36em", textAnchor: "middle", fill: col, fontSize: "8.5", fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif" }, m.mode === "overTop" ? "O" : "T")));
                             }),
-                            (() => {
+                            !(vAnimating && hideRoutesInAction) && (() => {
                                 const motionsWithFollowUpRun = new Set();
-                                vRoutes.forEach(r => { if (r && r.attachedToMotion)
+                                vRoutes.forEach(r => { if (r && r.attachedToMotion && !r.showParentEnd)
                                     motionsWithFollowUpRun.add(r.attachedToMotion); });
                                 return vRoutes.map(r => {
                                     var _a, _b, _c;
@@ -14692,6 +15147,10 @@ function PlaybookApp() {
                                 border: `1px solid ${loopAnim ? "rgba(74,222,128,0.65)" : "rgba(255,255,255,0.18)"}`,
                                 background: loopAnim ? "rgba(74,222,128,0.2)" : "rgba(255,255,255,0.05)",
                                 color: loopAnim ? "#86efac" : "rgba(255,255,255,0.6)", fontWeight: 600 } }, "\uD83D\uDD01 LOOP"),
+                        React.createElement("button", { onClick: () => setHideRoutesInAction(v => !v), title: hideRoutesInAction ? "Route lines are hidden during play in action — tap to show them" : "Hide route lines during play in action — just the players move", style: { padding: "9px 16px", borderRadius: 7, cursor: "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
+                                border: `1px solid ${hideRoutesInAction ? "rgba(251,191,36,0.65)" : "rgba(255,255,255,0.18)"}`,
+                                background: hideRoutesInAction ? "rgba(251,191,36,0.2)" : "rgba(255,255,255,0.05)",
+                                color: hideRoutesInAction ? "#fcd34d" : "rgba(255,255,255,0.6)", fontWeight: 600 } }, "\u3030 HIDE ROUTES"),
                         React.createElement("div", { style: { flex: 1, maxWidth: 300, margin: "0 14px", display: "flex", flexDirection: "column", gap: 3 } },
                             isInstallRun && (React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", color: donePct === 100 ? "#86efac" : "rgba(255,255,255,0.72)" } },
                                 React.createElement("span", null, donePct === 100 ? "✓ INSTALL COMPLETE" : "COMPLETED"),
@@ -14708,7 +15167,47 @@ function PlaybookApp() {
                                 border: `1px solid ${idx === flat.length - 1 ? "rgba(74,222,128,0.25)" : "rgba(74,222,128,0.6)"}`,
                                 background: idx === flat.length - 1 ? "rgba(74,222,128,0.05)" : "rgba(74,222,128,0.18)",
                                 color: idx === flat.length - 1 ? "rgba(134,239,172,0.4)" : "#86efac",
-                                opacity: idx === flat.length - 1 ? 0.6 : 1 } }, "NEXT \u203A"))));
+                                opacity: idx === flat.length - 1 ? 0.6 : 1 } }, "NEXT \u203A")),
+                    notesNow && (() => {
+                        const pl = step.play;
+                        const pls = [...(pl.players || [])].sort((a, b) => {
+                            const ao = a.ptype === "defense" ? 1 : 0, bo = b.ptype === "defense" ? 1 : 0;
+                            if (ao !== bo)
+                                return ao - bo;
+                            return String(a.label || "").localeCompare(String(b.label || ""));
+                        });
+                        const pn = pl.positionNotes || {};
+                        const assigns = pls.filter(p => pn[p.id] && pn[p.id].assign && pn[p.id].assign.trim());
+                        const aligns = pls.filter(p => pn[p.id] && pn[p.id].align && pn[p.id].align.trim());
+                        const rowsFor = (items, field) => items.length === 0
+                            ? React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.32)" } }, "\u2014")
+                            : items.map(p => (React.createElement("div", { key: p.id, style: { display: "flex", gap: 12, marginBottom: 14, alignItems: "flex-start" } },
+                                React.createElement("span", { style: { flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 30, height: 30, borderRadius: 7, background: p.color || "#475569", color: "#0a0a14", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, fontWeight: 700, padding: "0 7px" } }, p.label || p.role || "?"),
+                                React.createElement("span", { style: { flex: 1, color: "#e8e8ee", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, lineHeight: 1.5, whiteSpace: "pre-wrap", paddingTop: 5 } }, pn[p.id][field]))));
+                        return (React.createElement("div", { style: { position: "absolute", inset: 0, background: "#0a0a14", zIndex: 5, display: "flex", flexDirection: "column" } },
+                            typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", style: { position: "absolute", left: 10, top: 10, zIndex: 6, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer" } }, "\u2190 Dashboard")),
+                            React.createElement("div", { style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
+                                React.createElement("div", { style: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center", maxWidth: "66%", pointerEvents: "none" } },
+                                    React.createElement("div", { className: "hd", style: { fontSize: 20, color: "#fff", letterSpacing: "0.1em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, pl.name),
+                                    React.createElement("div", { className: "mono", style: { fontSize: 11, color: "#fcd34d", marginTop: 3, letterSpacing: "0.08em" } }, "POSITION NOTES")),
+                                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+                                    React.createElement("div", { className: "mono", style: { fontSize: 13, color: "rgba(255,255,255,0.65)", fontWeight: 600 } },
+                                        idx + 1,
+                                        " / ",
+                                        flat.length),
+                                    React.createElement("button", { onClick: exit, className: "sbtn dim", style: { padding: "6px 14px" } }, "EXIT"))),
+                            React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: "26px 32px", display: "flex", gap: 44, flexWrap: "wrap", alignItems: "flex-start" } },
+                                React.createElement("div", { style: { flex: 1, minWidth: 280 } },
+                                    React.createElement("div", { className: "hd", style: { fontSize: 16, color: "#f59e0b", letterSpacing: "0.12em", marginBottom: 14, paddingBottom: 8, borderBottom: "1px solid rgba(245,158,11,0.25)" } }, "ASSIGNMENT"),
+                                    rowsFor(assigns, "assign")),
+                                React.createElement("div", { style: { flex: 1, minWidth: 280 } },
+                                    React.createElement("div", { className: "hd", style: { fontSize: 16, color: "#38bdf8", letterSpacing: "0.12em", marginBottom: 14, paddingBottom: 8, borderBottom: "1px solid rgba(56,189,248,0.25)" } }, "ALIGNMENT"),
+                                    rowsFor(aligns, "align"))),
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 22px", borderTop: "1px solid rgba(255,255,255,0.07)" } },
+                                React.createElement("button", { onClick: prev, style: { padding: "9px 22px", borderRadius: 7, cursor: "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", border: "1px solid rgba(255,255,255,0.25)", background: "rgba(255,255,255,0.06)", color: "#fff" } }, "\u2039 PLAY"),
+                                React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)" } }, "what each position does & where they line up"),
+                                React.createElement("button", { onClick: next, disabled: idx === flat.length - 1, style: { padding: "9px 22px", borderRadius: 7, cursor: idx === flat.length - 1 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", border: `1px solid ${idx === flat.length - 1 ? "rgba(74,222,128,0.25)" : "rgba(74,222,128,0.6)"}`, background: idx === flat.length - 1 ? "rgba(74,222,128,0.05)" : "rgba(74,222,128,0.18)", color: idx === flat.length - 1 ? "rgba(134,239,172,0.4)" : "#86efac", opacity: idx === flat.length - 1 ? 0.6 : 1 } }, "NEXT \u203A"))));
+                    })()));
             })(),
             showScripts && (() => {
                 const openScript = openScriptId ? scripts.find(s => s.id === openScriptId) : null;
@@ -15034,17 +15533,18 @@ function PlaybookApp() {
                 React.createElement("div", { className: "mbox", onClick: e => e.stopPropagation(), style: { maxHeight: "90vh", display: "flex", flexDirection: "column" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20, flexShrink: 0 } },
                         React.createElement("div", null,
-                            React.createElement("div", { className: "hd", style: { fontSize: 24, color: "#fff", letterSpacing: "0.1em" } }, "HUDL INTEGRATION"),
-                            React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.35)", marginTop: 3 } }, "Sync your playbook with Hudl.com")),
+                            React.createElement("div", { className: "hd", style: { fontSize: 24, color: "#fff", letterSpacing: "0.1em" } }, "MENU")),
                         React.createElement("button", { onClick: () => setShowHudl(false), style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 22, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                     React.createElement("div", { style: { overflowY: "auto", overflowX: "hidden", minHeight: 0, flexShrink: 1, paddingRight: 4 } },
                         [
                             { icon: "📝", title: "Practice Scripts", desc: `${scripts.length} script${scripts.length === 1 ? "" : "s"} · ordered play sequences organized into periods`, color: "#67e8f9", lbl: "OPEN", action: () => { setShowHudl(false); setShowScripts(true); } },
                             { icon: "📋", title: "Installs", desc: `${installs.length} install${installs.length === 1 ? "" : "s"} · group plays & formations into named packages`, color: "#fbbf24", lbl: "OPEN", action: () => { setShowHudl(false); setShowInstalls(true); } },
-                            { icon: "💾", title: "Backup & Restore MINE", desc: "Copy your MINE library out as text (paste it into a note, text file, or email), then later paste it back to restore. Works regardless of any download/file-picker restrictions in the browser.", color: "#34d399", lbl: "OPEN", action: () => { setShowBackupRestore(true); } },
-                            { icon: "↑", title: "Export Playbook CSV", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} → spreadsheet/Hudl-friendly CSV (play list)`, color: "#4ade80", lbl: "EXPORT CSV", action: () => { exportCSV(); } },
-                            { icon: "⤓", title: "Export Full Playbook (JSON)", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} with all players, routes & coverages — re-importable`, color: "#22d3ee", lbl: "EXPORT JSON", action: () => { exportJSON(); } },
-                            { icon: "🖨", title: "Print / Export PDF", desc: "Print one play or a whole category — choose 'Save as PDF' to export a file", color: "#a78bfa", lbl: "PRINT / PDF", action: () => { setShowHudl(false); setPrintPlayId((currentPlay && currentPlay.id) || (plays[0] && plays[0].id) || null); setShowPrint(true); } },
+                            ...(caps.exportOther ? [
+                                { icon: "💾", title: "Backup & Restore MINE", desc: "Copy your MINE library out as text (paste it into a note, text file, or email), then later paste it back to restore. Works regardless of any download/file-picker restrictions in the browser.", color: "#34d399", lbl: "OPEN", action: () => { setShowBackupRestore(true); } },
+                                { icon: "↑", title: "Export Playbook CSV", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} → spreadsheet/Hudl-friendly CSV (play list)`, color: "#4ade80", lbl: "EXPORT CSV", action: () => { exportCSV(); } },
+                                { icon: "⤓", title: "Export Full Playbook (JSON)", desc: `${plays.length} play${plays.length === 1 ? "" : "s"} with all players, routes & coverages — re-importable`, color: "#22d3ee", lbl: "EXPORT JSON", action: () => { exportJSON(); } },
+                                { icon: "🖨", title: "Print / Export PDF", desc: "Print one play or a whole category — choose 'Save as PDF' to export a file", color: "#a78bfa", lbl: "PRINT / PDF", action: () => { setShowHudl(false); setPrintPlayId((currentPlay && currentPlay.id) || (plays[0] && plays[0].id) || null); setShowPrint(true); } },
+                            ] : []),
                             { icon: "⇗", title: "Open Hudl.com", desc: "Launch your Hudl account in a new tab", color: "#f59e0b", lbl: "OPEN HUDL", action: () => { window.open("https://www.hudl.com", "_blank"); setShowHudl(false); } },
                         ].map((opt, i) => (React.createElement("div", { key: i, style: { background: "#1a1a28", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "13px 15px", marginBottom: 9, display: "flex", alignItems: "center", gap: 13 } },
                             React.createElement("div", { style: { width: 38, height: 38, borderRadius: 9, border: `1px solid ${opt.color}40`, background: `${opt.color}12`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: opt.color, flexShrink: 0 } }, opt.icon),
@@ -16047,7 +16547,8 @@ function AuthScreen({ backendHost, onChangeBackend }) {
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [code, setCode] = useState("");
-  const [name, setName] = useState("");
+  const [first, setFirst] = useState("");
+  const [last, setLast] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null); // {type, text}
 
@@ -16055,6 +16556,7 @@ function AuthScreen({ backendHost, onChangeBackend }) {
     setMsg(null);
     if (!email || !pass) { setMsg({type:"err", text:"Enter your email and password."}); return; }
     if (mode === "signup" && !code.trim()) { setMsg({type:"err", text:"Enter the access code your coach gave you."}); return; }
+    if (mode === "signup" && (!first.trim() || !last.trim())) { setMsg({type:"err", text:"Enter your first and last name."}); return; }
     setBusy(true);
     try {
       if (mode === "signup") {
@@ -16062,7 +16564,9 @@ function AuthScreen({ backendHost, onChangeBackend }) {
         if (error) throw error;
         // Stash the code so it still works after an email-confirmation round trip.
         localStorage.setItem("gp_pending_code", code.trim().toUpperCase());
-        localStorage.setItem("gp_pending_name", name.trim());
+        localStorage.setItem("gp_pending_first", first.trim());
+        localStorage.setItem("gp_pending_last", last.trim());
+        localStorage.setItem("gp_pending_name", (first.trim() + " " + last.trim()).trim());
         if (data.session) {
           // Confirmation is off → we're already in; the app will redeem the code.
           setMsg({type:"ok", text:"Account created. Setting up your team…"});
@@ -16092,8 +16596,17 @@ function AuthScreen({ backendHost, onChangeBackend }) {
       <input type="password" value={pass} onChange={e=>setPass(e.target.value)} placeholder="••••••••" autoComplete={mode==="signup"?"new-password":"current-password"} onKeyDown={e=>e.key==="Enter"&&mode==="login"&&submit()} />
 
       {mode === "signup" && <>
-        <label>Your name <span style={{color:"var(--faint)"}}>(shown to your team)</span></label>
-        <input value={name} onChange={e=>setName(e.target.value)} placeholder="Coach Last Name" />
+        <div style={{display:"flex",gap:8}}>
+          <div style={{flex:1,minWidth:0}}>
+            <label>First name</label>
+            <input value={first} onChange={e=>setFirst(e.target.value)} placeholder="First" />
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <label>Last name</label>
+            <input value={last} onChange={e=>setLast(e.target.value)} placeholder="Last" />
+          </div>
+        </div>
+        <div style={{color:"var(--faint)",fontSize:11.5,lineHeight:1.5,margin:"3px 0 2px"}}>Players appear on the roster as &ldquo;{first.trim()?first.trim()[0].toUpperCase():"F"}. {last.trim()||"Last"}&rdquo; — spelled out in full only if a teammate already has that name.</div>
         <label>Access code</label>
         <input className="code-input" value={code} onChange={e=>setCode(e.target.value)} placeholder="ABCD1234" />
       </>}
@@ -16123,18 +16636,22 @@ function AuthScreen({ backendHost, onChangeBackend }) {
 // ── Logged in, but not on a team yet ────────────────────────────────────────
 function JoinTeam({ displayName, onJoined }) {
   const [code, setCode] = useState("");
-  const [name, setName] = useState(displayName || "");
+  // Prefill from a name captured at sign-up (localStorage or auth metadata).
+  const seed = (localStorage.getItem("gp_pending_name") || displayName || "").trim();
+  const seedParts = seed ? seed.split(/\s+/) : [];
+  const [first, setFirst] = useState(localStorage.getItem("gp_pending_first") || (seedParts[0] || ""));
+  const [last, setLast] = useState(localStorage.getItem("gp_pending_last") || (seedParts.length > 1 ? seedParts.slice(1).join(" ") : ""));
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
   const join = async () => {
     if (!code.trim()) { setMsg({type:"err", text:"Enter your access code."}); return; }
+    if (!first.trim() || !last.trim()) { setMsg({type:"err", text:"Enter your first and last name."}); return; }
     setBusy(true); setMsg(null);
     try {
-      const { error } = await db.rpc("redeem_code", { p_code: code.trim().toUpperCase(), p_display: name.trim() || null });
+      const { error } = await db.rpc("redeem_code", { p_code: code.trim().toUpperCase(), p_first: first.trim(), p_last: last.trim() });
       if (error) throw error;
-      localStorage.removeItem("gp_pending_code");
-      localStorage.removeItem("gp_pending_name");
+      ["gp_pending_code","gp_pending_name","gp_pending_first","gp_pending_last"].forEach(k=>localStorage.removeItem(k));
       onJoined();
     } catch (e) {
       setMsg({type:"err", text: friendlyError(e)});
@@ -16145,10 +16662,19 @@ function JoinTeam({ displayName, onJoined }) {
     <div className="card">
       <p className="sec">Join your team</p>
       <div style={{color:"var(--muted)",fontSize:13,lineHeight:1.6,marginBottom:6}}>
-        You're signed in. Enter the access code from your team's admin to get into your playbook.
+        You're signed in. Enter your name and the access code from your team's admin to get into your playbook.
       </div>
-      <label>Your name</label>
-      <input value={name} onChange={e=>setName(e.target.value)} placeholder="Coach Last Name" />
+      <div style={{display:"flex",gap:8}}>
+        <div style={{flex:1,minWidth:0}}>
+          <label>First name</label>
+          <input value={first} onChange={e=>setFirst(e.target.value)} placeholder="First" />
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <label>Last name</label>
+          <input value={last} onChange={e=>setLast(e.target.value)} placeholder="Last" />
+        </div>
+      </div>
+      <div style={{color:"var(--faint)",fontSize:11.5,lineHeight:1.5,margin:"3px 0 2px"}}>Players appear as &ldquo;{first.trim()?first.trim()[0].toUpperCase():"F"}. {last.trim()||"Last"}&rdquo; — full name only if a teammate already has it.</div>
       <label>Access code</label>
       <input className="code-input" value={code} onChange={e=>setCode(e.target.value)} placeholder="ABCD1234" onKeyDown={e=>e.key==="Enter"&&join()} />
       <button className="btn" disabled={busy} onClick={join}>{busy ? "Joining…" : "Join Team"}</button>
@@ -16426,8 +16952,8 @@ function App() {
       const pending = localStorage.getItem("gp_pending_code");
       if (pending) {
         try {
-          await db.rpc("redeem_code", { p_code: pending, p_display: localStorage.getItem("gp_pending_name") || null });
-          localStorage.removeItem("gp_pending_code"); localStorage.removeItem("gp_pending_name");
+          await db.rpc("redeem_code", { p_code: pending, p_first: localStorage.getItem("gp_pending_first") || null, p_last: localStorage.getItem("gp_pending_last") || null, p_display: localStorage.getItem("gp_pending_name") || null });
+          ["gp_pending_code","gp_pending_name","gp_pending_first","gp_pending_last"].forEach(k=>localStorage.removeItem(k));
           const re = await db.from("memberships").select("team_id, role, display_name, teams(name)").order("created_at");
           list = re.data || [];
         } catch (_) { /* bad/used code → JoinTeam screen handles it */ }
@@ -16486,7 +17012,7 @@ function App() {
     return (
       <div style={{position:"fixed",inset:0,overflow:"auto",WebkitOverflowScrolling:"touch",background:"#090912",zIndex:2000}}>
         {React.createElement(window.GridironApp)}
-        <button onClick={()=>setShowEditor(false)} title="Back to team dashboard"
+        <button id="gp-dash-btn" onClick={()=>setShowEditor(false)} title="Back to team dashboard"
           style={{position:"fixed",left:10,bottom:10,zIndex:2147483600,display:"flex",alignItems:"center",gap:6,padding:"7px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.28)",background:"rgba(10,10,18,0.9)",color:"#fff",fontFamily:"'Bebas Neue',sans-serif",fontSize:14,letterSpacing:"0.07em",cursor:"pointer",backdropFilter:"blur(5px)",boxShadow:"0 3px 14px rgba(0,0,0,0.5)"}}>← Dashboard</button>
       </div>
     );
