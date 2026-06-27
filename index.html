@@ -2031,6 +2031,9 @@ function PlaybookApp() {
     // Full-screen "show it off" mode in the 2D editor — hides all chrome and
     // blows the field up to fill the screen. Field stays fully interactive.
     const [fieldFullscreen, setFieldFullscreen] = useState(false);
+    // Mobile "horizontal view": rotate the full-screen field 90° so a wide play
+    // band fills a tall phone instead of shrinking to a thin strip.
+    const [fieldRotated, setFieldRotated] = useState(false);
     // Frozen full-screen viewBox: computed from the play at rest and held FIXED
     // while PLAY IN ACTION runs, so the camera never chases the moving players —
     // the 5-yard margins are what keep the whole motion in frame.
@@ -2054,6 +2057,7 @@ function PlaybookApp() {
     // Formation chosen in the bulk-assign dropdown (empty = no action queued)
     const [bulkFormation, setBulkFormation] = useState("");
     const pendingPlayRef = useRef(null); // a cross-category play queued to load after the tab switches
+    const playListRef = useRef(null); // the scrollable left-hand library list (for scroll-to-selected)
     const [showPrint, setShowPrint] = useState(false); // print / export-PDF modal
     // ── Role / permissions ──
     // realRole comes from the auth shell; standalone defaults to admin. Only an
@@ -2068,6 +2072,11 @@ function PlaybookApp() {
     const readOnly = !caps.edit;
     const capsRef = useRef(caps);
     capsRef.current = caps;
+    // View-only roles can only ever hold the Select or Pan tool — never an editing
+    // tool (route, add-player, text, erase, zone, man). If the role flips while an
+    // editing tool is active, snap back to Select.
+    useEffect(() => { if (readOnly && tool !== "select" && tool !== "pan")
+        setTool("select"); }, [readOnly, tool]);
     // Team backend handle (present only inside the cloud shell, not standalone).
     // Drives the per-player install progress + play-questions features.
     const teamDB = (typeof window !== "undefined" && window.GP_DB) || null;
@@ -2718,9 +2727,11 @@ function PlaybookApp() {
     const [sharedScripts, setSharedScripts] = useState([]);
     const [scriptsHydrated, setScriptsHydrated] = useState(false);
     // List sort/search prefs for the scripts & installs modals (UI-only, not persisted).
-    const [scriptSort, setScriptSort] = useState("date"); // "date" (newest first) | "name"
-    const [installSort, setInstallSort] = useState("date"); // "date" (newest first) | "name"
+    const [scriptSort, setScriptSort] = useState("date"); // "date" | "name" | "side" | "custom"
+    const [scriptQuery, setScriptQuery] = useState("");
+    const [installSort, setInstallSort] = useState("date"); // "date" | "name" | "side"
     const [installQuery, setInstallQuery] = useState("");
+    const [installSideFilter, setInstallSideFilter] = useState("all"); // all | offense | defense | special
     const scripts = playbookScope === "personal" ? personalScripts : sharedScripts;
     const setScripts = useCallback((u) => {
         if (scopeRef.current === "personal")
@@ -4705,6 +4716,10 @@ function PlaybookApp() {
     }, [tab, losY, ballX, customForms, players, routes, pushUndo]);
     // Open the "Save Formation" dialog (replaces window.prompt — those don't run in the artifact iframe)
     const openSaveFormation = useCallback(() => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const targetPType = tab === "defense" ? "defense" : "offense";
         const teamPlayers = players.filter(p => p.ptype === targetPType);
         if (teamPlayers.length === 0)
@@ -5117,9 +5132,26 @@ function PlaybookApp() {
         const svg = svgRef.current;
         if (!svg)
             return { x: 0, y: 0 };
-        const rect = svg.getBoundingClientRect();
         const cx = e.touches ? e.touches[0].clientX : e.clientX;
         const cy = e.touches ? e.touches[0].clientY : e.clientY;
+        // getScreenCTM maps the SVG's user space (its viewBox) to screen pixels,
+        // correctly accounting for preserveAspectRatio letterboxing AND any CSS
+        // transform (e.g. the rotated full-screen view). Inverting it turns a screen
+        // tap into the right field coordinate in every mode — fixing the old linear
+        // map, which silently broke whenever the viewBox didn't exactly fill the box.
+        try {
+            const ctm = svg.getScreenCTM();
+            if (ctm && typeof svg.createSVGPoint === "function") {
+                const pt = svg.createSVGPoint();
+                pt.x = cx;
+                pt.y = cy;
+                const p = pt.matrixTransform(ctm.inverse());
+                if (isFinite(p.x) && isFinite(p.y))
+                    return { x: p.x, y: p.y };
+            }
+        }
+        catch (_) { }
+        const rect = svg.getBoundingClientRect();
         const { vbX, vbY, vbW, vbH } = computeViewBox();
         const x = vbX + (cx - rect.left) * (vbW / rect.width);
         const y = vbY + (cy - rect.top) * (vbH / rect.height);
@@ -5318,6 +5350,10 @@ function PlaybookApp() {
             setViewCenter({ x: panStart.cx + dxs, y: panStart.cy + dys });
             return;
         }
+        // View-only roles (player / coach-T): panning above is navigation and stays
+        // allowed, but nothing on the field can be dragged, moved, or reshaped.
+        if (!capsRef.current.edit)
+            return;
         if (draggingLOS && losDragRef.current) {
             const snap = losDragRef.current;
             const pt = getSVGPt(e);
@@ -5952,7 +5988,7 @@ function PlaybookApp() {
     // (mode 'resize'), or moving its label inside the zone (mode 'labelmove').
     // Start dragging a text annotation (SELECT tool only). Mirrors startZoneDrag.
     const startTextDrag = useCallback((e, t) => {
-        if (tool !== "select")
+        if (tool !== "select" && tool !== "text")
             return;
         e.stopPropagation();
         setSelectedTextId(t.id);
@@ -5986,6 +6022,7 @@ function PlaybookApp() {
         text: t.text != null ? t.text : "Text",
         color: t.color || "#ffffff",
         size: t.size || 18,
+        shape: t.shape || undefined,
         x: ballX + (t.dx || 0),
         y: losY + (t.dy || 0),
     })), [ballX, losY]);
@@ -5993,7 +6030,7 @@ function PlaybookApp() {
     // any not-yet-claimed "formation" texts) as ball/LOS-relative offsets.
     const captureTextsForOwner = useCallback((owner) => texts
         .filter(t => t.owner === owner || t.owner === "formation")
-        .map(t => ({ text: t.text, color: t.color, size: t.size, dx: Math.round(t.x - ballX), dy: Math.round(t.y - losY) })), [texts, ballX, losY]);
+        .map(t => ({ text: t.text, color: t.color, size: t.size, shape: t.shape || undefined, dx: Math.round(t.x - ballX), dy: Math.round(t.y - losY) })), [texts, ballX, losY]);
     const startZoneDrag = useCallback((e, z, mode, corner) => {
         if (tool !== "select")
             return; // erase/other tools fall through to the shape's onClick
@@ -6393,6 +6430,10 @@ function PlaybookApp() {
             alert(`Assigned ${z.length - unassigned} of ${z.length} zones to the nearest available defenders${lockNote}. ${unassigned} had no non-blitzing defender left to take ${unassigned === 1 ? "it" : "them"}.`);
     }, [coverages, players, routes, losY, assignZonesToDefenders, sortPrefs]);
     const savePlay = useCallback(() => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't save changes.");
+            return;
+        }
         // Many-to-many formation support: preserve any extra formations already
         // associated with the play; ensure the current primary `formation` is the
         // first entry in the list (and that the list stays deduped).
@@ -6465,6 +6506,26 @@ function PlaybookApp() {
         setZoom(1);
         setViewCenter({ x: FW / 2, y: ly });
     }, [loadFormation, splitMaxOffset]);
+    // Whenever the loaded play changes — clicked in the left list, opened from the
+    // ALL-plays browser, stepped to with the keyboard, or just saved — scroll the
+    // left-hand library so the highlighted play is visible. Only nudges the list
+    // itself (never the page), and does nothing if the play is already in view.
+    useEffect(() => {
+        const box = playListRef.current;
+        if (!box)
+            return;
+        const el = box.querySelector(".pitem.on");
+        if (!el)
+            return;
+        const er = el.getBoundingClientRect();
+        const br = box.getBoundingClientRect();
+        if (er.height === 0 || br.height === 0)
+            return; // hidden (e.g. mobile)
+        if (er.top < br.top)
+            box.scrollTo({ top: box.scrollTop - (br.top - er.top) - 8, behavior: "smooth" });
+        else if (er.bottom > br.bottom)
+            box.scrollTo({ top: box.scrollTop + (er.bottom - br.bottom) + 8, behavior: "smooth" });
+    }, [currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id]);
     // ── Formation membership editing (many-to-many) ──
     // Add a formation to a play's compatible-formations list. The first entry
     // stays primary; we add to the end. If the play has no formations array yet,
@@ -6734,6 +6795,10 @@ function PlaybookApp() {
     // routes (pass, run, blocking, blitzes, options) are NOT saved with
     // coverages — those belong in blitz/scheme presets.
     const saveCurrentAsCoverage = useCallback((name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const trimmed = (name || "").trim();
         if (!trimmed)
             return;
@@ -7089,6 +7154,10 @@ function PlaybookApp() {
     // carrying motion style (set/moving) and firing order. applyMotion re-creates
     // them on whoever wears those labels and clean-swaps the field's motions.
     const saveMotion = useCallback((name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const trimmed = (name || "").trim();
         if (!trimmed)
             return;
@@ -7219,6 +7288,10 @@ function PlaybookApp() {
     // gets a fresh ID. Each option records its branch-point index plus
     // its own path stored as offsets from that branch point.
     const saveCurrentAsBlitz = useCallback((name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const trimmed = (name || "").trim();
         if (!trimmed)
             return;
@@ -7331,6 +7404,17 @@ function PlaybookApp() {
                 attachIdx,
                 pointOffsets: optOffsets,
             };
+            // An option can carry its own follow-up (option → continuation). Capture
+            // it relative to the option's LAST point so it reconnects on apply.
+            const optFuRoute = routes.find(x => x && x.attachedToMotion === r.id && x.points && x.points.length >= 2);
+            if (optFuRoute) {
+                const oEnd = r.points[r.points.length - 1];
+                optEntry.followUp = {
+                    rtype: optFuRoute.rtype || undefined,
+                    pointOffsets: optFuRoute.points.map(pt => ({ dx: pt.x - oEnd.x, dy: pt.y - oEnd.y })),
+                    showParentEnd: optFuRoute.showParentEnd || undefined,
+                };
+            }
             if (slot.kind === "blitzer")
                 blitzers[slot.index].options.push(optEntry);
             else
@@ -7424,13 +7508,17 @@ function PlaybookApp() {
                 }));
                 if (optPoints.length < 2)
                     return;
+                const optNewId = uid();
                 newRoutes.push({
-                    id: uid(),
+                    id: optNewId,
                     points: optPoints,
                     rtype: opt.rtype,
                     optionOf: parentNewId,
                     attachIdx: idx,
                 });
+                // Recreate a follow-up chained to this option's endpoint, if one was saved.
+                if (opt.followUp)
+                    buildFollowUp(optNewId, optPoints, opt.followUp, undefined, opt.rtype);
             });
         };
         // Helper: recreate a FOLLOW-UP route chained to a motion's endpoint. The
@@ -7731,6 +7819,10 @@ function PlaybookApp() {
     //            wears that label no matter how the formation lines up.
     const OFF_DRAWN = useCallback((rt) => rt !== "preSnapMotion" && rt !== "postSnapMotion" && rt !== "showBlitz" && rt !== "hideBlitz", []);
     const saveRouteCombo = useCallback((name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const trimmed = (name || "").trim();
         if (!trimmed)
             return;
@@ -8120,6 +8212,10 @@ function PlaybookApp() {
     }, [selectedScheme, setSchemePresets]);
     // ── Install helpers (named groups of plays/formations) ──
     const createInstall = useCallback((name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const trimmed = (name || "").trim() || `Install ${(installs.length || 0) + 1}`;
         const newInstall = {
             id: uid(),
@@ -8128,13 +8224,21 @@ function PlaybookApp() {
             description: "",
             playIds: [],
             formations: [],
+            side: "offense",
             color: "#fbbf24",
         };
         setInstalls(prev => [...prev, newInstall]);
         return newInstall.id;
     }, [installs, setInstalls]);
     const renameInstall = useCallback((id, newName, newDescription) => {
-        setInstalls(prev => prev.map(i => i.id === id ? { ...i, name: (newName == null ? i.name : newName.trim() || i.name), description: (newDescription == null ? i.description : newDescription) } : i));
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
+        // Name and description are free text: allow clearing them completely and
+        // typing spaces anywhere. (newName/newDescription === null means "leave this
+        // field untouched", which is how the two inputs target one field each.)
+        setInstalls(prev => prev.map(i => i.id === id ? { ...i, name: (newName == null ? i.name : newName), description: (newDescription == null ? i.description : newDescription) } : i));
     }, [setInstalls]);
     const deleteInstall = useCallback((id) => {
         if (!capsRef.current.deleteContent) {
@@ -8144,6 +8248,10 @@ function PlaybookApp() {
         setInstalls(prev => prev.filter(i => i.id !== id));
     }, [setInstalls]);
     const toggleInstallPlay = useCallback((installId, playId) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         setInstalls(prev => prev.map(i => {
             if (i.id !== installId)
                 return i;
@@ -8151,7 +8259,20 @@ function PlaybookApp() {
             return { ...i, playIds: has ? i.playIds.filter(x => x !== playId) : [...i.playIds, playId] };
         }));
     }, [setInstalls]);
+    // Tag an install as offense / defense / special teams (used for the side
+    // sort + filter).
+    const setInstallSide = useCallback((id, side) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
+        setInstalls(prev => prev.map(i => i.id === id ? { ...i, side } : i));
+    }, [setInstalls]);
     const toggleInstallFormation = useCallback((installId, formationName) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         if (!formationName)
             return;
         setInstalls(prev => prev.map(i => {
@@ -8167,12 +8288,17 @@ function PlaybookApp() {
     // based on the current playbook scope). Reordering uses up/down nudges
     // rather than drag-and-drop so it works equally well on mobile.
     const createScript = useCallback((name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const trimmed = (name || "").trim() || `Practice Script ${(scripts.length || 0) + 1}`;
         const newScript = {
             id: uid(),
             createdAt: Date.now(),
             name: trimmed,
             description: "",
+            side: "offense",
             periods: [
                 { id: uid(), name: "Period 1", playIds: [] },
             ],
@@ -8181,7 +8307,11 @@ function PlaybookApp() {
         return newScript.id;
     }, [scripts, setScripts]);
     const renameScript = useCallback((id, newName, newDescription) => {
-        setScripts(prev => prev.map(s => s.id === id ? { ...s, name: (newName == null ? s.name : (newName.trim() || s.name)), description: (newDescription == null ? s.description : newDescription) } : s));
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
+        setScripts(prev => prev.map(s => s.id === id ? { ...s, name: (newName == null ? s.name : newName), description: (newDescription == null ? s.description : newDescription) } : s));
     }, [setScripts]);
     const deleteScript = useCallback((id) => {
         if (!capsRef.current.deleteContent) {
@@ -8190,10 +8320,41 @@ function PlaybookApp() {
         }
         setScripts(prev => prev.filter(s => s.id !== id));
     }, [setScripts]);
+    // Manual reorder of the script list (custom sort). dir -1 = up, +1 = down.
+    const moveScript = useCallback((id, dir) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
+        setScripts(prev => {
+            const idx = prev.findIndex(s => s.id === id);
+            if (idx < 0)
+                return prev;
+            const j = idx + dir;
+            if (j < 0 || j >= prev.length)
+                return prev;
+            const next = [...prev];
+            const [it] = next.splice(idx, 1);
+            next.splice(j, 0, it);
+            return next;
+        });
+    }, [setScripts]);
+    // Tag a script as offense / defense / special teams (used for the side sort).
+    const setScriptSide = useCallback((id, side) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
+        setScripts(prev => prev.map(s => s.id === id ? { ...s, side } : s));
+    }, [setScripts]);
     // Duplicate a whole script: fresh ids for the script and every period, name
     // suffixed "(copy)", and play references copied as-is (the plays themselves
     // are shared, not cloned). The copy lands right after the original.
     const duplicateScript = useCallback((id) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         let newId = null;
         setScripts(prev => {
             const idx = prev.findIndex(s => s.id === id);
@@ -8219,6 +8380,10 @@ function PlaybookApp() {
         return newId;
     }, [setScripts]);
     const addPeriod = useCallback((scriptId, name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         setScripts(prev => prev.map(s => {
             if (s.id !== scriptId)
                 return s;
@@ -8227,18 +8392,30 @@ function PlaybookApp() {
         }));
     }, [setScripts]);
     const renamePeriod = useCallback((scriptId, periodId, newName) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         setScripts(prev => prev.map(s => s.id !== scriptId ? s : {
             ...s,
             periods: s.periods.map(per => per.id !== periodId ? per : { ...per, name: newName.trim() || per.name }),
         }));
     }, [setScripts]);
     const deletePeriod = useCallback((scriptId, periodId) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         setScripts(prev => prev.map(s => s.id !== scriptId ? s : {
             ...s,
             periods: s.periods.filter(per => per.id !== periodId),
         }));
     }, [setScripts]);
     const movePeriod = useCallback((scriptId, periodId, dir) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         setScripts(prev => prev.map(s => {
             if (s.id !== scriptId)
                 return s;
@@ -8254,6 +8431,10 @@ function PlaybookApp() {
         }));
     }, [setScripts]);
     const togglePlayInPeriod = useCallback((scriptId, periodId, playId) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         setScripts(prev => prev.map(s => s.id !== scriptId ? s : {
             ...s,
             periods: s.periods.map(per => {
@@ -8265,6 +8446,10 @@ function PlaybookApp() {
         }));
     }, [setScripts]);
     const movePlayInPeriod = useCallback((scriptId, periodId, playId, dir) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         setScripts(prev => prev.map(s => {
             if (s.id !== scriptId)
                 return s;
@@ -8739,11 +8924,24 @@ function PlaybookApp() {
             const opt = opts[0]; // First option for now — could rotate on future passes.
             const attachIdx = Math.max(0, Math.min(opt.attachIdx || 0, parentRoute.points.length - 1));
             const stem = parentRoute.points.slice(0, attachIdx);
-            const combined = [...stem, ...opt.points];
+            let combined = [...stem, ...opt.points];
+            // An option route can itself carry a follow-up (option → continuation).
+            // Chain it onto the rep-2 path the same way primaries chain in phase 1, so
+            // the player runs stem → option → follow-up as one continuous path. A
+            // blocking option with HOLD BLOCK pauses 1s at the junction (holdMs).
+            const optFollowUp = followUpByMotion.get(opt.id);
+            let optJunctionIdx = null, optHoldMs = 0;
+            if (optFollowUp && Array.isArray(optFollowUp.points) && optFollowUp.points.length >= 2) {
+                optJunctionIdx = combined.length - 1; // option ends / follow-up begins
+                combined = [...combined, ...optFollowUp.points.slice(1)];
+                optHoldMs = (opt.rtype === "blocking" && optFollowUp.holdBlock) ? 1000 : 0;
+            }
             optionRouteByPlayer.set(playerId, {
-                id: `${parentRoute.id}__opt__${opt.id}`,
+                id: `${parentRoute.id}__opt__${opt.id}${optFollowUp ? `__chain__${optFollowUp.id}` : ""}`,
                 points: combined,
                 rtype: opt.rtype || parentRoute.rtype,
+                junctionIdx: optJunctionIdx,
+                holdMs: optHoldMs,
             });
         });
         // Build zone targets: any player who has a zone attached should drop into
@@ -10233,6 +10431,55 @@ function PlaybookApp() {
                     const lh = fxs * 1.25;
                     const x = tx.x * s;
                     const y0 = tx.y * s - (lines.length - 1) * lh / 2;
+                    // Optional background shape (matches the on-screen text box).
+                    const shp = tx.shape || "none";
+                    if (shp !== "none") {
+                        let tw = 0;
+                        lines.forEach(ln => { tw = Math.max(tw, ctx.measureText(ln).width); });
+                        const th = lines.length * lh;
+                        let padV, padH;
+                        if (shp === "round") {
+                            padV = 5 * s;
+                            padH = 13 * s;
+                        }
+                        else if (shp === "rect") {
+                            padV = 5 * s;
+                            padH = 13 * s;
+                        }
+                        else if (shp === "pill") {
+                            padV = 5 * s;
+                            padH = 17 * s;
+                        }
+                        else /* ellipse */ {
+                            padV = 13 * s;
+                            padH = 26 * s;
+                        }
+                        const bw = tw + padH * 2, bh = th + padV * 2;
+                        const bx = tx.x * s - bw / 2, by = tx.y * s - bh / 2;
+                        ctx.save();
+                        ctx.fillStyle = "rgba(10,10,20,0.84)";
+                        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+                        ctx.lineWidth = Math.max(1, 1.5 * s);
+                        if (shp === "ellipse") {
+                            ctx.beginPath();
+                            ctx.ellipse(tx.x * s, tx.y * s, bw / 2, bh / 2, 0, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.stroke();
+                        }
+                        else {
+                            const r = Math.min(shp === "rect" ? 0 : shp === "pill" ? bh / 2 : 9 * s, bw / 2, bh / 2);
+                            ctx.beginPath();
+                            ctx.moveTo(bx + r, by);
+                            ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
+                            ctx.arcTo(bx + bw, by + bh, bx, by + bh, r);
+                            ctx.arcTo(bx, by + bh, bx, by, r);
+                            ctx.arcTo(bx, by, bx + bw, by, r);
+                            ctx.closePath();
+                            ctx.fill();
+                            ctx.stroke();
+                        }
+                        ctx.restore();
+                    }
                     lines.forEach((ln, li) => {
                         const yy = y0 + li * lh;
                         ctx.strokeStyle = "rgba(0,0,0,0.92)";
@@ -10649,6 +10896,10 @@ function PlaybookApp() {
     }, [runningScriptId, runningInstallId, show3D, showHelp, alignMode, exportingVideo]);
     // Duplicate a play (deep copy: players, routes, zones, ball, LOS), then open it for renaming.
     const duplicatePlay = useCallback((play) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const copy = JSON.parse(JSON.stringify(play));
         copy.id = uid();
         copy.name = (play.name || "Play") + " (copy)";
@@ -10707,6 +10958,10 @@ function PlaybookApp() {
     }, [plays]);
     // Commit an in-progress play rename.
     const commitRename = useCallback(() => {
+        if (!capsRef.current.edit) {
+            setRenamingPlayId(null);
+            return;
+        }
         setRenamingPlayId(id => {
             if (id) {
                 const nm = renameVal.trim() || "Untitled Play";
@@ -11023,6 +11278,10 @@ function PlaybookApp() {
     const routePresets = sortPrefs.routePresets || {};
     const autoCoverRules = (sortPrefs.autoCoverRules && sortPrefs.autoCoverRules.length) ? sortPrefs.autoCoverRules : DEFAULT_AUTOCOVER_RULES;
     const savePersonnelGroup = (name) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
         const n = (name || "").trim();
         if (!n)
             return;
@@ -11425,7 +11684,7 @@ function PlaybookApp() {
     .tbtn{display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 5px;border:1px solid var(--bord);border-radius:8px;background:var(--s2);cursor:pointer;transition:all 0.13s;color:var(--muted);font-size:9px;letter-spacing:0.06em;font-family:'JetBrains Mono',monospace;min-width:56px;}
     .tbtn:hover{border-color:rgba(255,255,255,0.18);color:#fff;background:var(--s3)}.tbtn.on{border-color:var(--amb);color:var(--amb);background:rgba(245,158,11,0.1);}
     .pitem{padding:9px 11px;border-radius:8px;cursor:pointer;border:1px solid transparent;transition:all 0.13s;background:var(--s2);margin-bottom:4px;}
-    .pitem:hover{border-color:var(--bord)}.pitem.on{border-color:var(--amb);background:rgba(245,158,11,0.07);}
+    .pitem:hover{border-color:var(--bord)}.pitem.on{border-color:var(--amb);background:rgba(245,158,11,0.14);box-shadow:inset 3px 0 0 var(--amb);}
     .inp{background:var(--s2);border:1px solid var(--bord);color:#fff;border-radius:7px;padding:7px 10px;font-family:'JetBrains Mono',monospace;font-size:12px;outline:none;width:100%;transition:border 0.13s;}
     .inp:focus{border-color:rgba(255,255,255,0.22);}
     select.inp{appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23888'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;padding-right:28px;}
@@ -11474,6 +11733,9 @@ function PlaybookApp() {
     .field-fs .field-col{overflow:hidden!important;padding-bottom:0!important;}
     .field-fs .field-wrap{padding:0!important;}
     .field-fs .field-svg{width:100vw!important;height:100vh!important;max-width:100vw!important;max-height:100vh!important;aspect-ratio:auto!important;border:none!important;border-radius:0!important;}
+    /* Horizontal view: size the field to viewport-height × viewport-width, then
+       rotate 90° about its centre so it fills the screen turned on its side. */
+    .field-fs.field-rot .field-svg{position:fixed!important;top:50%!important;left:50%!important;width:100vh!important;height:100vw!important;max-width:none!important;max-height:none!important;transform:translate(-50%,-50%) rotate(90deg)!important;}
     @media print{
       @page{margin:12mm;}
       html,body{background:#fff!important;}
@@ -11496,7 +11758,7 @@ function PlaybookApp() {
     .print-foot{margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#94a3b8;letter-spacing:0.08em;}
   `;
     return (React.createElement(React.Fragment, null,
-        React.createElement("div", { className: "app-screen" + (fieldFullscreen ? " field-fs" : ""), style: { fontFamily: "'Barlow Condensed',sans-serif", background: "#090912", color: "#e2e2e2", height: "100vh", display: "flex", flexDirection: "column" } },
+        React.createElement("div", { className: "app-screen" + (fieldFullscreen ? " field-fs" : "") + (fieldFullscreen && fieldRotated ? " field-rot" : ""), style: { fontFamily: "'Barlow Condensed',sans-serif", background: "#090912", color: "#e2e2e2", height: "100vh", display: "flex", flexDirection: "column" } },
             React.createElement("style", { dangerouslySetInnerHTML: { __html: STYLES } }),
             saveError && !mineLoadFailed && (React.createElement("div", { style: { position: "sticky", top: 0, zIndex: 2000, background: "linear-gradient(180deg,#7f1d1d,#5b1414)", borderBottom: "1px solid rgba(248,113,113,0.55)", padding: "12px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", boxShadow: "0 4px 18px rgba(0,0,0,0.45)" } },
                 React.createElement("div", { style: { flex: "1 1 320px", minWidth: 0 } },
@@ -11643,7 +11905,7 @@ function PlaybookApp() {
                                 border: `1px solid ${levelFilter === v ? "rgba(56,189,248,0.55)" : "rgba(255,255,255,0.12)"}`,
                                 background: levelFilter === v ? "rgba(56,189,248,0.16)" : "transparent",
                                 color: levelFilter === v ? "#bae6fd" : "rgba(255,255,255,0.5)" } }, lbl)))),
-                    React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: "8px 8px" } },
+                    React.createElement("div", { ref: playListRef, style: { flex: 1, overflowY: "auto", padding: "8px 8px" } },
                         filteredPlays.length === 0 && React.createElement("div", { style: { padding: "24px 8px", textAlign: "center", color: "rgba(255,255,255,0.18)", fontSize: 12 }, className: "mono" }, levelFilter === "all" ? React.createElement(React.Fragment, null,
                             "No plays yet.",
                             React.createElement("br", null),
@@ -11679,7 +11941,7 @@ function PlaybookApp() {
                         React.createElement("button", { className: "sbtn dim", onClick: () => cyclePlay(1), disabled: filteredPlays.length < 2, title: "Load the next saved play in this list", style: { padding: "7px 9px", fontSize: 15, lineHeight: 1, opacity: filteredPlays.length < 2 ? 0.35 : 1, cursor: filteredPlays.length < 2 ? "default" : "pointer" } }, "\u203A"),
                         React.createElement(SearchSelect, { value: formation, width: 140, placeholder: tab === "defense" ? "Front" : "Formation", title: tab === "defense" ? "Front — type to search built-in or custom fronts" : "Formation — type to search built-in or custom", options: [...formNames.filter(f => { var _a; return !((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[f]); }).map(f => ({ value: f, label: f })), ...orderedNames(Object.keys(customForms[tab] || {}), catSortPref("formations")).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (!f)
                                 return; pushUndo(); setTexts(prev => prev.filter(t => !["blitz", "coverage", "formation"].includes(t.owner))); setSelectedTextId(null); setEditingTextId(null); setFormation(f); loadFormation(f, undefined, undefined, true); } }),
-                        React.createElement("button", { className: "sbtn dim", onClick: openSaveFormation, title: "Save current layout as custom formation", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: openSaveFormation, title: "Save current layout as custom formation", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
                         React.createElement("div", { style: { position: "relative" } },
                             React.createElement("input", { className: "inp", style: { width: 128 }, placeholder: "Personnel", value: personnelOpen ? personnelQuery : personnel, onFocus: () => { setPersonnelOpen(true); setPersonnelQuery(""); }, onChange: e => { setPersonnelQuery(e.target.value); setPersonnelOpen(true); }, onBlur: () => { setTimeout(() => setPersonnelOpen(false), 130); }, title: "Personnel \u2014 pick one to stamp its saved numbers/letters/colors onto the field (positions stay put). Type a new name, then hit \uD83D\uDCBE to save the current look. The package tag is saved with the play." }),
                             personnelOpen && (() => {
@@ -11705,20 +11967,20 @@ function PlaybookApp() {
                                         "\u201D as custom")),
                                     builtins.length === 0 && customs.length === 0 && !q && React.createElement("div", { className: "mono", style: { padding: "8px 9px", fontSize: 11, color: "rgba(255,255,255,0.3)" } }, "No presets for this tab")));
                             })()),
-                        React.createElement("button", { className: "sbtn dim", onClick: () => {
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                 if (personnel)
                                     savePersonnelGroup(personnel);
                                 else {
                                     setPersonnelOpen(true);
                                     setPersonnelQuery("");
                                 }
-                            }, title: "Save the players' current numbers, letters & colors under this personnel \u2014 like saving a formation, but looks only (positions stay put). Pick or type a name first.", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
-                        personnelCustomList.length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("personnel"), title: "Reorder or delete your custom personnel (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
-                        personnel && personnelCustomList.includes(personnel) && (React.createElement(React.Fragment, null,
+                            }, title: "Save the players' current numbers, letters & colors under this personnel \u2014 like saving a formation, but looks only (positions stay put). Pick or type a name first.", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
+                        !readOnly && personnelCustomList.length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("personnel"), title: "Reorder or delete your custom personnel (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
+                        !readOnly && personnel && personnelCustomList.includes(personnel) && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "personnel", mode: "rename", original: personnel, value: personnel }), title: "Rename this custom personnel", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => { const nm = personnel; deletePersonnelGroup(nm); setPersonnel(""); }, title: "Delete this custom personnel", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
-                        Object.keys(customForms[tab] || {}).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("formations"), title: "Reorder or delete your custom formations", style: { padding: "7px 9px" } }, "\u21C5")),
-                        ((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]) && (React.createElement(React.Fragment, null,
+                        !readOnly && Object.keys(customForms[tab] || {}).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("formations"), title: "Reorder or delete your custom formations", style: { padding: "7px 9px" } }, "\u21C5")),
+                        !readOnly && ((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]) && (React.createElement(React.Fragment, null,
                             !((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation]) && (React.createElement("button", { className: "sbtn dim", onClick: openEditFormation, title: "Edit this custom formation (rename or update layout)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270F")),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setConfirmDeleteForm(formation), title: ((_c = FORMATIONS[tab]) === null || _c === void 0 ? void 0 : _c[formation]) ? "Delete your override — restores the built-in" : "Delete this custom formation", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         tab !== "special" && (React.createElement(SearchSelect, { value: "", width: 148, placeholder: `+ vs ${tab === "offense" ? "DEF" : "OFF"} look…`, title: `Add ${tab === "offense" ? "defense" : "offense"} formation onto the field`, options: [...Object.keys(FORMATIONS[tab === "offense" ? "defense" : "offense"] || {}).map(f => ({ value: f, label: f })), ...Object.keys(customForms[tab === "offense" ? "defense" : "offense"] || {}).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (f)
@@ -11740,18 +12002,18 @@ function PlaybookApp() {
                                         beginAssignRoute(n);
                                     else
                                         applyRouteCombo(n); } }),
-                                Object.keys(routePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("routes"), title: "Reorder or delete saved routes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
-                                React.createElement("button", { className: "sbtn dim", onClick: () => {
+                                !readOnly && Object.keys(routePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("routes"), title: "Reorder or delete saved routes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
+                                !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                         const base = selIsCombo ? selectedRouteCombo : `Routes ${comboCount + 1}`;
                                         setPresetNameEditor({ target: "routeCombo", mode: "save", value: uniqueVariantName(base, Object.keys(routePresets)) });
-                                    }, title: "Save every route currently on offense as a combination", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
+                                    }, title: "Save every route currently on offense as a combination", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
                                 anyOffRoute && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                         if (selPlayerRoute)
                                             setPresetNameEditor({ target: "routeSingle", mode: "save", value: uniqueVariantName(`Route ${singleCount + 1}`, Object.keys(routePresets)), capturePid: selectedId });
                                         else
                                             setPendingCaptureRoute(true);
                                     }, title: "Save one route as a single you can drop on anyone \u2014 tap \u21B1+ then tap the player whose route you want (or select a player first)", style: { padding: "7px 9px", color: "#7dd3fc", borderColor: "rgba(56,189,248,0.4)" } }, "\u21B1+")),
-                                selectedRouteCombo && routePresets[selectedRouteCombo] && (React.createElement(React.Fragment, null,
+                                !readOnly && selectedRouteCombo && routePresets[selectedRouteCombo] && (React.createElement(React.Fragment, null,
                                     React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: selIsCombo ? "routeCombo" : "routeSingle", mode: "rename", original: selectedRouteCombo, value: selectedRouteCombo, replaceLayout: false }), title: "Edit this saved route (rename, or replace its layout with the current field)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
                                     selIsCombo && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                             setDupSel(new Set([...Object.keys(FORMATIONS[tab] || {}), ...Object.keys(customForms[tab] || {})]));
@@ -11765,8 +12027,8 @@ function PlaybookApp() {
                                 setSelectedCoverage("");
                                 swapOwnedTexts("coverage", []);
                             } } }),
-                        Object.keys(coveragePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("coverages"), title: "Reorder or delete coverages (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
-                        React.createElement("button", { className: "sbtn dim", onClick: () => {
+                        !readOnly && Object.keys(coveragePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("coverages"), title: "Reorder or delete coverages (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                 // If a coverage is selected, the zones on the field are probably a
                                 // tweak of it — start the name as a "copy" of that one (bumped so
                                 // it won't overwrite the original), so a similar variant is one
@@ -11774,8 +12036,8 @@ function PlaybookApp() {
                                 const base = (selectedCoverage && coveragePresets[selectedCoverage]) ? selectedCoverage : `Coverage ${Object.keys(coveragePresets).length + 1}`;
                                 const suggested = uniqueVariantName(base, Object.keys(coveragePresets));
                                 setPresetNameEditor({ target: "coverage", mode: "save", value: suggested });
-                            }, title: "Save current zones as a coverage preset (name it on the next screen)", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
-                        selectedCoverage && coveragePresets[selectedCoverage] && (React.createElement(React.Fragment, null,
+                            }, title: "Save current zones as a coverage preset (name it on the next screen)", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
+                        !readOnly && selectedCoverage && coveragePresets[selectedCoverage] && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "coverage", mode: "rename", original: selectedCoverage, value: selectedCoverage, replaceLayout: false }), title: "Edit this coverage preset (rename or replace its zones)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetDeleteConfirm({ target: "coverage", name: selectedCoverage }), title: "Delete this coverage preset", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         tab === "defense" && (React.createElement(React.Fragment, null,
@@ -11790,13 +12052,13 @@ function PlaybookApp() {
                                 setSelectedBlitz("");
                                 swapOwnedTexts("blitz", []);
                             } } }),
-                        Object.keys(blitzPresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("blitzes"), title: "Reorder or delete blitzes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
-                        React.createElement("button", { className: "sbtn dim", onClick: () => {
+                        !readOnly && Object.keys(blitzPresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("blitzes"), title: "Reorder or delete blitzes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                 const base = (selectedBlitz && blitzPresets[selectedBlitz]) ? selectedBlitz : `Blitz ${Object.keys(blitzPresets).length + 1}`;
                                 const suggested = uniqueVariantName(base, Object.keys(blitzPresets));
                                 setPresetNameEditor({ target: "blitz", mode: "save", value: suggested });
-                            }, title: "Save current defensive routes as a blitz preset", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
-                        selectedBlitz && blitzPresets[selectedBlitz] && (React.createElement(React.Fragment, null,
+                            }, title: "Save current defensive routes as a blitz preset", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
+                        !readOnly && selectedBlitz && blitzPresets[selectedBlitz] && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "sbtn dim", onClick: () => {
                                     const cur = blitzPresets[selectedBlitz];
                                     if (!cur)
@@ -11819,13 +12081,13 @@ function PlaybookApp() {
                                 applyMotion(n);
                             else
                                 setSelectedMotion(""); } }),
-                        Object.keys(motionPresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("motions"), title: "Reorder or delete motions (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
-                        React.createElement("button", { className: "sbtn dim", onClick: () => {
+                        !readOnly && Object.keys(motionPresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("motions"), title: "Reorder or delete motions (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px" } }, "\u21C5")),
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                 const base = (selectedMotion && motionPresets[selectedMotion]) ? selectedMotion : `Motion ${Object.keys(motionPresets).length + 1}`;
                                 const suggested = uniqueVariantName(base, Object.keys(motionPresets));
                                 setPresetNameEditor({ target: "motion", mode: "save", value: suggested });
-                            }, title: "Save the pre-snap motion(s) on the field as a motion preset", style: { padding: "7px 9px" } }, "\uD83D\uDCBE"),
-                        selectedMotion && motionPresets[selectedMotion] && (React.createElement(React.Fragment, null,
+                            }, title: "Save the pre-snap motion(s) on the field as a motion preset", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
+                        !readOnly && selectedMotion && motionPresets[selectedMotion] && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "motion", mode: "rename", original: selectedMotion, value: selectedMotion, replaceLayout: false }), title: "Rename this motion preset", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetDeleteConfirm({ target: "motion", name: selectedMotion }), title: "Delete this motion preset", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         React.createElement(SearchSelect, { value: selectedScheme, width: 150, placeholder: "Scheme\u2026", borderColor: "rgba(168,85,247,0.35)", clearable: true, clearLabel: "NO SCHEME", title: "Scheme = coverage + blitz + blocking + run \u2014 type to search (matches the coverage/blitz names too)", options: orderedNames(Object.keys(schemePresets), catSortPref("schemes")).map(n => { const s = schemePresets[n]; const parts = []; if (s && s.coverage)
@@ -11836,7 +12098,7 @@ function PlaybookApp() {
                                 applyScheme(n);
                             else
                                 setSelectedScheme(""); } }),
-                        React.createElement("button", { className: "sbtn dim", onClick: () => {
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                 const hasBlocking = routes.some(r => r.rtype === "blocking");
                                 const hasRun = routes.some(r => r.rtype === "run");
                                 if (!selectedCoverage && !selectedBlitz && !hasBlocking && !hasRun) {
@@ -11846,9 +12108,9 @@ function PlaybookApp() {
                                 const base = (selectedScheme && schemePresets[selectedScheme]) ? selectedScheme : `Scheme ${Object.keys(schemePresets).length + 1}`;
                                 const suggested = uniqueVariantName(base, Object.keys(schemePresets));
                                 setPresetNameEditor({ target: "scheme", mode: "save", value: suggested });
-                            }, title: "Save the current coverage + blitz + any blocking or run action as a single scheme", style: { padding: "7px 9px", color: "#c4b5fd", borderColor: "rgba(168,85,247,0.3)" } }, "\uD83D\uDCBE"),
-                        Object.keys(schemePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("schemes"), title: "Reorder or delete schemes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px", borderColor: "rgba(168,85,247,0.3)" } }, "\u21C5")),
-                        selectedScheme && schemePresets[selectedScheme] && (React.createElement(React.Fragment, null,
+                            }, title: "Save the current coverage + blitz + any blocking or run action as a single scheme", style: { padding: "7px 9px", color: "#c4b5fd", borderColor: "rgba(168,85,247,0.3)" } }, "\uD83D\uDCBE")),
+                        !readOnly && Object.keys(schemePresets).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("schemes"), title: "Reorder or delete schemes (sort by name, set a custom order, or mass-delete)", style: { padding: "7px 9px", borderColor: "rgba(168,85,247,0.3)" } }, "\u21C5")),
+                        !readOnly && selectedScheme && schemePresets[selectedScheme] && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetNameEditor({ target: "scheme", mode: "rename", original: selectedScheme, value: selectedScheme, replaceLayout: false }), title: "Rename this scheme preset", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270E"),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setPresetDeleteConfirm({ target: "scheme", name: selectedScheme }), title: "Delete this scheme preset", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         React.createElement("div", { ref: typeMenuRef, style: { position: "relative", width: 140 } },
@@ -11871,7 +12133,7 @@ function PlaybookApp() {
                         React.createElement("button", { className: "sbtn dim", onClick: () => setNotesEditorOpen(true), title: "Install notes \u2014 write each position's assignment and alignment. Toggle them to show on the screen after this play during an install RUN.", style: { padding: "7px 11px", color: showNotes ? "#fcd34d" : "rgba(255,255,255,0.7)", borderColor: showNotes ? "rgba(245,158,11,0.5)" : undefined } },
                             "\uD83D\uDCCB NOTES",
                             showNotes ? " ●" : ""),
-                        React.createElement("button", { className: "sbtn grn", onClick: savePlay }, "SAVE"),
+                        !readOnly && React.createElement("button", { className: "sbtn grn", onClick: savePlay }, "SAVE"),
                         React.createElement("button", { className: "sbtn dim", onClick: newFromCurrent, title: "New \u2014 duplicates the current play so you can save a copy" }, "NEW"),
                         React.createElement("button", { className: "sbtn dim", onClick: clearPlay, title: "Clear \u2014 wipe the field and drop in this tab's default look (Tornado Front on defense, Deuce Right on offense), staying on the tab you're on" }, "CLEAR"),
                         React.createElement("button", { className: "sbtn dim", onClick: () => clearSide("offense"), disabled: !players.some(p => p.ptype !== "defense"), title: "Clear the offense only \u2014 remove every offensive player and their routes (and reset the ball); the defense and its coverages stay put", style: { padding: "7px 9px", color: "#86efac", borderColor: "rgba(74,222,128,0.35)" } }, "CLR O"),
@@ -11993,7 +12255,7 @@ function PlaybookApp() {
                                     fsVbRef.current = fsVB; // remember the rest frame to freeze during PLAY IN ACTION
                                 }
                             }
-                            return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: fsVB || `${vbX} ${vbY} ${vbW} ${vbH}`, preserveAspectRatio: fieldFullscreen ? "xMidYMid slice" : "xMidYMid meet", style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
+                            return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: fsVB || `${vbX} ${vbY} ${vbW} ${vbH}`, preserveAspectRatio: "xMidYMid meet", style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
                                 React.createElement("defs", null,
                                     Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
                                         React.createElement("line", { x1: "0.5", y1: "0.4", x2: "0.5", y2: "3.6", stroke: cfg.color, strokeWidth: "1.4", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "5", markerHeight: "5", refX: "3.6", refY: "1.8", orient: "auto" },
@@ -12223,10 +12485,74 @@ function PlaybookApp() {
                                     texts.map(t => {
                                         const isEditing = editingTextId === t.id;
                                         const isSel = selectedTextId === t.id;
-                                        const interactive = tool === "select" || tool === "erase";
+                                        const interactive = tool === "select" || tool === "erase" || tool === "text";
                                         const fs = t.size || 16;
                                         const boxW = 280, boxH = 140; // roomy canvas; only the pill is hit-tested
                                         const swatches = ["#ffffff", "#fde047", "#f87171", "#38bdf8", "#0a0a14"];
+                                        // Optional background shape behind the text. "none" = bare text
+                                        // (the original look); the rest draw a dark chip in that shape.
+                                        const shape = t.shape || "none";
+                                        const hasBox = shape !== "none";
+                                        let boxRadius, boxPadV, boxPadH;
+                                        if (shape === "round") {
+                                            boxRadius = 9;
+                                            boxPadV = 5;
+                                            boxPadH = 13;
+                                        }
+                                        else if (shape === "rect") {
+                                            boxRadius = 0;
+                                            boxPadV = 5;
+                                            boxPadH = 13;
+                                        }
+                                        else if (shape === "pill") {
+                                            boxRadius = 999;
+                                            boxPadV = 5;
+                                            boxPadH = 17;
+                                        }
+                                        else if (shape === "ellipse") {
+                                            boxRadius = "50%";
+                                            boxPadV = 13;
+                                            boxPadH = 26;
+                                        }
+                                        else {
+                                            boxRadius = 6;
+                                            boxPadV = 3;
+                                            boxPadH = 8;
+                                        }
+                                        const boxPad = `${boxPadV}px ${boxPadH}px`;
+                                        const boxBg = hasBox ? "rgba(10,10,20,0.84)" : (isSel ? "rgba(10,10,20,0.4)" : "transparent");
+                                        const boxBorder = hasBox
+                                            ? (isSel ? "1.5px dashed #fde68a" : "1.5px solid rgba(255,255,255,0.55)")
+                                            : (isSel ? "1px dashed #fde68a" : "1px solid transparent");
+                                        // Drag-to-resize: scale the font size by how far the handle is
+                                        // dragged from the text's centre. Uses window listeners so it
+                                        // doesn't touch the main SVG drag pipeline.
+                                        const startTextResize = (e) => {
+                                            e.stopPropagation();
+                                            if (e.cancelable)
+                                                e.preventDefault();
+                                            pushUndo();
+                                            const sp = getSVGPt(e);
+                                            const cx = t.x, cy = t.y, id = t.id, size0 = fs;
+                                            const d0 = Math.max(1, Math.hypot(sp.x - cx, sp.y - cy));
+                                            const move = (ev) => {
+                                                if (ev.cancelable)
+                                                    ev.preventDefault();
+                                                const p = getSVGPt(ev);
+                                                const d = Math.hypot(p.x - cx, p.y - cy);
+                                                updateText(id, { size: Math.max(10, Math.min(60, Math.round(size0 * (d / d0)))) });
+                                            };
+                                            const up = () => {
+                                                window.removeEventListener("mousemove", move);
+                                                window.removeEventListener("mouseup", up);
+                                                window.removeEventListener("touchmove", move);
+                                                window.removeEventListener("touchend", up);
+                                            };
+                                            window.addEventListener("mousemove", move);
+                                            window.addEventListener("mouseup", up);
+                                            window.addEventListener("touchmove", move, { passive: false });
+                                            window.addEventListener("touchend", up);
+                                        };
                                         return (React.createElement("foreignObject", { key: t.id, x: t.x - boxW / 2, y: t.y - boxH / 2, width: boxW, height: boxH, style: { overflow: "visible" } },
                                             React.createElement("div", { style: { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" } }, isEditing ? (React.createElement("textarea", { autoFocus: true, value: t.text, onFocus: e => e.target.select(), onChange: e => updateText(t.id, { text: e.target.value }), onBlur: () => { if (!(t.text || "").trim()) {
                                                     deleteText(t.id);
@@ -12254,14 +12580,20 @@ function PlaybookApp() {
                                                     } }, onDoubleClick: () => { if (tool !== "erase") {
                                                         setSelectedTextId(t.id);
                                                         setEditingTextId(t.id);
-                                                    } }, title: interactive ? "Drag to move · double-click to edit" : "", style: { pointerEvents: interactive ? "auto" : "none", cursor: tool === "erase" ? "pointer" : (tool === "select" ? "move" : "default"), display: "inline-block", whiteSpace: "pre-wrap", textAlign: "center", maxWidth: 240, fontWeight: 700, fontSize: fs, lineHeight: 1.25, fontFamily: "'JetBrains Mono', monospace", color: t.color || "#fff", padding: "3px 8px", borderRadius: 6, background: isSel ? "rgba(10,10,20,0.4)" : "transparent", border: isSel ? "1px dashed #fde68a" : "1px solid transparent", textShadow: "0 1px 2px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.85)" } }, t.text || "Text"),
-                                                isSel && !isEditing && tool === "select" && (React.createElement("div", { onMouseDown: e => e.stopPropagation(), onTouchStart: e => e.stopPropagation(), style: { position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 4, padding: "4px 5px", background: "rgba(12,12,23,0.97)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 7, boxShadow: "0 6px 18px rgba(0,0,0,0.5)", pointerEvents: "auto", whiteSpace: "nowrap" } },
+                                                    } }, title: tool === "erase" ? "Click to delete" : (interactive ? "Click to select · double-click (or ✎) to edit · drag to move" : ""), style: { pointerEvents: interactive ? "auto" : "none", cursor: tool === "erase" ? "pointer" : ((tool === "select" || tool === "text") ? "move" : "default"), display: "inline-block", whiteSpace: "pre-wrap", textAlign: "center", maxWidth: 240, fontWeight: 700, fontSize: fs, lineHeight: 1.25, fontFamily: "'JetBrains Mono', monospace", color: t.color || "#fff", padding: boxPad, borderRadius: boxRadius, background: boxBg, border: boxBorder, textShadow: hasBox ? "0 1px 1px rgba(0,0,0,0.65)" : "0 1px 2px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.85)" } }, t.text || "Text"),
+                                                isSel && !isEditing && (tool === "select" || tool === "text") && (React.createElement("div", { onMouseDown: e => e.stopPropagation(), onTouchStart: e => e.stopPropagation(), style: { position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 4, padding: "4px 5px", background: "rgba(12,12,23,0.97)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 7, boxShadow: "0 6px 18px rgba(0,0,0,0.5)", pointerEvents: "auto", whiteSpace: "nowrap" } },
+                                                    React.createElement("button", { onClick: () => { setSelectedTextId(t.id); setEditingTextId(t.id); }, title: "Edit text", style: { height: 20, padding: "0 8px", borderRadius: 4, border: "1px solid rgba(253,230,138,0.5)", background: "rgba(253,230,138,0.14)", color: "#fde68a", cursor: "pointer", fontSize: 11, fontWeight: 700, lineHeight: 1, display: "flex", alignItems: "center", gap: 3 } }, "\u270E EDIT"),
+                                                    React.createElement("span", { style: { width: 1, height: 16, background: "rgba(255,255,255,0.15)", margin: "0 1px" } }),
                                                     React.createElement("button", { onClick: () => updateText(t.id, { size: Math.max(10, fs - 2) }), title: "Smaller", style: { width: 20, height: 20, borderRadius: 4, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.06)", color: "#fff", cursor: "pointer", fontSize: 13, lineHeight: 1 } }, "\u2212"),
                                                     React.createElement("button", { onClick: () => updateText(t.id, { size: Math.min(44, fs + 2) }), title: "Larger", style: { width: 20, height: 20, borderRadius: 4, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.06)", color: "#fff", cursor: "pointer", fontSize: 13, lineHeight: 1 } }, "+"),
                                                     React.createElement("span", { style: { width: 1, height: 16, background: "rgba(255,255,255,0.15)", margin: "0 1px" } }),
+                                                    React.createElement("button", { onClick: () => { const order = ["none", "round", "rect", "pill", "ellipse"]; const cur = t.shape || "none"; updateText(t.id, { shape: order[(order.indexOf(cur) + 1) % order.length] }); }, title: `Box shape: ${shape} — tap to cycle (none → rounded → rectangle → pill → ellipse)`, style: { width: 24, height: 20, borderRadius: 4, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.06)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 } },
+                                                        React.createElement("span", { style: { display: "inline-block", width: 14, height: 9, boxSizing: "border-box", border: `1.5px ${hasBox ? "solid" : "dashed"} currentColor`, borderRadius: (shape === "ellipse" ? "50%" : shape === "pill" ? 4.5 : shape === "round" ? 3 : 0), background: hasBox ? "rgba(255,255,255,0.28)" : "transparent" } })),
+                                                    React.createElement("span", { style: { width: 1, height: 16, background: "rgba(255,255,255,0.15)", margin: "0 1px" } }),
                                                     swatches.map(sw => (React.createElement("button", { key: sw, onClick: () => updateText(t.id, { color: sw }), title: "Colour", style: { width: 16, height: 16, borderRadius: "50%", cursor: "pointer", background: sw, border: (t.color || "#fff") === sw ? "2px solid #fde68a" : "1px solid rgba(255,255,255,0.35)" } }))),
                                                     React.createElement("span", { style: { width: 1, height: 16, background: "rgba(255,255,255,0.15)", margin: "0 1px" } }),
-                                                    React.createElement("button", { onClick: () => { pushUndo(); deleteText(t.id); }, title: "Delete text", style: { width: 20, height: 20, borderRadius: 4, border: "1px solid rgba(239,68,68,0.5)", background: "rgba(239,68,68,0.14)", color: "#fca5a5", cursor: "pointer", fontSize: 12, lineHeight: 1 } }, "\u2715"))))))));
+                                                    React.createElement("button", { onClick: () => { pushUndo(); deleteText(t.id); }, title: "Delete text", style: { width: 20, height: 20, borderRadius: 4, border: "1px solid rgba(239,68,68,0.5)", background: "rgba(239,68,68,0.14)", color: "#fca5a5", cursor: "pointer", fontSize: 12, lineHeight: 1 } }, "\u2715"))),
+                                                isSel && !isEditing && (tool === "select" || tool === "text") && (React.createElement("div", { onMouseDown: startTextResize, onTouchStart: startTextResize, title: "Drag to resize", style: { position: "absolute", right: -7, bottom: -7, width: 15, height: 15, borderRadius: "50%", background: "#fde68a", border: "2px solid #14141f", cursor: "nwse-resize", pointerEvents: "auto", boxShadow: "0 1px 5px rgba(0,0,0,0.55)" } })))))));
                                     }),
                                     tool === "route" && tab === "defense" && (routeType === "showBlitz" || routeType === "hideBlitz") && (() => {
                                         const gaps = offensiveGaps(players);
@@ -12529,7 +12861,7 @@ function PlaybookApp() {
                                     React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.35)", lineHeight: 1.5 } }, (sel.motionStyle || "set") === "moving"
                                         ? "Still in motion at the snap — keeps gliding as the play starts."
                                         : "Stops and sets before the snap (default)."))),
-                                !sel.optionOf && (() => {
+                                (() => {
                                     const followUp = routes.find(r => r.attachedToMotion === sel.id);
                                     const followUpLabel = followUp ? (ROUTE_LABELS[followUp.rtype] || followUp.rtype) : "";
                                     const isBlock = sel.rtype === "blocking";
@@ -12920,7 +13252,7 @@ function PlaybookApp() {
                         [
                             { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
                             { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8", defOnly: true }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
-                        ].filter(t => !t.defOnly || tab === "defense").map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { minWidth: 54, flexShrink: 0, color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
+                        ].filter(t => (!t.defOnly || tab === "defense") && (!readOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { minWidth: 54, flexShrink: 0, color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                             React.createElement("span", { style: { fontSize: 17 } }, t.icon),
                             t.lbl))),
                         tool === "route" && ALL_ROUTE_TYPES.map(rt => {
@@ -12928,21 +13260,22 @@ function PlaybookApp() {
                             const isOn = routeType === rt;
                             return (React.createElement("button", { key: rt, onClick: () => setRouteType(rt), style: { flexShrink: 0, padding: "4px 9px", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.04em", background: isOn ? `${cfg.color}28` : "transparent", border: `1px solid ${isOn ? cfg.color : cfg.color + "55"}`, color: isOn ? "#fff" : cfg.color, transition: "all 0.12s" } }, ROUTE_LABELS[rt]));
                         }),
-                        React.createElement("button", { className: "tbtn", style: { borderColor: "rgba(239,68,68,0.3)", color: "rgba(239,68,68,0.6)", flexShrink: 0 }, onClick: () => { pushUndo(players, routes); setPlayers([]); setRoutes([]); } },
-                            React.createElement("span", { style: { fontSize: 17 } }, "\uD83D\uDDD1"),
-                            "CLEAR"),
-                        React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true); } },
-                            React.createElement("span", { style: { fontSize: 17 } }, "\u21BA"),
-                            "RESET"),
-                        React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: undo },
-                            React.createElement("span", { style: { fontSize: 17 } }, "\u21A9"),
-                            "UNDO"))),
+                        !readOnly && (React.createElement(React.Fragment, null,
+                            React.createElement("button", { className: "tbtn", style: { borderColor: "rgba(239,68,68,0.3)", color: "rgba(239,68,68,0.6)", flexShrink: 0 }, onClick: () => { pushUndo(players, routes); setPlayers([]); setRoutes([]); } },
+                                React.createElement("span", { style: { fontSize: 17 } }, "\uD83D\uDDD1"),
+                                "CLEAR"),
+                            React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true); } },
+                                React.createElement("span", { style: { fontSize: 17 } }, "\u21BA"),
+                                "RESET"),
+                            React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: undo },
+                                React.createElement("span", { style: { fontSize: 17 } }, "\u21A9"),
+                                "UNDO"))))),
                 React.createElement("div", { className: "dsk", style: { width: 74, background: "#0c0c17", borderLeft: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "10px 6px", overflowY: "auto" } },
                     React.createElement("div", { className: "hd", style: { fontSize: 10, color: "#3a3a4a", letterSpacing: "0.12em", marginBottom: 2 } }, "TOOLS"),
                     [
                         { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
                         { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8", defOnly: true }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
-                    ].filter(t => !t.defOnly || tab === "defense").map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
+                    ].filter(t => (!t.defOnly || tab === "defense") && (!readOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                         React.createElement("span", { style: { fontSize: 18 } }, t.icon),
                         t.lbl))),
                     tool === "route" && (React.createElement("div", { style: { borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 7, width: "100%", display: "flex", flexDirection: "column", gap: 4, alignItems: "center" } },
@@ -13304,8 +13637,8 @@ function PlaybookApp() {
                                         React.createElement("button", { onClick: () => flipPlayCopy(play, "teams"), title: "Flip across the line of scrimmage \u2014 vertical mirror and swap offense \u2194 defense", style: { textAlign: "left", padding: "6px 9px", background: "rgba(125,211,252,0.08)", border: "1px solid rgba(125,211,252,0.25)", borderRadius: 5, color: "#bae6fd", fontSize: 12, cursor: "pointer" } }, "\u21C5\u00A0 Flip across LOS (swap O/D)"))),
                                     React.createElement("div", { style: { display: "flex", gap: 5, marginTop: "auto", flexWrap: "wrap" } },
                                         React.createElement("button", { onClick: () => openPlay(play), style: { flex: "1 1 auto", padding: "5px 8px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(34,197,94,0.5)", background: "rgba(34,197,94,0.12)", color: "#4ade80", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "OPEN"),
-                                        React.createElement("button", { onClick: () => duplicatePlay(play), title: "Duplicate this play", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(34,211,238,0.45)", background: "rgba(34,211,238,0.1)", color: "#67e8f9", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\u29C9 COPY"),
-                                        React.createElement("button", { onClick: () => setFlippingPlayFor(prev => prev === play.id ? null : play.id), title: "Make a mirrored copy of this play \u2014 flip left\u2194right, flip just the call, or flip across the LOS", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${flippingPlayFor === play.id ? "rgba(125,211,252,0.75)" : "rgba(125,211,252,0.45)"}`, background: flippingPlayFor === play.id ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.1)", color: "#7dd3fc", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, flippingPlayFor === play.id ? "✕ FLIP" : "⇆ FLIP"),
+                                        React.createElement("button", { onClick: () => duplicatePlay(play), title: "Duplicate this play", style: { display: readOnly ? 'none' : undefined, padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(34,211,238,0.45)", background: "rgba(34,211,238,0.1)", color: "#67e8f9", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\u29C9 COPY"),
+                                        React.createElement("button", { onClick: () => setFlippingPlayFor(prev => prev === play.id ? null : play.id), title: "Make a mirrored copy of this play \u2014 flip left\u2194right, flip just the call, or flip across the LOS", style: { display: readOnly ? 'none' : undefined, padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${flippingPlayFor === play.id ? "rgba(125,211,252,0.75)" : "rgba(125,211,252,0.45)"}`, background: flippingPlayFor === play.id ? "rgba(125,211,252,0.22)" : "rgba(125,211,252,0.1)", color: "#7dd3fc", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, flippingPlayFor === play.id ? "✕ FLIP" : "⇆ FLIP"),
                                         React.createElement("button", { onClick: () => {
                                                 const copy = JSON.parse(JSON.stringify(play));
                                                 copy.id = uid();
@@ -13315,12 +13648,12 @@ function PlaybookApp() {
                                                     const filtered = prev.filter(x => !(x.name === copy.name && x.category === copy.category));
                                                     return [...filtered, copy];
                                                 });
-                                            }, title: playbookScope === "personal" ? "Push this play to the team default playbook (visible to everyone)" : "Copy this play into your personal playbook", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer",
+                                            }, title: playbookScope === "personal" ? "Push this play to the team default playbook (visible to everyone)" : "Copy this play into your personal playbook", style: { display: readOnly ? 'none' : undefined, padding: "5px 9px", borderRadius: 6, cursor: "pointer",
                                                 border: `1px solid ${playbookScope === "personal" ? "rgba(245,158,11,0.5)" : "rgba(74,222,128,0.5)"}`,
                                                 background: playbookScope === "personal" ? "rgba(245,158,11,0.12)" : "rgba(74,222,128,0.12)",
                                                 color: playbookScope === "personal" ? "#fcd34d" : "#86efac",
                                                 fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, playbookScope === "personal" ? "→ DEFAULT" : "→ MINE"),
-                                        React.createElement("button", { onClick: () => { setRenamingPlayId(play.id); setRenameVal(play.name || ""); }, title: "Rename this play", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(255,255,255,0.18)", background: "transparent", color: "rgba(255,255,255,0.7)", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\u270E"),
+                                        React.createElement("button", { onClick: () => { setRenamingPlayId(play.id); setRenameVal(play.name || ""); }, title: "Rename this play", style: { display: readOnly ? 'none' : undefined, padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(255,255,255,0.18)", background: "transparent", color: "rgba(255,255,255,0.7)", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em" } }, "\u270E"),
                                         caps.deleteContent && (React.createElement("button", { onClick: () => { setPlays(prev => prev.filter(x => x.id !== play.id)); if (currentPlay && currentPlay.id === play.id) {
                                                 setCurrentPlay(null);
                                             } if (renamingPlayId === play.id)
@@ -13707,7 +14040,10 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: doPrint, disabled: printCount === 0, className: "sbtn grn", style: { flex: 1, opacity: printCount === 0 ? 0.4 : 1, cursor: printCount === 0 ? "not-allowed" : "pointer" } }, "\uD83D\uDDA8 PRINT / SAVE AS PDF"),
                             React.createElement("button", { onClick: () => setShowPrint(false), className: "sbtn dim" }, "CANCEL")))));
             })(),
-            fieldFullscreen && (React.createElement("button", { onClick: () => setFieldFullscreen(false), title: "Exit full screen", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
+            fieldFullscreen && (React.createElement("button", { onClick: () => { setFieldFullscreen(false); setFieldRotated(false); }, title: "Exit full screen", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
+            fieldFullscreen && (React.createElement("button", { onClick: () => setFieldRotated(r => !r), title: fieldRotated ? "Back to upright view" : "Rotate to horizontal view (fits more of the field on a phone)", style: { position: "fixed", top: 52, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: fieldRotated ? "1px solid rgba(103,232,249,0.7)" : "1px solid rgba(255,255,255,0.3)", background: fieldRotated ? "rgba(8,40,48,0.9)" : "rgba(10,10,18,0.88)", color: fieldRotated ? "#67e8f9" : "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } },
+                "\u27F3 ",
+                fieldRotated ? "UPRIGHT" : "HORIZONTAL")),
             canPreviewRoles && (React.createElement("div", { style: { position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9998, display: "flex", alignItems: "center", gap: 8, background: "rgba(12,12,22,0.94)", border: "1px solid rgba(167,139,250,0.55)", borderRadius: 999, padding: "5px 7px 5px 13px", boxShadow: "0 8px 28px rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontFamily: "system-ui,sans-serif" } },
                 React.createElement("span", { style: { fontSize: 10, letterSpacing: "0.13em", fontFamily: "'Bebas Neue',sans-serif", color: "#c4b5fd" } }, "VIEWING AS"),
                 React.createElement("select", { value: effRole, onChange: e => setViewAsRole(e.target.value === realRole ? null : e.target.value), title: "Preview the playbook exactly as each role sees it \u2014 you'll only be able to do what that role can do", style: { background: "#15151f", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 999, color: "#fff", fontSize: 12, padding: "4px 10px", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", cursor: "pointer" } }, ROLE_ORDER_APP.map(r => React.createElement("option", { key: r, value: r },
@@ -15212,6 +15548,16 @@ function PlaybookApp() {
             showScripts && (() => {
                 const openScript = openScriptId ? scripts.find(s => s.id === openScriptId) : null;
                 const close = () => { setShowScripts(false); setOpenScriptId(null); };
+                // Side-of-ball tagging. Scripts with no side fall back to offense (the
+                // common case) so the side sort always has somewhere to put them.
+                const SIDE_META = {
+                    offense: { lbl: "OFF", full: "Offense", c: "#86efac", bg: "rgba(74,222,128,0.16)", bd: "rgba(74,222,128,0.45)" },
+                    defense: { lbl: "DEF", full: "Defense", c: "#fca5a5", bg: "rgba(248,113,113,0.16)", bd: "rgba(248,113,113,0.45)" },
+                    special: { lbl: "ST", full: "Special Teams", c: "#d8b4fe", bg: "rgba(192,132,252,0.16)", bd: "rgba(192,132,252,0.45)" },
+                };
+                const SIDE_ORDER = ["offense", "defense", "special"];
+                const sideOf = (s) => (s && s.side && SIDE_META[s.side]) ? s.side : "offense";
+                const cycleSide = (s) => SIDE_ORDER[(SIDE_ORDER.indexOf(sideOf(s)) + 1) % SIDE_ORDER.length];
                 if (openScript) {
                     // ── Script DETAIL view ──
                     const playCount = openScript.periods.reduce((n, per) => n + per.playIds.length, 0);
@@ -15221,8 +15567,8 @@ function PlaybookApp() {
                                 React.createElement("div", { style: { flex: 1, minWidth: 0 } },
                                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
                                         React.createElement("button", { onClick: () => setOpenScriptId(null), title: "Back to script list", style: { background: "none", border: "none", color: "rgba(255,255,255,0.5)", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: 0 } }, "\u2039"),
-                                        React.createElement("input", { value: openScript.name, onChange: e => renameScript(openScript.id, e.target.value), style: { flex: 1, minWidth: 0, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "6px 9px", color: "#fff", fontSize: 18, fontWeight: 700, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", outline: "none" } })),
-                                    React.createElement("input", { value: openScript.description, onChange: e => renameScript(openScript.id, null, e.target.value), placeholder: "Description (date, focus, etc.)\u2026", style: { width: "100%", background: "transparent", border: "none", color: "rgba(255,255,255,0.55)", fontSize: 12, outline: "none", fontFamily: "'JetBrains Mono',monospace", padding: "2px 0" } }),
+                                        React.createElement("input", { readOnly: readOnly, value: openScript.name, onChange: e => renameScript(openScript.id, e.target.value), style: { flex: 1, minWidth: 0, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "6px 9px", color: "#fff", fontSize: 18, fontWeight: 700, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", outline: "none" } })),
+                                    React.createElement("input", { readOnly: readOnly, value: openScript.description, onChange: e => renameScript(openScript.id, null, e.target.value), placeholder: "Description (date, focus, etc.)\u2026", style: { width: "100%", background: "transparent", border: "none", color: "rgba(255,255,255,0.55)", fontSize: 12, outline: "none", fontFamily: "'JetBrains Mono',monospace", padding: "2px 0" } }),
                                     React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 5 } },
                                         openScript.periods.length,
                                         " period",
@@ -15230,7 +15576,15 @@ function PlaybookApp() {
                                         " \u00B7 ",
                                         playCount,
                                         " total play",
-                                        playCount === 1 ? "" : "s")),
+                                        playCount === 1 ? "" : "s"),
+                                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" } },
+                                        React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginRight: 2 } }, "UNIT"),
+                                        SIDE_ORDER.map(k => {
+                                            const m = SIDE_META[k];
+                                            const on = sideOf(openScript) === k;
+                                            return (React.createElement("button", { key: k, onClick: () => setScriptSide(openScript.id, k), style: { padding: "4px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
+                                                    border: `1px solid ${on ? m.bd : "rgba(255,255,255,0.12)"}`, background: on ? m.bg : "transparent", color: on ? m.c : "rgba(255,255,255,0.5)" } }, m.full));
+                                        }))),
                                 React.createElement("button", { onClick: close, style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 22, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                             React.createElement("div", { style: { padding: "8px 22px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } },
                                 React.createElement("button", { onClick: () => setScriptViewMode("edit"), style: { padding: "5px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
@@ -15334,41 +15688,81 @@ function PlaybookApp() {
                                     scripts.length === 1 ? "" : "s",
                                     " \u00B7 ordered play sequences for practice planning")),
                             React.createElement("button", { onClick: close, style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 22, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
-                        React.createElement("div", { style: { padding: "12px 22px 14px", overflowY: "auto", flex: 1 } }, scripts.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", textAlign: "center", padding: "20px 0" } }, "No practice scripts yet \u2014 create one to lay out the play order for a practice.")) : (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 1 } },
-                                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginRight: 2 } }, "SORT"),
-                                [["date", "Date"], ["name", "Name"]].map(([k, lbl]) => (React.createElement("button", { key: k, onClick: () => setScriptSort(k), style: { padding: "3px 11px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
-                                        border: scriptSort === k ? "1px solid rgba(34,211,238,0.6)" : "1px solid rgba(255,255,255,0.12)",
-                                        background: scriptSort === k ? "rgba(34,211,238,0.14)" : "transparent",
-                                        color: scriptSort === k ? "#67e8f9" : "rgba(255,255,255,0.55)" } }, lbl)))),
-                            [...scripts].sort((a, b) => scriptSort === "name" ? a.name.localeCompare(b.name) : (b.createdAt || 0) - (a.createdAt || 0)).map(s => {
-                                const playCount = s.periods.reduce((n, per) => n + per.playIds.length, 0);
-                                return (React.createElement("div", { key: s.id, onClick: () => setOpenScriptId(s.id), style: { background: "#161623", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 9, padding: "11px 13px", cursor: "pointer", display: "flex", alignItems: "center", gap: 11 } },
-                                    React.createElement("div", { style: { width: 34, height: 34, borderRadius: 7, background: "rgba(34,211,238,0.12)", border: "1px solid rgba(34,211,238,0.35)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: "#67e8f9", flexShrink: 0 } }, "\uD83D\uDCDD"),
-                                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
-                                        React.createElement("div", { style: { fontWeight: 700, fontSize: 14, color: "#fff" } }, s.name),
-                                        s.description && React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.5)", marginTop: 2 } }, s.description),
-                                        React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 3 } },
-                                            s.periods.length,
-                                            " period",
-                                            s.periods.length === 1 ? "" : "s",
-                                            " \u00B7 ",
-                                            playCount,
-                                            " play",
-                                            playCount === 1 ? "" : "s")),
-                                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); duplicateScript(s.id); }, title: "Duplicate this script", style: { padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(34,211,238,0.35)", background: "rgba(34,211,238,0.08)", color: "#67e8f9", fontSize: 12, flexShrink: 0, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em" } }, "\u29C9 COPY"),
-                                    React.createElement("span", { style: { color: "rgba(255,255,255,0.3)", fontSize: 18 } }, "\u203A")));
-                            })))),
-                        React.createElement("div", { style: { padding: "10px 22px 12px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", justifyContent: "flex-end", gap: 8 } },
-                            React.createElement("button", { onClick: () => {
-                                    const newId = createScript(`Practice ${new Date().toLocaleDateString()}`);
-                                    setOpenScriptId(newId);
-                                }, className: "sbtn grn" }, "+ NEW SCRIPT")))));
+                        React.createElement("div", { style: { padding: "12px 22px 14px", overflowY: "auto", flex: 1 } }, scripts.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", textAlign: "center", padding: "20px 0" } }, "No practice scripts yet \u2014 create one to lay out the play order for a practice.")) : (() => {
+                            const q = scriptQuery.trim().toLowerCase();
+                            const filtered = scripts.filter(s => !q || (s.name || "").toLowerCase().includes(q) || (s.description || "").toLowerCase().includes(q) || SIDE_META[sideOf(s)].full.toLowerCase().includes(q));
+                            const isCustom = scriptSort === "custom";
+                            const list = isCustom ? filtered : [...filtered].sort((a, b) => {
+                                if (scriptSort === "name")
+                                    return a.name.localeCompare(b.name);
+                                if (scriptSort === "side") {
+                                    const d = SIDE_ORDER.indexOf(sideOf(a)) - SIDE_ORDER.indexOf(sideOf(b));
+                                    return d !== 0 ? d : a.name.localeCompare(b.name);
+                                }
+                                return (b.createdAt || 0) - (a.createdAt || 0);
+                            });
+                            const canReorder = isCustom && !q;
+                            return (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+                                React.createElement("div", { style: { position: "relative", marginBottom: 1 } },
+                                    React.createElement("span", { style: { position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", fontSize: 12, color: "rgba(255,255,255,0.35)", pointerEvents: "none" } }, "\uD83D\uDD0D"),
+                                    React.createElement("input", { value: scriptQuery, onChange: e => setScriptQuery(e.target.value), placeholder: "Search scripts\u2026", style: { width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "7px 28px 7px 28px", color: "#fff", fontSize: 13, outline: "none", fontFamily: "'JetBrains Mono',monospace" } }),
+                                    scriptQuery && React.createElement("button", { onClick: () => setScriptQuery(""), title: "Clear search", style: { position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "rgba(255,255,255,0.45)", fontSize: 14, cursor: "pointer", lineHeight: 1, padding: 2 } }, "\u2715")),
+                                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 1, flexWrap: "wrap" } },
+                                    React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginRight: 2 } }, "SORT"),
+                                    [["date", "Date"], ["name", "Name"], ["side", "Unit"], ["custom", "Custom"]].map(([k, lbl]) => (React.createElement("button", { key: k, onClick: () => setScriptSort(k), style: { padding: "3px 11px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
+                                            border: scriptSort === k ? "1px solid rgba(34,211,238,0.6)" : "1px solid rgba(255,255,255,0.12)",
+                                            background: scriptSort === k ? "rgba(34,211,238,0.14)" : "transparent",
+                                            color: scriptSort === k ? "#67e8f9" : "rgba(255,255,255,0.55)" } }, lbl))),
+                                    isCustom && React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.35)", marginLeft: 2 } }, q ? "clear search to reorder" : "use ↑ ↓ to arrange")),
+                                list.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", textAlign: "center", padding: "18px 0" } },
+                                    "No scripts match \u201C",
+                                    scriptQuery,
+                                    "\u201D.")) : list.map((s, viewIdx) => {
+                                    const playCount = s.periods.reduce((n, per) => n + per.playIds.length, 0);
+                                    const m = SIDE_META[sideOf(s)];
+                                    const fullIdx = scripts.findIndex(x => x.id === s.id);
+                                    return (React.createElement("div", { key: s.id, onClick: () => setOpenScriptId(s.id), style: { background: "#161623", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 9, padding: "11px 13px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10 } },
+                                        canReorder && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }, onClick: e => e.stopPropagation() },
+                                            React.createElement("button", { onClick: () => moveScript(s.id, -1), disabled: fullIdx === 0, title: "Move up", style: { padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.6)", cursor: fullIdx === 0 ? "not-allowed" : "pointer", opacity: fullIdx === 0 ? 0.3 : 1, fontSize: 10, lineHeight: 1.3 } }, "\u2191"),
+                                            React.createElement("button", { onClick: () => moveScript(s.id, 1), disabled: fullIdx === scripts.length - 1, title: "Move down", style: { padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.6)", cursor: fullIdx === scripts.length - 1 ? "not-allowed" : "pointer", opacity: fullIdx === scripts.length - 1 ? 0.3 : 1, fontSize: 10, lineHeight: 1.3 } }, "\u2193"))),
+                                        React.createElement("div", { style: { width: 34, height: 34, borderRadius: 7, background: "rgba(34,211,238,0.12)", border: "1px solid rgba(34,211,238,0.35)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: "#67e8f9", flexShrink: 0 } }, "\uD83D\uDCDD"),
+                                        React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                                            React.createElement("div", { style: { fontWeight: 700, fontSize: 14, color: "#fff" } }, s.name),
+                                            s.description && React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.5)", marginTop: 2 } }, s.description),
+                                            React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 3 } },
+                                                s.periods.length,
+                                                " period",
+                                                s.periods.length === 1 ? "" : "s",
+                                                " \u00B7 ",
+                                                playCount,
+                                                " play",
+                                                playCount === 1 ? "" : "s")),
+                                        React.createElement("button", { onClick: (e) => { e.stopPropagation(); if (readOnly)
+                                                return; setScriptSide(s.id, cycleSide(s)); }, title: `Unit: ${m.full} — tap to change`, style: { padding: "3px 8px", borderRadius: 5, flexShrink: 0, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", border: `1px solid ${m.bd}`, background: m.bg, color: m.c } }, m.lbl),
+                                        React.createElement("button", { onClick: (e) => { e.stopPropagation(); if (readOnly)
+                                                return; duplicateScript(s.id); }, title: "Duplicate this script", style: { display: readOnly ? 'none' : undefined, padding: "5px 9px", borderRadius: 6, cursor: "pointer", border: "1px solid rgba(34,211,238,0.35)", background: "rgba(34,211,238,0.08)", color: "#67e8f9", fontSize: 12, flexShrink: 0, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em" } }, "\u29C9 COPY"),
+                                        React.createElement("span", { style: { color: "rgba(255,255,255,0.3)", fontSize: 18, flexShrink: 0 } }, "\u203A")));
+                                })));
+                        })()),
+                        React.createElement("div", { style: { padding: "10px 22px 12px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", justifyContent: "flex-end", gap: 8 } }, !readOnly && React.createElement("button", { onClick: () => {
+                                const newId = createScript(`Practice ${new Date().toLocaleDateString()}`);
+                                setOpenScriptId(newId);
+                            }, className: "sbtn grn" }, "+ NEW SCRIPT")))));
             })(),
             showInstalls && (() => {
                 // If an install is opened, show its detail view; otherwise the list view.
                 const openInst = openInstallId ? installs.find(i => i.id === openInstallId) : null;
                 const close = () => { setShowInstalls(false); setOpenInstallId(null); };
+                // Side-of-ball tagging (offense / defense / special teams). Installs with
+                // no side fall back to offense so the side sort/filter always place them.
+                const SIDE_META = {
+                    offense: { lbl: "OFF", full: "Offense", c: "#86efac", bg: "rgba(74,222,128,0.16)", bd: "rgba(74,222,128,0.45)" },
+                    defense: { lbl: "DEF", full: "Defense", c: "#fca5a5", bg: "rgba(248,113,113,0.16)", bd: "rgba(248,113,113,0.45)" },
+                    special: { lbl: "ST", full: "Special Teams", c: "#d8b4fe", bg: "rgba(192,132,252,0.16)", bd: "rgba(192,132,252,0.45)" },
+                };
+                const SIDE_ORDER = ["offense", "defense", "special"];
+                const sideOf = (i) => (i && i.side && SIDE_META[i.side]) ? i.side : "offense";
+                const cycleSide = (i) => SIDE_ORDER[(SIDE_ORDER.indexOf(sideOf(i)) + 1) % SIDE_ORDER.length];
                 if (openInst) {
                     // ── Install detail view ──
                     const playsInInstall = openInst.playIds
@@ -15387,8 +15781,21 @@ function PlaybookApp() {
                                 React.createElement("div", { style: { flex: 1, minWidth: 0 } },
                                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
                                         React.createElement("button", { onClick: () => setOpenInstallId(null), title: "Back to install list", style: { background: "none", border: "none", color: "rgba(255,255,255,0.5)", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: 0 } }, "\u2039"),
-                                        React.createElement("input", { value: openInst.name, onChange: e => renameInstall(openInst.id, e.target.value), style: { flex: 1, minWidth: 0, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "6px 9px", color: "#fff", fontSize: 18, fontWeight: 700, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", outline: "none" } })),
-                                    React.createElement("input", { value: openInst.description, onChange: e => renameInstall(openInst.id, null, e.target.value), placeholder: "Description (optional)\u2026", style: { width: "100%", background: "transparent", border: "none", color: "rgba(255,255,255,0.55)", fontSize: 12, outline: "none", fontFamily: "'JetBrains Mono',monospace", padding: "2px 0" } })),
+                                        React.createElement("input", { readOnly: readOnly, value: openInst.name, onChange: e => renameInstall(openInst.id, e.target.value), style: { flex: 1, minWidth: 0, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "6px 9px", color: "#fff", fontSize: 18, fontWeight: 700, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", outline: "none" } })),
+                                    React.createElement("input", { readOnly: readOnly, value: openInst.description, onChange: e => renameInstall(openInst.id, null, e.target.value), placeholder: "Description (optional)\u2026", style: { width: "100%", background: "transparent", border: "none", color: "rgba(255,255,255,0.55)", fontSize: 12, outline: "none", fontFamily: "'JetBrains Mono',monospace", padding: "2px 0" } }),
+                                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" } },
+                                        React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)" } }, "UNIT"),
+                                        readOnly ? (() => {
+                                            const m = SIDE_META[sideOf(openInst)];
+                                            return (React.createElement("span", { style: { padding: "3px 10px", borderRadius: 5, fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", border: `1px solid ${m.bd}`, background: m.bg, color: m.c } }, m.full));
+                                        })() : SIDE_ORDER.map(k => {
+                                            const m = SIDE_META[k];
+                                            const on = sideOf(openInst) === k;
+                                            return (React.createElement("button", { key: k, onClick: () => setInstallSide(openInst.id, k), title: `Tag this install as ${m.full}`, style: { padding: "3px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
+                                                    border: on ? `1px solid ${m.bd}` : "1px solid rgba(255,255,255,0.12)",
+                                                    background: on ? m.bg : "transparent",
+                                                    color: on ? m.c : "rgba(255,255,255,0.5)" } }, m.full));
+                                        }))),
                                 React.createElement("button", { onClick: close, style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 22, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                             React.createElement("div", { style: { padding: "8px 22px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 6, alignItems: "center" } },
                                 React.createElement("button", { onClick: () => setInstallViewMode("edit"), style: { padding: "5px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
@@ -15494,20 +15901,36 @@ function PlaybookApp() {
                             React.createElement("input", { value: installQuery, onChange: e => setInstallQuery(e.target.value), placeholder: "Search installs by name\u2026", style: { width: "100%", boxSizing: "border-box", background: "#15151f", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 6, padding: "7px 11px", color: "#fff", fontSize: 12, outline: "none" } }),
                             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 1, marginBottom: 1 } },
                                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginRight: 2 } }, "SORT"),
-                                [["date", "Date"], ["name", "Name"]].map(([k, lbl]) => (React.createElement("button", { key: k, onClick: () => setInstallSort(k), style: { padding: "3px 11px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
+                                [["date", "Date"], ["name", "Name"], ["side", "Unit"]].map(([k, lbl]) => (React.createElement("button", { key: k, onClick: () => setInstallSort(k), style: { padding: "3px 11px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
                                         border: installSort === k ? "1px solid rgba(251,191,36,0.6)" : "1px solid rgba(255,255,255,0.12)",
                                         background: installSort === k ? "rgba(251,191,36,0.14)" : "transparent",
                                         color: installSort === k ? "#fbbf24" : "rgba(255,255,255,0.55)" } }, lbl)))),
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 1, marginBottom: 1, flexWrap: "wrap" } },
+                                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginRight: 2 } }, "UNIT"),
+                                [["all", "All"], ["offense", "OFF"], ["defense", "DEF"], ["special", "ST"]].map(([k, lbl]) => {
+                                    const on = installSideFilter === k;
+                                    const m = k !== "all" ? SIDE_META[k] : null;
+                                    return (React.createElement("button", { key: k, onClick: () => setInstallSideFilter(k), style: { padding: "3px 11px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
+                                            border: on ? (m ? `1px solid ${m.bd}` : "1px solid rgba(251,191,36,0.6)") : "1px solid rgba(255,255,255,0.12)",
+                                            background: on ? (m ? m.bg : "rgba(251,191,36,0.14)") : "transparent",
+                                            color: on ? (m ? m.c : "#fbbf24") : "rgba(255,255,255,0.55)" } }, lbl));
+                                })),
                             (() => {
                                 const q = installQuery.trim().toLowerCase();
                                 const list = [...installs]
-                                    .filter(i => !q || i.name.toLowerCase().includes(q))
-                                    .sort((a, b) => installSort === "name" ? a.name.localeCompare(b.name) : (b.createdAt || 0) - (a.createdAt || 0));
+                                    .filter(i => !q || i.name.toLowerCase().includes(q) || (i.description || "").toLowerCase().includes(q) || SIDE_META[sideOf(i)].full.toLowerCase().includes(q))
+                                    .filter(i => installSideFilter === "all" || sideOf(i) === installSideFilter)
+                                    .sort((a, b) => {
+                                    if (installSort === "name")
+                                        return a.name.localeCompare(b.name);
+                                    if (installSort === "side") {
+                                        const d = SIDE_ORDER.indexOf(sideOf(a)) - SIDE_ORDER.indexOf(sideOf(b));
+                                        return d !== 0 ? d : a.name.localeCompare(b.name);
+                                    }
+                                    return (b.createdAt || 0) - (a.createdAt || 0);
+                                });
                                 if (list.length === 0)
-                                    return (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "6px 2px" } },
-                                        "No installs match \u201C",
-                                        installQuery,
-                                        "\u201D."));
+                                    return (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "6px 2px" } }, installSideFilter !== "all" && !q ? `No ${SIDE_META[installSideFilter].full.toLowerCase()} installs yet.` : `No installs match “${installQuery}”.`));
                                 return list.map(inst => (React.createElement("div", { key: inst.id, onClick: () => setOpenInstallId(inst.id), style: { background: "#161623", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 9, padding: "11px 13px", cursor: "pointer", display: "flex", alignItems: "center", gap: 11 } },
                                     React.createElement("div", { style: { width: 34, height: 34, borderRadius: 7, background: `${inst.color}18`, border: `1px solid ${inst.color}40`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: inst.color, flexShrink: 0, fontFamily: "'Bebas Neue',sans-serif" } }, "\uD83D\uDCCB"),
                                     React.createElement("div", { style: { flex: 1, minWidth: 0 } },
@@ -15521,13 +15944,17 @@ function PlaybookApp() {
                                             inst.formations.length,
                                             " formation",
                                             inst.formations.length === 1 ? "" : "s")),
+                                    (() => {
+                                        const m = SIDE_META[sideOf(inst)];
+                                        return (React.createElement("button", { onClick: (e) => { e.stopPropagation(); if (readOnly)
+                                                return; setInstallSide(inst.id, cycleSide(inst)); }, title: readOnly ? `Unit: ${m.full}` : `Unit: ${m.full} — tap to change`, style: { padding: "3px 9px", borderRadius: 5, flexShrink: 0, cursor: readOnly ? "default" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", border: `1px solid ${m.bd}`, background: m.bg, color: m.c } }, m.lbl));
+                                    })(),
                                     React.createElement("span", { style: { color: "rgba(255,255,255,0.3)", fontSize: 18 } }, "\u203A"))));
                             })()))),
-                        React.createElement("div", { style: { padding: "10px 22px 12px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", justifyContent: "flex-end", gap: 8 } },
-                            React.createElement("button", { onClick: () => {
-                                    const newId = createInstall(`Install ${installs.length + 1}`);
-                                    setOpenInstallId(newId);
-                                }, className: "sbtn grn" }, "+ NEW INSTALL")))));
+                        React.createElement("div", { style: { padding: "10px 22px 12px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", justifyContent: "flex-end", gap: 8 } }, !readOnly && React.createElement("button", { onClick: () => {
+                                const newId = createInstall(`Install ${installs.length + 1}`);
+                                setOpenInstallId(newId);
+                            }, className: "sbtn grn" }, "+ NEW INSTALL")))));
             })(),
             showHudl && (React.createElement("div", { className: "mover", onClick: () => setShowHudl(false) },
                 React.createElement("div", { className: "mbox", onClick: e => e.stopPropagation(), style: { maxHeight: "90vh", display: "flex", flexDirection: "column" } },
