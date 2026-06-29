@@ -11742,8 +11742,8 @@ function PlaybookApp() {
     .field-fs .dsk,
     .field-fs .mob-toolbar{display:none!important;}
     .field-fs .field-col{overflow:hidden!important;padding-bottom:0!important;}
-    .field-fs .field-wrap{padding:56px 0 0 0!important;align-items:flex-start!important;justify-content:center!important;}
-    .field-fs .field-svg{width:100vw!important;height:auto!important;max-width:100vw!important;max-height:calc(100vh - 56px)!important;border:none!important;border-radius:0!important;}
+    .field-fs .field-wrap{padding:0!important;align-items:center!important;justify-content:center!important;}
+    .field-fs .field-svg{width:100vw!important;height:100vh!important;max-width:100vw!important;max-height:100vh!important;aspect-ratio:auto!important;border:none!important;border-radius:0!important;}
     /* Horizontal view: size the field to viewport-height × viewport-width, then
        rotate 90° about its centre so it fills the screen turned on its side. */
     /* Full-screen always shows the field UPRIGHT (no 90deg rotation); the SVG fills the viewport and preserveAspectRatio="meet" fits the whole play to any phone orientation. */
@@ -12266,8 +12266,7 @@ function PlaybookApp() {
                                     fsVbRef.current = fsVB; // remember the rest frame to freeze during PLAY IN ACTION
                                 }
                             }
-                            const fsH = (fieldFullscreen && fsVB) ? Number(fsVB.split(" ")[3]) : null;
-                            return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: fsVB || `${vbX} ${vbY} ${vbW} ${vbH}`, preserveAspectRatio: "xMidYMid meet", style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: (fieldFullscreen && fsH) ? `${FW}/${fsH}` : `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
+                            return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: fsVB || `${vbX} ${vbY} ${vbW} ${vbH}`, preserveAspectRatio: "xMidYMid meet", style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
                                 React.createElement("defs", null,
                                     Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
                                         React.createElement("line", { x1: "0.5", y1: "0.4", x2: "0.5", y2: "3.6", stroke: cfg.color, strokeWidth: "1.4", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "5", markerHeight: "5", refX: "3.6", refY: "1.8", orient: "auto" },
