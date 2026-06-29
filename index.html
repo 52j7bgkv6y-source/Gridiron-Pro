@@ -70,12 +70,15 @@ const YARD = FIELD_DIM / 100;
 // shell's read-only team storage + (ideally) Supabase row policies.
 const ROLE_LABELS_APP = { admin: "Admin", coadmin: "Co-Admin", coach: "Coach", coacht: "Coach(T)", player: "Player" };
 const ROLE_ORDER_APP = ["admin", "coadmin", "coach", "coacht", "player"];
+// `fieldEdit` → work the live field (move players, draw routes/zones/text,
+// clear/reset/undo). Ephemeral: without `edit` there's no way to save it, so
+// Player & Coach(T) can run/teach off a live field but nothing persists.
 const ROLE_CAPS = {
-    admin: { edit: true, exportGif: true, exportOther: true, deleteContent: true, invite: true, manage: true, backup: true },
-    coadmin: { edit: true, exportGif: true, exportOther: true, deleteContent: true, invite: true, manage: true, backup: true },
-    coach: { edit: true, exportGif: true, exportOther: true, deleteContent: true, invite: true, manage: true, backup: false },
-    coacht: { edit: false, exportGif: true, exportOther: true, deleteContent: false, invite: true, manage: false, backup: false },
-    player: { edit: false, exportGif: false, exportOther: false, deleteContent: false, invite: false, manage: false, backup: false },
+    admin: { edit: true, fieldEdit: true, exportGif: true, exportOther: true, deleteContent: true, invite: true, manage: true, backup: true },
+    coadmin: { edit: true, fieldEdit: true, exportGif: true, exportOther: true, deleteContent: true, invite: true, manage: true, backup: true },
+    coach: { edit: true, fieldEdit: true, exportGif: true, exportOther: true, deleteContent: true, invite: true, manage: true, backup: false },
+    coacht: { edit: false, fieldEdit: true, exportGif: true, exportOther: true, deleteContent: false, invite: true, manage: false, backup: false },
+    player: { edit: false, fieldEdit: true, exportGif: false, exportOther: false, deleteContent: false, invite: false, manage: false, backup: false },
 };
 // Default LOS = the 35-yard line on the offense's own side. The 80yd/50yd/30yd
 // split views all keep the LOS inside their visible range with default
@@ -2031,9 +2034,6 @@ function PlaybookApp() {
     // Full-screen "show it off" mode in the 2D editor — hides all chrome and
     // blows the field up to fill the screen. Field stays fully interactive.
     const [fieldFullscreen, setFieldFullscreen] = useState(false);
-    // Mobile "horizontal view": rotate the full-screen field 90° so a wide play
-    // band fills a tall phone instead of shrinking to a thin strip.
-    const [fieldRotated, setFieldRotated] = useState(false);
     // Frozen full-screen viewBox: computed from the play at rest and held FIXED
     // while PLAY IN ACTION runs, so the camera never chases the moving players —
     // the 5-yard margins are what keep the whole motion in frame.
@@ -2070,13 +2070,17 @@ function PlaybookApp() {
     const effRole = (canPreviewRoles && viewAsRole && ROLE_CAPS[viewAsRole]) ? viewAsRole : realRole;
     const caps = ROLE_CAPS[effRole] || ROLE_CAPS.admin;
     const readOnly = !caps.edit;
+    // fieldReadOnly gates ON-FIELD work; readOnly gates SAVE/EDIT/DELETE. Player
+    // & Coach(T) have fieldEdit:true but edit:false — they work the field freely
+    // while every Save/Edit/Delete control stays hidden; changes never persist.
+    const fieldReadOnly = !caps.fieldEdit;
     const capsRef = useRef(caps);
     capsRef.current = caps;
-    // View-only roles can only ever hold the Select or Pan tool — never an editing
-    // tool (route, add-player, text, erase, zone, man). If the role flips while an
-    // editing tool is active, snap back to Select.
-    useEffect(() => { if (readOnly && tool !== "select" && tool !== "pan")
-        setTool("select"); }, [readOnly, tool]);
+    // A role may hold an editing tool (route, add-player, text, erase, zone, man)
+    // only if it can work the field. If field access flips off while one is
+    // active, snap back to Select.
+    useEffect(() => { if (fieldReadOnly && tool !== "select" && tool !== "pan")
+        setTool("select"); }, [fieldReadOnly, tool]);
     // Team backend handle (present only inside the cloud shell, not standalone).
     // Drives the per-player install progress + play-questions features.
     const teamDB = (typeof window !== "undefined" && window.GP_DB) || null;
@@ -5350,9 +5354,10 @@ function PlaybookApp() {
             setViewCenter({ x: panStart.cx + dxs, y: panStart.cy + dys });
             return;
         }
-        // View-only roles (player / coach-T): panning above is navigation and stays
+        // Roles without field access: panning above is navigation and stays
         // allowed, but nothing on the field can be dragged, moved, or reshaped.
-        if (!capsRef.current.edit)
+        // Player / Coach(T) have field access (fieldEdit) and fall through.
+        if (!capsRef.current.fieldEdit)
             return;
         if (draggingLOS && losDragRef.current) {
             const snap = losDragRef.current;
@@ -8819,6 +8824,10 @@ function PlaybookApp() {
             routeByPlayer.set(foundPid, {
                 ...motion,
                 id: `${motion.id}__chain__${followUp.id}`,
+                // Keep the ORIGINAL route id reachable so option lookups (keyed on
+                // optionOf == this motion's real id) still resolve after the chain
+                // rename; otherwise the option is silently dropped once a follow-up exists.
+                optionParentId: motion.id,
                 points: combinedPoints,
                 junctionIdx: Math.max(0, motion.points.length - 1), // where the parent ends / follow-up begins
                 holdMs: (motion.rtype === "blocking" && followUp.holdBlock) ? 1000 : 0, // optional 1s block hold
@@ -8912,7 +8921,9 @@ function PlaybookApp() {
         // the primary again in the second pass.
         const optionRouteByPlayer = new Map();
         routeByPlayer.forEach((parentRoute, playerId) => {
-            let opts = optionsByParent.get(parentRoute.id);
+            // Options key on the parent's ORIGINAL id; a follow-up chain renames
+            // the route id but stashes the original on optionParentId — prefer it.
+            let opts = optionsByParent.get(parentRoute.optionParentId || parentRoute.id);
             // No option branched off this primary by id? Pick up a standalone option
             // this player drew on his own.
             if (!opts || opts.length === 0)
@@ -11735,7 +11746,7 @@ function PlaybookApp() {
     .field-fs .field-svg{width:100vw!important;height:100vh!important;max-width:100vw!important;max-height:100vh!important;aspect-ratio:auto!important;border:none!important;border-radius:0!important;}
     /* Horizontal view: size the field to viewport-height × viewport-width, then
        rotate 90° about its centre so it fills the screen turned on its side. */
-    .field-fs.field-rot .field-svg{position:fixed!important;top:50%!important;left:50%!important;width:100vh!important;height:100vw!important;max-width:none!important;max-height:none!important;transform:translate(-50%,-50%) rotate(90deg)!important;}
+    /* Full-screen always shows the field UPRIGHT (no 90deg rotation); the SVG fills the viewport and preserveAspectRatio="meet" fits the whole play to any phone orientation. */
     @media print{
       @page{margin:12mm;}
       html,body{background:#fff!important;}
@@ -11758,7 +11769,7 @@ function PlaybookApp() {
     .print-foot{margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#94a3b8;letter-spacing:0.08em;}
   `;
     return (React.createElement(React.Fragment, null,
-        React.createElement("div", { className: "app-screen" + (fieldFullscreen ? " field-fs" : "") + (fieldFullscreen && fieldRotated ? " field-rot" : ""), style: { fontFamily: "'Barlow Condensed',sans-serif", background: "#090912", color: "#e2e2e2", height: "100vh", display: "flex", flexDirection: "column" } },
+        React.createElement("div", { className: "app-screen" + (fieldFullscreen ? " field-fs" : ""), style: { fontFamily: "'Barlow Condensed',sans-serif", background: "#090912", color: "#e2e2e2", height: "100vh", display: "flex", flexDirection: "column" } },
             React.createElement("style", { dangerouslySetInnerHTML: { __html: STYLES } }),
             saveError && !mineLoadFailed && (React.createElement("div", { style: { position: "sticky", top: 0, zIndex: 2000, background: "linear-gradient(180deg,#7f1d1d,#5b1414)", borderBottom: "1px solid rgba(248,113,113,0.55)", padding: "12px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", boxShadow: "0 4px 18px rgba(0,0,0,0.45)" } },
                 React.createElement("div", { style: { flex: "1 1 320px", minWidth: 0 } },
@@ -12553,7 +12564,7 @@ function PlaybookApp() {
                                             window.addEventListener("touchmove", move, { passive: false });
                                             window.addEventListener("touchend", up);
                                         };
-                                        return (React.createElement("foreignObject", { key: t.id, x: t.x - boxW / 2, y: t.y - boxH / 2, width: boxW, height: boxH, style: { overflow: "visible" } },
+                                        return (React.createElement("foreignObject", { key: t.id, x: t.x - boxW / 2, y: t.y - boxH / 2, width: boxW, height: boxH, style: { overflow: "visible", pointerEvents: "none" } },
                                             React.createElement("div", { style: { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" } }, isEditing ? (React.createElement("textarea", { autoFocus: true, value: t.text, onFocus: e => e.target.select(), onChange: e => updateText(t.id, { text: e.target.value }), onBlur: () => { if (!(t.text || "").trim()) {
                                                     deleteText(t.id);
                                                 }
@@ -13252,7 +13263,7 @@ function PlaybookApp() {
                         [
                             { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
                             { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8", defOnly: true }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
-                        ].filter(t => (!t.defOnly || tab === "defense") && (!readOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { minWidth: 54, flexShrink: 0, color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
+                        ].filter(t => (!t.defOnly || tab === "defense") && (!fieldReadOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { minWidth: 54, flexShrink: 0, color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                             React.createElement("span", { style: { fontSize: 17 } }, t.icon),
                             t.lbl))),
                         tool === "route" && ALL_ROUTE_TYPES.map(rt => {
@@ -13260,7 +13271,7 @@ function PlaybookApp() {
                             const isOn = routeType === rt;
                             return (React.createElement("button", { key: rt, onClick: () => setRouteType(rt), style: { flexShrink: 0, padding: "4px 9px", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.04em", background: isOn ? `${cfg.color}28` : "transparent", border: `1px solid ${isOn ? cfg.color : cfg.color + "55"}`, color: isOn ? "#fff" : cfg.color, transition: "all 0.12s" } }, ROUTE_LABELS[rt]));
                         }),
-                        !readOnly && (React.createElement(React.Fragment, null,
+                        !fieldReadOnly && (React.createElement(React.Fragment, null,
                             React.createElement("button", { className: "tbtn", style: { borderColor: "rgba(239,68,68,0.3)", color: "rgba(239,68,68,0.6)", flexShrink: 0 }, onClick: () => { pushUndo(players, routes); setPlayers([]); setRoutes([]); } },
                                 React.createElement("span", { style: { fontSize: 17 } }, "\uD83D\uDDD1"),
                                 "CLEAR"),
@@ -13275,7 +13286,7 @@ function PlaybookApp() {
                     [
                         { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
                         { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8", defOnly: true }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
-                    ].filter(t => (!t.defOnly || tab === "defense") && (!readOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
+                    ].filter(t => (!t.defOnly || tab === "defense") && (!fieldReadOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                         React.createElement("span", { style: { fontSize: 18 } }, t.icon),
                         t.lbl))),
                     tool === "route" && (React.createElement("div", { style: { borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 7, width: "100%", display: "flex", flexDirection: "column", gap: 4, alignItems: "center" } },
@@ -14040,10 +14051,7 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: doPrint, disabled: printCount === 0, className: "sbtn grn", style: { flex: 1, opacity: printCount === 0 ? 0.4 : 1, cursor: printCount === 0 ? "not-allowed" : "pointer" } }, "\uD83D\uDDA8 PRINT / SAVE AS PDF"),
                             React.createElement("button", { onClick: () => setShowPrint(false), className: "sbtn dim" }, "CANCEL")))));
             })(),
-            fieldFullscreen && (React.createElement("button", { onClick: () => { setFieldFullscreen(false); setFieldRotated(false); }, title: "Exit full screen", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
-            fieldFullscreen && (React.createElement("button", { onClick: () => setFieldRotated(r => !r), title: fieldRotated ? "Back to upright view" : "Rotate to horizontal view (fits more of the field on a phone)", style: { position: "fixed", top: 52, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: fieldRotated ? "1px solid rgba(103,232,249,0.7)" : "1px solid rgba(255,255,255,0.3)", background: fieldRotated ? "rgba(8,40,48,0.9)" : "rgba(10,10,18,0.88)", color: fieldRotated ? "#67e8f9" : "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } },
-                "\u27F3 ",
-                fieldRotated ? "UPRIGHT" : "HORIZONTAL")),
+            fieldFullscreen && (React.createElement("button", { onClick: () => setFieldFullscreen(false), title: "Exit full screen", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
             canPreviewRoles && (React.createElement("div", { style: { position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9998, display: "flex", alignItems: "center", gap: 8, background: "rgba(12,12,22,0.94)", border: "1px solid rgba(167,139,250,0.55)", borderRadius: 999, padding: "5px 7px 5px 13px", boxShadow: "0 8px 28px rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontFamily: "system-ui,sans-serif" } },
                 React.createElement("span", { style: { fontSize: 10, letterSpacing: "0.13em", fontFamily: "'Bebas Neue',sans-serif", color: "#c4b5fd" } }, "VIEWING AS"),
                 React.createElement("select", { value: effRole, onChange: e => setViewAsRole(e.target.value === realRole ? null : e.target.value), title: "Preview the playbook exactly as each role sees it \u2014 you'll only be able to do what that role can do", style: { background: "#15151f", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 999, color: "#fff", fontSize: 12, padding: "4px 10px", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", cursor: "pointer" } }, ROLE_ORDER_APP.map(r => React.createElement("option", { key: r, value: r },
@@ -14051,9 +14059,9 @@ function PlaybookApp() {
                     r === realRole ? "  ·  you" : ""))),
                 viewAsRole && viewAsRole !== realRole && (React.createElement("button", { onClick: () => setViewAsRole(null), title: "Back to your own role (Admin)", style: { border: "none", background: "rgba(167,139,250,0.2)", color: "#c4b5fd", borderRadius: 999, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em" } }, "RESET")))),
             readOnly && (React.createElement("div", { style: { position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 9997, background: "rgba(180,83,9,0.94)", color: "#fff", borderRadius: 8, padding: "4px 14px", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", boxShadow: "0 4px 16px rgba(0,0,0,0.45)", whiteSpace: "nowrap", maxWidth: "94vw", overflow: "hidden", textOverflow: "ellipsis" } },
-                "\uD83D\uDC41 VIEW ONLY \u2014 ",
+                "\u270E ",
                 ROLE_LABELS_APP[effRole],
-                " can browse the playbook, but edits won't save")),
+                " can move players & draw routes/zones to run plays \u2014 changes are live only and won't save")),
             bulkExport && (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 9999, background: "rgba(6,10,8,0.86)", backdropFilter: "blur(3px)", display: "flex", alignItems: "center", justifyContent: "center" } },
                 React.createElement("div", { style: { width: "min(440px,90vw)", background: "#0f1a12", border: "1px solid rgba(167,139,250,0.4)", borderRadius: 14, padding: "26px 26px 22px", boxShadow: "0 20px 60px rgba(0,0,0,0.6)", textAlign: "center" } },
                     React.createElement("div", { style: { fontSize: 13, letterSpacing: "0.12em", fontFamily: "'Bebas Neue',sans-serif", color: "#c4b5fd", marginBottom: 4 } }, "EXPORTING INSTALL GIFS"),
