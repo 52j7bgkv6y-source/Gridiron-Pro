@@ -2034,6 +2034,22 @@ function PlaybookApp() {
     // Full-screen "show it off" mode in the 2D editor — hides all chrome and
     // blows the field up to fill the screen. Field stays fully interactive.
     const [fieldFullscreen, setFieldFullscreen] = useState(false);
+    // Flash the numbered blitz badges (toggleable VIEW option, persisted).
+    const [flashBlitz, setFlashBlitz] = useState(true);
+    const flashBlitzHydrated = useRef(false);
+    useEffect(() => {
+        (async () => {
+            try {
+                const r = (typeof window !== "undefined" && window.storage) ? await window.storage.get("gp_flashBlitz") : null;
+                if (r && r.value != null) setFlashBlitz(r.value === "1");
+            } catch (_e) { }
+            flashBlitzHydrated.current = true;
+        })();
+    }, []);
+    useEffect(() => {
+        if (!flashBlitzHydrated.current) return;
+        try { if (typeof window !== "undefined" && window.storage) window.storage.set("gp_flashBlitz", flashBlitz ? "1" : "0"); } catch (_e) { }
+    }, [flashBlitz]);
     // Frozen full-screen viewBox: computed from the play at rest and held FIXED
     // while PLAY IN ACTION runs, so the camera never chases the moving players —
     // the 5-yard margins are what keep the whole motion in frame.
@@ -2723,6 +2739,10 @@ function PlaybookApp() {
     }, []);
     const [showInstalls, setShowInstalls] = useState(false); // installs list modal
     const [openInstallId, setOpenInstallId] = useState(null); // currently-opened install (detail view)
+    // Drag-and-drop reordering of plays within an install (touch + mouse).
+    const instDragRef = useRef(null);
+    const instDropIdxRef = useRef(-1);
+    const [instDrag, setInstDrag] = useState(null);
     // Practice scripts: ordered sequences of plays organized into periods
     // (Warm-up, 7-on-7, Team, Goal-line, etc.). Each period has an ordered
     // playIds list. Scoped MINE/DEFAULT like everything else.
@@ -4697,11 +4717,12 @@ function PlaybookApp() {
         if (!oppTab)
             return;
         const builtIn = (_a = FORMATIONS[oppTab]) === null || _a === void 0 ? void 0 : _a[fname];
-        const def = builtIn || ((_b = customForms[oppTab]) === null || _b === void 0 ? void 0 : _b[fname]);
+        const customDef = (_b = customForms[oppTab]) === null || _b === void 0 ? void 0 : _b[fname];
+        const def = customDef || builtIn;
         if (!def)
             return;
         pushUndo(players, routes);
-        const applyMineOverride = !!builtIn && scopeRef.current === "personal";
+        const applyMineOverride = !!builtIn && !customDef && scopeRef.current === "personal";
         const oppPtype = oppTab === "defense" ? "defense" : "offense";
         const np = def.map(p => {
             const label = (applyMineOverride && oppPtype === "defense" && MINE_DEFENSE_LABELS[p.id])
@@ -6657,7 +6678,18 @@ function PlaybookApp() {
             setFormation(target);
             loadFormation(target, tab);
         }
-    }, [tab, customForms, loadFormation, players, routes, coverages, texts, currentPlay, pushUndo]);
+        // On defense, swap the auto-stamped built-in O-line for the user's custom
+        // "OL Only (T-G-C-G-T)" offensive look when it exists.
+        if (tab === "defense") {
+            const olDef = customForms.offense && customForms.offense["OL Only (T-G-C-G-T)"];
+            if (olDef) {
+                setPlayers(prev => [
+                    ...prev.filter(p => p.ptype !== "offense"),
+                    ...olDef.map(p => ({ ...p, id: uid(), origId: p.id, olRef: true, x: ballX + p.dx, y: losY + p.dy, ptype: "offense" })),
+                ]);
+            }
+        }
+    }, [tab, customForms, loadFormation, players, routes, coverages, texts, currentPlay, pushUndo, ballX, losY]);
     // Clear ONLY one side of the line of scrimmage, leaving the other side — and
     // everything tied to it — intact. "offense" removes the offensive players plus
     // their routes/labels and resets the ball (no one left to snap it); "defense"
@@ -8264,6 +8296,91 @@ function PlaybookApp() {
             return { ...i, playIds: has ? i.playIds.filter(x => x !== playId) : [...i.playIds, playId] };
         }));
     }, [setInstalls]);
+    // Reorder a play within an install (dir = -1 up, +1 down). This is the order
+    // the install runs, exports, and prints in. Mirrors movePlayInPeriod.
+    const movePlayInInstall = useCallback((installId, playId, dir) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
+        setInstalls(prev => prev.map(i => {
+            if (i.id !== installId)
+                return i;
+            const idx = i.playIds.indexOf(playId);
+            if (idx < 0)
+                return i;
+            const target = idx + dir;
+            if (target < 0 || target >= i.playIds.length)
+                return i;
+            const playIds = [...i.playIds];
+            [playIds[idx], playIds[target]] = [playIds[target], playIds[idx]];
+            return { ...i, playIds };
+        }));
+    }, [setInstalls]);
+    // Move/insert a play to an explicit index within an install (used by drag & drop).
+    const insertPlayInInstall = useCallback((installId, playId, idx) => {
+        if (!capsRef.current.edit) {
+            alert("View-only: your role can browse and run the playbook, but can't change it.");
+            return;
+        }
+        setInstalls(prev => prev.map(i => {
+            if (i.id !== installId)
+                return i;
+            const without = i.playIds.filter(x => x !== playId);
+            const clamped = Math.max(0, Math.min(idx, without.length));
+            without.splice(clamped, 0, playId);
+            return { ...i, playIds: without };
+        }));
+    }, [setInstalls]);
+    // Start a touch/mouse drag of an install play; track the row under the pointer
+    // via elementFromPoint and move the play there on release.
+    const beginInstallPlayDrag = useCallback((e, installId, playId) => {
+        if (!capsRef.current.edit)
+            return;
+        if (e.cancelable)
+            e.preventDefault();
+        instDragRef.current = { installId, playId };
+        instDropIdxRef.current = -1;
+        setInstDrag({ playId, idx: -1 });
+        const onMove = (ev) => {
+            const p = (ev.touches && ev.touches[0]) ? ev.touches[0] : ev;
+            if (ev.cancelable)
+                ev.preventDefault();
+            const el = document.elementFromPoint(p.clientX, p.clientY);
+            const row = (el && el.closest) ? el.closest("[data-inst-row]") : null;
+            const list = (el && el.closest) ? el.closest("[data-inst-list]") : null;
+            let idx = instDropIdxRef.current;
+            if (row) {
+                const ri = Number(row.getAttribute("data-inst-row"));
+                const r = row.getBoundingClientRect();
+                idx = (p.clientY > r.top + r.height / 2) ? ri + 1 : ri;
+            }
+            else if (list) {
+                idx = Number(list.getAttribute("data-inst-count")) || 0;
+            }
+            if (idx !== instDropIdxRef.current) {
+                instDropIdxRef.current = idx;
+                setInstDrag(s => s ? { ...s, idx } : s);
+            }
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("touchmove", onMove);
+            window.removeEventListener("touchend", onUp);
+            const d = instDragRef.current;
+            const idx = instDropIdxRef.current;
+            instDragRef.current = null;
+            instDropIdxRef.current = -1;
+            setInstDrag(null);
+            if (d && idx >= 0)
+                insertPlayInInstall(d.installId, d.playId, idx);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        window.addEventListener("touchmove", onMove, { passive: false });
+        window.addEventListener("touchend", onUp);
+    }, [insertPlayInInstall]);
     // Tag an install as offense / defense / special teams (used for the side
     // sort + filter).
     const setInstallSide = useCallback((id, side) => {
@@ -11684,6 +11801,8 @@ function PlaybookApp() {
     };
     const STYLES = `
     @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+    @keyframes gpBlitzFlash { 0%,100%{opacity:1;} 50%{opacity:0.12;} }
+    .blitz-flash { animation: gpBlitzFlash 0.8s ease-in-out infinite; }
     *{box-sizing:border-box;margin:0;padding:0;}
     :root{--g:#166534;--amb:#f59e0b;--amb2:#d97706;--bg:#090912;--s1:#0f0f1a;--s2:#15151f;--s3:#1c1c2a;--bord:rgba(255,255,255,0.07);--muted:rgba(255,255,255,0.38);}
     ::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:4px}
@@ -11994,7 +12113,7 @@ function PlaybookApp() {
                         !readOnly && ((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]) && (React.createElement(React.Fragment, null,
                             !((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation]) && (React.createElement("button", { className: "sbtn dim", onClick: openEditFormation, title: "Edit this custom formation (rename or update layout)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270F")),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setConfirmDeleteForm(formation), title: ((_c = FORMATIONS[tab]) === null || _c === void 0 ? void 0 : _c[formation]) ? "Delete your override — restores the built-in" : "Delete this custom formation", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
-                        tab !== "special" && (React.createElement(SearchSelect, { value: "", width: 148, placeholder: `+ vs ${tab === "offense" ? "DEF" : "OFF"} look…`, title: `Add ${tab === "offense" ? "defense" : "offense"} formation onto the field`, options: [...Object.keys(FORMATIONS[tab === "offense" ? "defense" : "offense"] || {}).map(f => ({ value: f, label: f })), ...Object.keys(customForms[tab === "offense" ? "defense" : "offense"] || {}).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (f)
+                        tab !== "special" && (React.createElement(SearchSelect, { value: "", width: 148, placeholder: `+ vs ${tab === "offense" ? "DEF" : "OFF"} look…`, title: `Add ${tab === "offense" ? "defense" : "offense"} formation onto the field`, options: (() => { const ot = tab === "offense" ? "defense" : "offense"; const cns = Object.keys(customForms[ot] || {}); const cs = new Set(cns); return [...Object.keys(FORMATIONS[ot] || {}).filter(f => !cs.has(f)).map(f => ({ value: f, label: f })), ...cns.map(f => ({ value: f, label: "★ " + f }))]; })(), onPick: f => { if (f)
                                 addOpposingFormation(f); } })),
                         tab === "offense" && (() => {
                             const names = orderedNames(Object.keys(routePresets), catSortPref("routes"));
@@ -12156,6 +12275,7 @@ function PlaybookApp() {
                     React.createElement("div", { className: "editor-bar", style: { display: "flex", gap: 6, padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", alignItems: "center", flexWrap: "wrap", background: "#0a0a14" } },
                         React.createElement("span", { className: "hd", style: { fontSize: 11, color: "#555", letterSpacing: "0.12em", marginRight: 4 } }, "VIEW"),
                         React.createElement("button", { onClick: () => setFieldFullscreen(true), title: "Full screen \u2014 blow the field up to fill the screen to show it off. Tap \u2715 to exit.", style: { padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em", border: "1px solid rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.12)", color: "#fbbf24" } }, "\u26F6 FULL SCREEN"),
+                        React.createElement("button", { onClick: () => setFlashBlitz(v => !v), title: "Flash the numbered blitz badges so the pressure jumps out. Toggle on/off — your choice is remembered.", style: { padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em", border: flashBlitz ? "1px solid rgba(239,68,68,0.55)" : "1px solid rgba(255,255,255,0.15)", background: flashBlitz ? "rgba(239,68,68,0.14)" : "transparent", color: flashBlitz ? "#fca5a5" : "rgba(255,255,255,0.5)" } }, "\u26A1 FLASH BLZ ", flashBlitz ? "ON" : "OFF"),
                         [
                             { key: "split80", lbl: "80yd" },
                             { key: "split50", lbl: "50yd" },
@@ -12330,7 +12450,7 @@ function PlaybookApp() {
                                                     const by = defaultY + (route.orderOffY || 0);
                                                     const moved = (route.orderOffX || 0) !== 0 || (route.orderOffY || 0) !== 0;
                                                     const col = ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff";
-                                                    return (React.createElement("g", { key: route.id + "-order" },
+                                                    return (React.createElement("g", { key: route.id + "-order", className: ((route.rtype === "showBlitz" || route.rtype === "hideBlitz") && flashBlitz) ? "blitz-flash" : undefined },
                                                         moved && (React.createElement("line", { x1: bx, y1: by, x2: start.x, y2: start.y, stroke: col, strokeWidth: 1.2, strokeDasharray: "3,2", opacity: 0.7, style: { pointerEvents: "none" } })),
                                                         React.createElement("circle", { cx: bx, cy: by, r: 11, fill: "transparent", onMouseDown: (e) => startOrderDrag(e, route.id), onTouchStart: (e) => startOrderDrag(e, route.id), style: { cursor: "move", touchAction: "none" } }),
                                                         React.createElement("circle", { cx: bx, cy: by, r: 6.5, fill: col, fillOpacity: 0.3, stroke: col, strokeOpacity: 0.9, strokeWidth: 1.2, style: { pointerEvents: "none" } }),
@@ -15851,9 +15971,7 @@ function PlaybookApp() {
                                     React.createElement("div", { className: "hd", style: { fontSize: 12, color: "#fcd34d", letterSpacing: "0.1em", marginBottom: 6 } },
                                         "PLAYS \u00B7 ",
                                         playsInInstall.length),
-                                    playsInInstall.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontStyle: "italic", marginBottom: 10 } }, "No plays in this install yet.")) : (React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 } }, playsInInstall.map(p => (React.createElement("span", { key: p.id, className: "badge", style: { background: "rgba(74,222,128,0.12)", color: "#86efac", border: "1px solid rgba(74,222,128,0.3)", display: "inline-flex", alignItems: "center", gap: 5 } },
-                                        p.name,
-                                        React.createElement("button", { onClick: () => toggleInstallPlay(openInst.id, p.id), title: "Remove from install", style: { background: "none", border: "none", color: "rgba(134,239,172,0.7)", cursor: "pointer", padding: 0, fontSize: 13, lineHeight: 1, marginLeft: 2 } }, "\u00D7")))))),
+                                    playsInInstall.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontStyle: "italic", marginBottom: 10 } }, "No plays in this install yet.")) : (React.createElement("div", { "data-inst-list": "1", "data-inst-count": playsInInstall.length, style: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 } }, playsInInstall.map((p, pIdx) => (React.createElement(React.Fragment, { key: p.id }, instDrag && instDrag.idx === pIdx && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })), React.createElement("div", { "data-inst-row": pIdx, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.18)", borderRadius: 5, opacity: (instDrag && instDrag.playId === p.id) ? 0.4 : 1 } }, !readOnly && (React.createElement("span", { onMouseDown: e => beginInstallPlayDrag(e, openInst.id, p.id), onTouchStart: e => beginInstallPlayDrag(e, openInst.id, p.id), title: "Drag to reorder", style: { cursor: "grab", color: "rgba(255,255,255,0.4)", fontSize: 14, lineHeight: 1, padding: "0 2px", touchAction: "none", userSelect: "none" } }, "\u2261")), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", minWidth: 18, textAlign: "right" } }, pIdx + 1, "."), React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name), React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.4)", fontFamily: "'JetBrains Mono',monospace" } }, playFormations(p)[0] || ""), !readOnly && (React.createElement(React.Fragment, null, React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, -1), disabled: pIdx === 0, title: "Move up", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === 0 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === 0 ? 0.3 : 1, fontSize: 10 } }, "\u2191"), React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, 1), disabled: pIdx === playsInInstall.length - 1, title: "Move down", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === playsInInstall.length - 1 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === playsInInstall.length - 1 ? 0.3 : 1, fontSize: 10 } }, "\u2193"), React.createElement("button", { onClick: () => toggleInstallPlay(openInst.id, p.id), title: "Remove from install", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7"))))))), instDrag && instDrag.idx === playsInInstall.length && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })))),
                                     playsNotInInstall.length > 0 && (React.createElement("div", { style: { marginBottom: 14 } },
                                         React.createElement(AddPlayPicker, { available: playsNotInInstall, onAdd: (pid) => toggleInstallPlay(openInst.id, pid), summaryLabel: "+ ADD PLAYS", secondary: (p) => `${p.category} · ${playFormations(p)[0] || "—"}` }))),
                                     React.createElement("div", { className: "hd", style: { fontSize: 12, color: "#67e8f9", letterSpacing: "0.1em", marginBottom: 6, marginTop: 6 } },
@@ -17359,7 +17477,7 @@ function Dashboard({ session, memberships, active, setActive, reload, onOpenEdit
       </div>
 
       {m.role !== "player" && <InvitePanel teamId={m.team_id} myRole={m.role} />}
-      <Roster teamId={m.team_id} myRole={m.role} myUserId={session.user.id} />
+      {m.role === "admin" && <Roster teamId={m.team_id} myRole={m.role} myUserId={session.user.id} />}
 
       <TeamCloud teamId={m.team_id} role={m.role} userId={session.user.id} teamName={m.teams?.name} />
     </div>
