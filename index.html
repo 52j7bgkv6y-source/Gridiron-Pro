@@ -1298,10 +1298,12 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
             // zones from older plays that don't have the offset fields.
             const lcx = cx + (z.labelOffX || 0);
             const lcy = cy + (z.labelOffY || 0);
-            const labelLen = z.label.length;
             const col = z.color || "#38bdf8";
-            const fontSize = Math.max(10, Math.min(z.h * 0.55, (z.w * 1.6) / Math.max(2, labelLen), 36));
-            return (React.createElement("text", { key: `zt-${i}`, x: lcx, y: lcy + fontSize * 0.34, textAnchor: "middle", fill: col, stroke: "rgba(0,0,0,0.55)", strokeWidth: fontSize * 0.22, strokeLinejoin: "round", fontSize: fontSize, fontWeight: "bold", fontFamily: "'JetBrains Mono', monospace", style: { paintOrder: "stroke", pointerEvents: "none", userSelect: "none" } }, z.label));
+            // Size + wrap the label exactly like the 2D editor (fitZoneLabel starts
+            // at 14px and only shrinks to fit), so install/thumbnail zone names all
+            // render at the same size and keep the same wrapped shape as the editor.
+            const info = fitZoneLabel(z.label, z.w, z.h);
+            return (React.createElement("text", { key: `zt-${i}`, textAnchor: "middle", fill: col, stroke: "rgba(0,0,0,0.55)", strokeWidth: info.fontSize * 0.24, strokeLinejoin: "round", fontSize: info.fontSize, letterSpacing: info.letterSpacing, fontWeight: "bold", fontFamily: "'JetBrains Mono', monospace", style: { paintOrder: "stroke", pointerEvents: "none", userSelect: "none" } }, info.lines.map((ln, li) => (React.createElement("tspan", { key: li, x: lcx, y: lcy - (info.lines.length - 1) * info.lineH / 2 + li * info.lineH + info.fontSize * 0.34 }, ln)))));
         }),
         covs.filter(c => c.ctype === "man").map((m, i) => {
             const a = players.find(p => p.id === m.fromId), b = players.find(p => p.id === m.toId);
@@ -2079,11 +2081,9 @@ function PlaybookApp() {
     // realRole comes from the auth shell; standalone defaults to admin. Only an
     // admin (e.g. the team owner) may "view as" another role to preview exactly
     // what that role sees and can do. caps drives every gate below.
-    const [viewAsRole, setViewAsRole] = useState(null);
     const realRole = (typeof window !== "undefined" && window.__gridironRole) || "admin";
     const ownerEmail = (typeof window !== "undefined" && window.GP_EMAIL) || "";
-    const canPreviewRoles = (realRole === "admin");
-    const effRole = (canPreviewRoles && viewAsRole && ROLE_CAPS[viewAsRole]) ? viewAsRole : realRole;
+    const effRole = realRole;
     const caps = ROLE_CAPS[effRole] || ROLE_CAPS.admin;
     const readOnly = !caps.edit;
     // fieldReadOnly gates ON-FIELD work; readOnly gates SAVE/EDIT/DELETE. Player
@@ -14172,12 +14172,7 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: () => setShowPrint(false), className: "sbtn dim" }, "CANCEL")))));
             })(),
             fieldFullscreen && (React.createElement("button", { onClick: () => setFieldFullscreen(false), title: "Exit full screen", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
-            canPreviewRoles && (React.createElement("div", { style: { position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9998, display: "flex", alignItems: "center", gap: 8, background: "rgba(12,12,22,0.94)", border: "1px solid rgba(167,139,250,0.55)", borderRadius: 999, padding: "5px 7px 5px 13px", boxShadow: "0 8px 28px rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", fontFamily: "system-ui,sans-serif" } },
-                React.createElement("span", { style: { fontSize: 10, letterSpacing: "0.13em", fontFamily: "'Bebas Neue',sans-serif", color: "#c4b5fd" } }, "VIEWING AS"),
-                React.createElement("select", { value: effRole, onChange: e => setViewAsRole(e.target.value === realRole ? null : e.target.value), title: "Preview the playbook exactly as each role sees it \u2014 you'll only be able to do what that role can do", style: { background: "#15151f", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 999, color: "#fff", fontSize: 12, padding: "4px 10px", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", cursor: "pointer" } }, ROLE_ORDER_APP.map(r => React.createElement("option", { key: r, value: r },
-                    ROLE_LABELS_APP[r],
-                    r === realRole ? "  ·  you" : ""))),
-                viewAsRole && viewAsRole !== realRole && (React.createElement("button", { onClick: () => setViewAsRole(null), title: "Back to your own role (Admin)", style: { border: "none", background: "rgba(167,139,250,0.2)", color: "#c4b5fd", borderRadius: 999, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em" } }, "RESET")))),
+            false,
             readOnly && (React.createElement("div", { style: { position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 9997, background: "rgba(180,83,9,0.94)", color: "#fff", borderRadius: 8, padding: "4px 14px", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", boxShadow: "0 4px 16px rgba(0,0,0,0.45)", whiteSpace: "nowrap", maxWidth: "94vw", overflow: "hidden", textOverflow: "ellipsis" } },
                 "\u270E ",
                 ROLE_LABELS_APP[effRole],
@@ -15579,7 +15574,20 @@ function PlaybookApp() {
                                     }
                                 }
                                 const lx = cx + (z.labelOffX || 0), ly = cy + (z.labelOffY || 0);
-                                return (React.createElement("text", { key: z.id + "-lbl", x: lx, y: ly, dy: "0.36em", textAnchor: "middle", fill: z.color || "#3b82f6", fontSize: Math.max(10, Math.min(z.w, z.h) * 0.18), fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif", style: { pointerEvents: "none", userSelect: "none" } }, z.label));
+                                const zcol = z.color || "#3b82f6";
+                                // Wrap + fit the label inside the zone (Bebas Neue ≈ 0.46em/char);
+                                // shrink only if the wrapped text is too tall, so long labels
+                                // (READ 2/ DEEP QUARTERS, WALL, ROLL) wrap instead of overflowing.
+                                let zfs = Math.max(10, Math.min(z.w, z.h) * 0.18);
+                                let zlines, zlineH;
+                                for (let k = 0; k < 12; k++) {
+                                    const maxChars = Math.max(1, Math.floor((z.w - 8) / (zfs * 0.46)));
+                                    zlines = wrapLabel(z.label, maxChars);
+                                    zlineH = zfs * 1.02;
+                                    if (zlines.length * zlineH <= z.h - 6 || zfs <= 9) break;
+                                    zfs -= 1;
+                                }
+                                return (React.createElement("text", { key: z.id + "-lbl", textAnchor: "middle", fill: zcol, fontSize: zfs, fontWeight: "bold", fontFamily: "'Bebas Neue',sans-serif", style: { pointerEvents: "none", userSelect: "none" } }, zlines.map((ln, li) => (React.createElement("tspan", { key: li, x: lx, y: ly - (zlines.length - 1) * zlineH / 2 + li * zlineH + zfs * 0.34 }, ln)))));
                             }),
                             !ballSnapOff() && (() => {
                                 const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
@@ -17400,7 +17408,7 @@ function TeamCloud({ teamId, role, userId, teamName }) {
 }
 
 // ── Signed in + on a team ────────────────────────────────────────────────────
-function Dashboard({ session, memberships, active, setActive, reload, onOpenEditor, loadingEditor, editorErr }) {
+function Dashboard({ session, memberships, active, setActive, previewRole, setPreviewRole, reload, onOpenEditor, loadingEditor, editorErr }) {
   const m = memberships[active];
   const canManage = m.role === "admin" || m.role === "coadmin";
   const [editingName, setEditingName] = useState(false);
@@ -17457,11 +17465,15 @@ function Dashboard({ session, memberships, active, setActive, reload, onOpenEdit
         <button className="mini" onClick={()=>db.auth.signOut()}>Log out</button>
       </div>
 
-      {memberships.length > 1 && (
+      {(memberships.length > 1 || canManage) && (
         <div style={{marginTop:14}}>
-          <label>Team</label>
-          <select value={active} onChange={e=>setActive(Number(e.target.value))}>
-            {memberships.map((mm, i) => <option key={mm.team_id} value={i}>{mm.teams?.name} — {ROLE_LABEL[mm.role]}</option>)}
+          <label>Team{canManage ? " · open playbook as role" : ""}</label>
+          <select value={previewRole ? ("r:" + previewRole) : ("t:" + active)}
+            onChange={e=>{ const v = e.target.value; if (v.slice(0,2) === "r:") { setPreviewRole(v.slice(2)); } else { setActive(Number(v.slice(2))); setPreviewRole(null); } }}>
+            {memberships.map((mm, i) => <option key={"t:" + mm.team_id} value={"t:" + i}>{mm.teams?.name} — {ROLE_LABEL[mm.role]}</option>)}
+            {canManage && Object.keys(ROLE_LABEL).filter(r => r !== m.role).map(r => (
+              <option key={"r:" + r} value={"r:" + r}>{(m.teams?.name || "Team")} — View as {ROLE_LABEL[r]}</option>
+            ))}
           </select>
         </div>
       )}
@@ -17471,13 +17483,15 @@ function Dashboard({ session, memberships, active, setActive, reload, onOpenEdit
       </button>
       {editorErr && <div className="msg err">{editorErr}</div>}
       <div style={{marginTop:7,fontSize:12,color:"var(--faint)",lineHeight:1.55,textAlign:"center"}}>
-        {!roleCanEdit(m.role)
-          ? "Opens this team's playbook, view-only."
-          : "Opens this team's playbook — edits save straight to the cloud."}
+        {(canManage && previewRole)
+          ? ("Previewing as " + ROLE_LABEL[previewRole] + (roleCanEdit(previewRole) ? " — edits save to the cloud." : " — view-only preview."))
+          : (!roleCanEdit(m.role)
+            ? "Opens this team's playbook, view-only."
+            : "Opens this team's playbook — edits save straight to the cloud.")}
       </div>
 
       {m.role !== "player" && <InvitePanel teamId={m.team_id} myRole={m.role} />}
-      {m.role === "admin" && <Roster teamId={m.team_id} myRole={m.role} myUserId={session.user.id} />}
+      <Roster teamId={m.team_id} myRole={m.role} myUserId={session.user.id} />
 
       <TeamCloud teamId={m.team_id} role={m.role} userId={session.user.id} teamName={m.teams?.name} />
     </div>
@@ -17493,11 +17507,15 @@ function App() {
   const [session, setSession] = useState(undefined);   // undefined = checking
   const [memberships, setMemberships] = useState(undefined);
   const [active, setActive] = useState(0);
+  // Admin / co-admin can open the playbook AS any role to see what that role sees.
+  // null = open as your real role. Chosen in the Dashboard team selector.
+  const [previewRole, setPreviewRole] = useState(null);
 
   const loadMemberships = useCallback(async (sess) => {
     if (!sess) { setMemberships(undefined); return; }
     const { data } = await db.from("memberships")
       .select("team_id, role, display_name, teams(name)")
+      .eq("user_id", sess.user.id)
       .order("created_at");
     let list = data || [];
     // Auto-redeem a code saved during sign-up (covers the email-confirm gap).
@@ -17507,7 +17525,7 @@ function App() {
         try {
           await db.rpc("redeem_code", { p_code: pending, p_first: localStorage.getItem("gp_pending_first") || null, p_last: localStorage.getItem("gp_pending_last") || null, p_display: localStorage.getItem("gp_pending_name") || null });
           ["gp_pending_code","gp_pending_name","gp_pending_first","gp_pending_last"].forEach(k=>localStorage.removeItem(k));
-          const re = await db.from("memberships").select("team_id, role, display_name, teams(name)").order("created_at");
+          const re = await db.from("memberships").select("team_id, role, display_name, teams(name)").eq("user_id", sess.user.id).order("created_at");
           list = re.data || [];
         } catch (_) { /* bad/used code → JoinTeam screen handles it */ }
       }
@@ -17542,8 +17560,12 @@ function App() {
     try {
       try { if (!window.THREE) await load("https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"); } catch (_) { /* 3D is optional; editor still opens */ }
       if (!window.GridironApp) { setLoadingEditor(false); setEditorErr("The editor didn't load. Do a full refresh of the page (pull down to refresh on mobile) and try again."); return; }
-      window.storage = makeTeamStorage(m.team_id, session.user.id, !roleCanEdit(m.role));
-      window.__gridironRole = m.role;
+      // Admin / co-admin may open the playbook as any role to preview it; that
+      // role drives both the editor's caps and whether storage is writable.
+      const canPrev = m.role === "admin" || m.role === "coadmin";
+      const openRole = (canPrev && previewRole && ROLE_LABEL[previewRole]) ? previewRole : m.role;
+      window.storage = makeTeamStorage(m.team_id, session.user.id, !roleCanEdit(openRole));
+      window.__gridironRole = openRole;
       window.GP_EMAIL = (session.user && session.user.email) || "";
       // Direct backend handle + identity so the editor can read/write the
       // per-player install-progress and play-questions tables (which the
@@ -17555,7 +17577,7 @@ function App() {
       setLoadingEditor(false);
       setShowEditor(true);
     } catch (e) { setLoadingEditor(false); setEditorErr(friendlyError(e)); }
-  }, [m, session]);
+  }, [m, session, previewRole]);
 
   if (showEditor && window.GridironApp) {
     // Expose a return-to-dashboard hook so the in-editor presentation (install /
@@ -17591,7 +17613,7 @@ function App() {
       ) : memberships.length === 0 ? (
         <JoinTeam displayName={session.user.user_metadata?.name} onJoined={()=>loadMemberships(session)} />
       ) : (
-        <Dashboard session={session} memberships={memberships} active={active} setActive={setActive} reload={()=>loadMemberships(session)} onOpenEditor={openEditor} loadingEditor={loadingEditor} editorErr={editorErr} />
+        <Dashboard session={session} memberships={memberships} active={active} setActive={setActive} previewRole={previewRole} setPreviewRole={setPreviewRole} reload={()=>loadMemberships(session)} onOpenEditor={openEditor} loadingEditor={loadingEditor} editorErr={editorErr} />
       )}
 
       <div style={{textAlign:"center",marginTop:18,fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:"var(--faint)",letterSpacing:"0.08em"}}>
