@@ -2,6 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#0a0a14" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<script>
+/* PWA: cache the app + libraries for fast (and offline-tolerant) opens.
+   Navigations stay network-first, so every ONLINE open is the freshest deploy. */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("./sw.js").catch(function () {});
+  });
+}
+</script>
 <script>
 /* Boot watchdog (plain JS — no React/Babel needed). If a CDN script fails to
    load, an uncaught error fires, or nothing renders within a few seconds, this
@@ -423,7 +437,8 @@ const HELP_GUIDE = [
             { t: "Coverages", d: "Pick a coverage to drop its zones or man assignments onto the field automatically — or draw your own with the Zone and Man tools." },
             { t: "Blitzes", d: "Pick a blitz to add pressure paths to the front. Re-selecting the same blitz re-applies it." },
             { t: "⚡ Flash blitzes", d: "Numbered blitz badges can pulse to draw the eye to the pressure. Toggle ⚡ FLASH BLZ on or off in the VIEW bar; the setting is remembered. It shows on the live field including full screen (static play cards and GIFs stay steady)." },
-            { t: "Zones", d: "Draw a coverage zone with the Zone tool, then select it to resize or recolor it." },
+            { t: "🧠 COUNTER", d: "🧠 COUNTER (next to 🎬 3D) answers whichever side you're drawing. Draw a DEFENSE and it reads the front, box, shell and pressure, then hands you a pass answer (formation + routes, with APPLY), a run answer with blocking scheme and direction, and your best saved offensive plays. Draw an OFFENSE and it flips: you get the defensive call — front, coverage and pressure — plus the best-matching calls and vocabulary from your own defensive playbook. On special teams it answers whichever side is on the field." },
+            { t: "Zones", d: "Draw a coverage zone with the Zone tool, then select it to resize or recolor it. The Zone tool now works on every tab — coverage on defense, landmarks and read areas on offense or special teams." },
             { t: "Man coverage", d: "Draw a link from a defender to the receiver he's responsible for with the Man tool." },
             { t: "Spread a zone (2× / 3× / 4×)", d: "Select a field zone and use SPREAD to copy it evenly across the field at the same level — 2× makes thirds (3 zones), 3× fourths (4), 4× fifths (5). One deep zone becomes a Cover-3/4/5 shell in a tap." },
             { t: "Fronts & schemes", d: "Save and re-apply defensive fronts and offensive schemes so you're not redrawing the same look every time. A Scheme bundles a coverage + blitz + any blocking AND run action under one name — applying it restores only the route types it carries and leaves your other routes alone." },
@@ -476,17 +491,20 @@ const HELP_GUIDE = [
             { t: "Reordering install plays", d: "Open an install in EDIT and drag a play by its ≡ handle to any spot, or use the ↑ / ↓ arrows. The order you set carries through RUN, GIF, and PDF." },
             { t: "Practice scripts", d: "Build a script of periods, each holding the plays for that segment of practice." },
             { t: "Running them", d: "Run an install or script to step through its plays; each one animates from its own saved diagram, not the live field." },
-            { t: "🎓 Study quiz", d: "STUDY turns an install — or the whole library, via the 🎓 STUDY button in the top bar — into a quick multiple-choice quiz: see a play and pick its name, or see a name and pick the diagram. Wrong answers show the right one, you can re-drill just the plays you missed, and your best score is remembered on your device. Built phone-first for players." },
+            { t: "🎓 Study quiz", d: "STUDY in the top bar lets you pick what to drill — every play, one install, or a practice script — then turns it into a quick multiple-choice quiz: see a play and pick its name, or see a name and pick the diagram. Tap any play to blow it up to nearly the whole screen so it's easy to read. Wrong answers show the right one, you can re-drill just the plays you missed, and your best score is remembered on your device. Built phone-first for players. Coaches and staff: tap 📊 WHO'S STUDYING inside the STUDY picker for a team leaderboard of rounds and scores — players never see it." },
         ],
     },
     {
         id: "tips", icon: "💡", title: "Tips & Shortcuts",
         blurb: "Undo, movable panels, and handy habits.",
         topics: [
-            { t: "Undo", d: "Undo reverses your last action — moving, drawing, erasing, dragging the ball or the line, switching formations, even CLEAR. It holds your last ~20 actions." },
+            { t: "Undo", d: "Undo reverses your last action — moving, drawing, erasing, dragging the ball or the line, switching formations, even CLEAR. It holds your last ~20 actions. On desktop, Ctrl/Cmd+Z does the same thing, and Ctrl/Cmd+S saves the current play." },
             { t: "Movable panels", d: "Drag a panel by its grip handle to slide it out of your way; it stays inside the field area." },
             { t: "Auto-fit view", d: "The view slides to keep your whole play framed without ever shrinking the players or routes." },
             { t: "CLEAR vs NEW", d: "CLEAR wipes the field back to this tab's default look. NEW duplicates the current play so you can save it as a separate copy." },
+            { t: "📱 Add it to your phone", d: "Gridiron installs like an app: open it in your phone's browser, then use Share → Add to Home Screen (iPhone) or the Install prompt (Android). It opens instantly after that, keeps working on weak sidelines WiFi, and picks up new versions automatically whenever you're online." },
+            { t: "🕵️ Scout plays", d: "Toggle 🕵️ SCOUT next to SAVE to file a play as a scout-team look. Scout plays live in their own collapsible SCOUT section at the bottom of the play list (hidden by default, one tap to show), and they stay out of 🧠 COUNTER suggestions and the All-plays study quiz — installs and scripts can still include them." },
+            { t: "📴 Working offline", d: "Tap ⬇ OFFLINE inside any install or practice script to save a fresh copy of the whole playbook to that device. After that the app opens and works with zero internet — browse, run plays, quiz, even edit. Anything you change offline is kept on the device and syncs to the team cloud by itself the moment you reconnect (last save wins). The leaderboard and other live-cloud features still need a connection." },
         ],
     },
 ];
@@ -508,7 +526,7 @@ const GUIDE_STEPS = [
     { icon: "⚡", title: "Flashing blitzes", body: "On defense, the numbered blitz badges can pulse to make the pressure pop. Toggle ⚡ FLASH BLZ on or off in the VIEW bar — your choice is remembered.", need: "fieldEdit" },
     { icon: "📤", title: "Export & share", body: "Turn any play into an animated GIF, or export a play or install to a printable PDF or call sheet to hand out.", need: "exportGif" },
     { icon: "🗄️", title: "Backup & restore", body: "Click the green SAVED pill any time to open Backup / Restore and export or re-import your whole playbook.", need: "backup" },
-    { icon: "🧠", title: "Quiz yourself", body: "Tap 🎓 STUDY — in the top bar, or inside any install — to turn the plays into a quick name-that-play quiz. Build a streak, then re-drill just the ones you miss until they stick. Made for your phone." },
+    { icon: "🧠", title: "Quiz yourself", body: "Tap 🎓 STUDY in the top bar and pick what to drill — all plays, an install, or a practice script. Name the play, tap it to see it near full-screen, build a streak, then re-drill the ones you miss until they stick." },
     { icon: "🎓", title: "That's the tour!", body: "There's a lot more under the hood. Tap the HELP button any time for a searchable guide to every control — or to replay this walkthrough. Now go build something." },
 ];
 // ── Study-quiz helpers (mobile-first recall game) ──
@@ -538,6 +556,145 @@ const buildQuizQs = (questionPlays, pool) => {
         return { play: p, mode, opts: qShuffle([p, ...distract]).map(o => ({ id: o.id, name: o.name, play: o })) };
     }).filter(Boolean);
 };
+
+// ═══ 🧠 COUNTER — rule-based defensive read → offensive answer ═══
+// Reads whatever defense is on the field (alignment, zones, man links, blitz
+// arrows) and recommends a pass answer, a run answer, and the best-fitting
+// saved plays. Pure football rules — nothing leaves the device.
+const gpAnalyzeDefense = (players, routes, coverages, losY) => {
+  const defs = (players || []).filter(p => p && p.ptype === "defense");
+  if (defs.length < 3) return null;
+  const off = (players || []).filter(p => p && p.ptype !== "defense");
+  const olXs = off.filter(p => p.role === "OL").map(p => p.x);
+  const cX = olXs.length ? olXs.reduce((a, b) => a + b, 0) / olXs.length : 240;
+  const depth = (p) => losY - p.y;
+  const box = defs.filter(p => depth(p) <= 50 && Math.abs(p.x - cX) <= 70);
+  const deep = defs.filter(p => depth(p) >= 95);
+  const press = defs.filter(p => depth(p) <= 18 && Math.abs(p.x - cX) > 70);
+  const downL = defs.filter(p => depth(p) <= 14 && Math.abs(p.x - cX) <= 70);
+  const defIds = new Set(defs.map(p => p.id));
+  let blitz = 0; const blitzXs = [];
+  (routes || []).forEach(r => {
+    if (!r || !defIds.has(r.ownerId) || !r.points || r.points.length < 2) return;
+    const owner = defs.find(p => p.id === r.ownerId);
+    if (r.rtype === "showBlitz" || r.rtype === "hideBlitz") { blitz++; if (owner) blitzXs.push(owner.x); return; }
+    const last = r.points[r.points.length - 1];
+    if (owner && last.y >= losY - 6) { blitz++; blitzXs.push(owner.x); }
+  });
+  const rushers = Math.max(downL.length + blitz, blitz, downL.length);
+  const manLinks = (coverages || []).filter(cv => cv && cv.ctype === "man").length;
+  const zones = (coverages || []).filter(cv => cv && cv.ctype !== "man");
+  const isMan = manLinks >= 3 || (manLinks > 0 && zones.length === 0);
+  const high = deep.length;
+  let shell;
+  if (isMan && high === 0) shell = "Cover 0 — man, no deep help";
+  else if (isMan && high === 1) shell = "Cover 1 — man free";
+  else if (isMan) shell = "2-Man — man under, two deep";
+  else if (high >= 2 && zones.filter(z => (losY - z.y) >= 95).length >= 3) shell = "Cover 4 — quarters";
+  else if (high >= 2) shell = "Cover 2 — zone, two deep";
+  else if (high === 1) shell = "Cover 3 — zone, one high";
+  else shell = "Cover 0 look — nobody deep";
+  let pressureSide = null;
+  if (blitzXs.length) {
+    const avg = blitzXs.reduce((a, b) => a + b, 0) / blitzXs.length;
+    pressureSide = avg > cX + 15 ? "right" : avg < cX - 15 ? "left" : "middle";
+  }
+  const boxL = box.filter(p => p.x < cX - 8).length, boxR = box.filter(p => p.x > cX + 8).length;
+  const lightSide = boxL < boxR ? "left" : boxR < boxL ? "right" : null;
+  return { box: box.length, high, shell, isMan, blitz, rushers, press: press.length, front: downL.length, zones: zones.length, manLinks, pressureSide, lightSide, cX };
+};
+
+const gpPickForm = (prefs, names) => {
+  const norm = (n) => n.replace(/^\u2605 /, "").toLowerCase();
+  for (const want of prefs) {
+    const hit = names.find(n => norm(n) === want.toLowerCase()) || names.find(n => norm(n).includes(want.toLowerCase()));
+    if (hit) return hit;
+  }
+  return names[0] || "Spread 4-Wide";
+};
+
+const gpRecommendCounter = (a, names, plays) => {
+  const read = ["" + a.front + "-down front \u00B7 " + a.box + " in the box \u00B7 " + a.high + "-high", a.shell];
+  if (a.rushers >= 5) read.push(a.rushers + " coming" + (a.pressureSide ? " \u2014 heat off your " + a.pressureSide : ""));
+  else if (a.press >= 2) read.push("press corners outside \u2014 free releases will be earned, not given");
+  else read.push("4-man rush \u2014 time to let routes develop");
+  let pass;
+  const hot = a.isMan && (a.high === 0 || a.rushers >= 6);
+  if (hot) pass = {
+    formation: gpPickForm(["Spread 4-Wide", "Shotgun", "Trips Right"], names),
+    concept: "HOT quick game \u2014 slant/flat with a rub",
+    routes: ["X: slant (3 steps, NOW)", "Slot: speed flat \u2014 the hot throw", "Z: slant behind the rub", "Back: scan protect, then swing"],
+    why: "Zero blitz means zero deep help. Win in three steps before the heat lands \u2014 the rub springs the flat.",
+  };
+  else if (a.isMan) pass = {
+    formation: gpPickForm(["Trips Right", "Spread 4-Wide", "Shotgun"], names),
+    concept: "Mesh + wheel \u2014 make their eyes cross",
+    routes: ["X: drag (mesh under)", "Slot: drag opposite \u2014 shave the pick", "Z: corner over the top", "Back: wheel out of the mesh traffic"],
+    why: "Man coverage turns defenders' backs. Crossers force them through traffic; the wheel sneaks out behind it.",
+  };
+  else if (a.shell.indexOf("Cover 3") === 0) pass = {
+    formation: gpPickForm(["Spread 4-Wide", "Empty", "Shotgun"], names),
+    concept: "Four Verticals \u2014 hunt the seams",
+    routes: ["Both slots: vertical seams at the hashes", "X + Z: carry the outside thirds", "Back: checkdown \u2014 the free yards"],
+    why: "One high safety can't cover two seams. Make him pick a hash, throw the other one.",
+  };
+  else if (a.shell.indexOf("Cover 2") === 0) pass = {
+    formation: gpPickForm(["Trips Right", "Pro Set", "Shotgun"], names),
+    concept: "Smash \u2014 high-low the squat corner",
+    routes: ["Z: hitch at 6 \u2014 the bait", "Slot: corner right over him", "#3/TE: seam at the near safety", "Back: flat to hold the flat defender"],
+    why: "Two-deep leaves the corner in a bind: sit on the hitch and the corner route drops in behind him.",
+  };
+  else if (a.shell.indexOf("Cover 4") === 0) pass = {
+    formation: gpPickForm(["Pro Set", "I-Formation", "Trips Right"], names),
+    concept: "Dig + post off play-action",
+    routes: ["X: dig at 12\u201315 \u2014 the money window", "Z: post to occupy the far safety", "TE: drag underneath", "Back: sell the run, then swing"],
+    why: "Quarters safeties drive on run keys. Fake the run, and the dig opens where the safety just left.",
+  };
+  else pass = {
+    formation: gpPickForm(["Shotgun", "Spread 4-Wide"], names),
+    concept: "Quick outs + fade \u2014 take the easy leverage",
+    routes: ["X: fade vs soft edge", "Slot: quick out at 5", "Z: hitch", "Back: swing"],
+    why: "Nobody deep and no clear picture \u2014 take the free outside throws until they show a real shell.",
+  };
+  pass.tip = "Motion a slot first: if a defender travels with him, it's man \u2014 the rub concepts win. If nobody moves, play the zone answer.";
+  let run;
+  const dir = a.lightSide || (a.pressureSide === "left" ? "right" : a.pressureSide === "right" ? "left" : "right");
+  if (a.box >= 8) run = { concept: "Don't slam a loaded box \u2014 jet sweep / perimeter screen", scheme: "Perimeter: crack + pin, get the ball to the edge", direction: "to the " + dir, why: a.box + " in the box \u2014 the math inside is bad, so make them tackle in space (or just throw it)." };
+  else if (a.rushers >= 5 && a.pressureSide === "middle") run = { concept: "Trap / Draw \u2014 right into the vacated gap", scheme: "Gap: let the blitzer in, trap him, hit the hole he left", direction: "up the middle", why: "Interior pressure empties the very gap it came from. Trap is the blitz tax." };
+  else if (a.rushers >= 5) run = { concept: "Outside Zone away from the heat", scheme: "Zone: full flow away, cut off the backside", direction: "to the " + dir, why: "Edge pressure chases from behind \u2014 run away from it and let the pursuit take itself out." };
+  else if (a.box <= 5) run = { concept: "Duo / Inside Zone \u2014 downhill, right now", scheme: "Zone: double-teams up to the backers", direction: "to the " + dir, why: a.box + " in the box \u2014 you outnumber them. Run it until they add a hat." };
+  else if (a.box === 6) run = (a.front >= 4)
+    ? { concept: "Inside Zone", scheme: "Zone: doubles on the 4-down front, back reads the backside", direction: "to the " + dir, why: "Even front, six-man box \u2014 inside zone doubles win the line of scrimmage." }
+    : { concept: "Power", scheme: "Gap: down blocks, kick out the edge, pull for the backer", direction: "to the " + dir, why: "Odd front, light box \u2014 gap scheme creates the crease the 3-down front can't spill." };
+  else run = { concept: "Outside Zone / Toss", scheme: "Zone: stretch the extra hat sideways, back finds the cutback", direction: "to the " + dir, why: "Seven in the box \u2014 don't argue inside; make the extra defender run sideline to sideline." };
+  const picks = [];
+  (plays || []).forEach(p => {
+    if (!p || p.scout || p.category !== "offense" || !(p.name || "").trim()) return;
+    const rts = p.routes || []; const L = p.losY || 620; const bx = p.ballX || 240;
+    const endOf = (r) => r.points[r.points.length - 1];
+    const passR = rts.filter(r => r.rtype === "pass" && r.points && r.points.length > 1);
+    const runR = rts.filter(r => r.rtype === "run" || r.rtype === "blocking" || r.rtype === "option");
+    const dep = (r) => L - endOf(r).y;
+    const deepN = passR.filter(r => dep(r) >= 110).length;
+    const quickN = passR.filter(r => dep(r) <= 45).length;
+    const crossN = passR.filter(r => Math.abs(endOf(r).x - r.points[0].x) >= 70).length;
+    const midN = passR.filter(r => dep(r) > 45 && dep(r) < 110).length;
+    const cornerN = passR.filter(r => dep(r) >= 95 && Math.abs(endOf(r).x - bx) >= 110).length;
+    const isRunPlay = runR.length >= 3 && passR.length <= 1;
+    let score = 0; const why = [];
+    if (a.isMan) { score += quickN * 2 + crossN * 2; if (crossN >= 2) why.push("crossers vs man"); if (quickN >= 2) why.push("quick game beats the blitz"); }
+    if (a.rushers >= 5) { score += quickN * 2; if (isRunPlay && /draw|trap|screen/i.test(p.name)) { score += 4; why.push("blitz-beater by design"); } }
+    if (a.shell.indexOf("Cover 3") === 0) { score += deepN * 2; if (deepN >= 3) why.push("verticals stress one-high"); }
+    if (a.shell.indexOf("Cover 2") === 0) { score += cornerN * 2 + midN; if (cornerN >= 1) why.push("corner shots split the halves"); }
+    if (a.shell.indexOf("Cover 4") === 0) { score += midN * 2; if (midN >= 2) why.push("dig windows vs quarters"); }
+    if (a.box <= 6 && isRunPlay) { score += 5; why.push(a.box + "-man box \u2014 run it"); }
+    if (a.box >= 8 && isRunPlay) score -= 4;
+    if (score > 0) picks.push({ play: p, score, why: why.slice(0, 2).join(" \u00B7 ") || "fits the look" });
+  });
+  picks.sort((x, y) => y.score - x.score);
+  return { mode: "off", read, pass, run, saved: picks.slice(0, 3) };
+};
+
 // Strip any leading formation name(s) off a blitz name so a mass-duplicate
 // doesn't double the prefix. Given "Tornado Bandit" with a formation called
 // "Tornado", returns "Bandit"; "Switch Tornado Bandit" (both formations) peels
@@ -2048,6 +2205,7 @@ function PlaybookApp() {
     }, []);
     const [currentPlay, setCurrentPlay] = useState(null);
     const [playName, setPlayName] = useState("New Play");
+    const [isScout, setIsScout] = useState(false); // 🕵️ scout-team look
     const [playTypes, setPlayTypes] = useState(["Pass"]);
     const [typeMenuOpen, setTypeMenuOpen] = useState(false);
     const [formation, setFormation] = useState("I-Formation");
@@ -2171,12 +2329,17 @@ function PlaybookApp() {
     }, [showGuide, guideStep, closeGuide]);
     // ── Study quiz state ──
     const [quiz, setQuiz] = useState(null);
+    // Scope picker ("what do you want to drill?") and tap-to-enlarge play viewer.
+    const [quizPick, setQuizPick] = useState(false);
+    const [quizZoom, setQuizZoom] = useState(null);
+    const [quizBoard, setQuizBoard] = useState(null); // null | {loading, rows, err}
+    const [counterRec, setCounterRec] = useState(null); // 🧠 COUNTER result — declared early: the Escape effect below lists it in deps
     const quizAdvRef = useRef(null);
     const startQuiz = useCallback((questionPlays, pool, title, scopeKey) => {
         const qs = buildQuizQs(questionPlays, pool);
         if (!qs.length) {
             alert("Add at least 2 saved plays with different names before quizzing.");
-            return;
+            return false;
         }
         let bestPct = 0;
         try {
@@ -2185,6 +2348,7 @@ function PlaybookApp() {
         }
         catch (e) { }
         setQuiz({ qs, i: 0, picked: null, score: 0, streak: 0, bestStreak: 0, missedIds: [], done: false, title, scopeKey, pool, bestPct });
+        return true;
     }, []);
     const answerQuiz = useCallback((optId) => {
         setQuiz(q => {
@@ -2217,17 +2381,23 @@ function PlaybookApp() {
     useEffect(() => {
         if (!quiz || quiz.done || quiz.picked == null)
             return;
+        if (quizZoom)
+            return; // don't advance under the enlarged play
         if (quiz.picked !== quiz.qs[quiz.i].play.id)
             return;
         quizAdvRef.current = setTimeout(() => { quizAdvRef.current = null; nextQuizQ(); }, 900);
         return () => { if (quizAdvRef.current) { clearTimeout(quizAdvRef.current); quizAdvRef.current = null; } };
-    }, [quiz, nextQuizQ]);
+    }, [quiz, quizZoom, nextQuizQ]);
     // Persist the best % per scope on the device.
+    const quizSavedRef = useRef(null);
     useEffect(() => {
         if (!quiz || !quiz.done)
             return;
+        if (quizSavedRef.current === quiz)
+            return; // one save per finished round
+        quizSavedRef.current = quiz;
+        const pct = Math.round((quiz.score / quiz.qs.length) * 100);
         try {
-            const pct = Math.round((quiz.score / quiz.qs.length) * 100);
             const m = JSON.parse(localStorage.getItem("gp_quiz_v1") || "{}");
             const prev = (m[quiz.scopeKey] && m[quiz.scopeKey].bestPct) || 0;
             if (pct > prev) {
@@ -2236,15 +2406,191 @@ function PlaybookApp() {
             }
         }
         catch (e) { }
+        // Best-effort cloud record for the coach leaderboard ("who's studying").
+        try {
+            const db = (typeof window !== "undefined" && window.GP_DB) || null;
+            const tid = (typeof window !== "undefined" && window.GP_TEAM_ID) || null;
+            const uid = (typeof window !== "undefined" && window.GP_USER_ID) || null;
+            const nm = (typeof window !== "undefined" && (window.GP_NAME || window.GP_EMAIL)) || "Player";
+            if (db && tid && uid) {
+                db.from("quiz_results").insert({
+                    team_id: tid, user_id: uid, display_name: nm,
+                    scope_key: quiz.scopeKey, scope_title: quiz.title,
+                    score: quiz.score, total: quiz.qs.length, pct, best_streak: quiz.bestStreak,
+                }).then(() => { }, () => { });
+            }
+        }
+        catch (e) { }
     }, [quiz]);
-    // Escape closes the quiz.
+    // Escape closes the topmost quiz layer: enlarged play → leaderboard → quiz → scope picker.
     useEffect(() => {
-        if (!quiz)
+        if (!quiz && !quizPick && !quizZoom && !quizBoard && !counterRec)
             return;
-        const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); setQuiz(null); } };
+        const onKey = (e) => {
+            if (e.key !== "Escape")
+                return;
+            e.preventDefault();
+            if (quizZoom)
+                setQuizZoom(null);
+            else if (counterRec)
+                setCounterRec(null);
+            else if (quizBoard)
+                setQuizBoard(null);
+            else if (quiz)
+                setQuiz(null);
+            else
+                setQuizPick(false);
+        };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [quiz]);
+    }, [quiz, quizPick, quizZoom, quizBoard, counterRec]);
+    // ── "Who's studying" leaderboard (staff-only view). Last 60 days of quiz_results.
+    const openQuizBoard = useCallback(async () => {
+        const db = (typeof window !== "undefined" && window.GP_DB) || null;
+        const tid = (typeof window !== "undefined" && window.GP_TEAM_ID) || null;
+        setQuizBoard({ loading: true, rows: [], err: "" });
+        if (!db || !tid) {
+            setQuizBoard({ loading: false, rows: [], err: "The leaderboard needs the team cloud connection — open the playbook from your team dashboard." });
+            return;
+        }
+        try {
+            const since = new Date(Date.now() - 60 * 86400000).toISOString();
+            const r = await db.from("quiz_results")
+                .select("user_id,display_name,score,total,pct,best_streak,created_at")
+                .eq("team_id", tid).gte("created_at", since)
+                .order("created_at", { ascending: false }).limit(1000);
+            if (r.error)
+                throw r.error;
+            const by = {};
+            const wk = Date.now() - 7 * 86400000;
+            (r.data || []).forEach(row => {
+                const k = row.user_id;
+                if (!by[k])
+                    by[k] = { userId: k, name: row.display_name || "Player", rounds: 0, rounds7: 0, pctSum: 0, bestPct: 0, lastAt: row.created_at };
+                const b = by[k];
+                b.rounds++;
+                b.pctSum += (row.pct || 0);
+                if ((row.pct || 0) > b.bestPct)
+                    b.bestPct = row.pct || 0;
+                if (new Date(row.created_at).getTime() >= wk)
+                    b.rounds7++;
+                if (row.created_at > b.lastAt)
+                    b.lastAt = row.created_at;
+            });
+            const rows = Object.values(by).map(b => ({ ...b, avgPct: Math.round(b.pctSum / b.rounds) }))
+                .sort((a, c) => c.rounds7 - a.rounds7 || c.rounds - a.rounds || c.avgPct - a.avgPct);
+            setQuizBoard({ loading: false, rows, err: "" });
+        }
+        catch (e) {
+            setQuizBoard({ loading: false, rows: [], err: "Couldn't load the leaderboard. If it has never worked, run quiz-leaderboard-setup.sql in Supabase once to create the table." });
+        }
+    }, []);
+    // ── 🧠 COUNTER handlers (state is declared up with the quiz states) ──
+    const openCounter = () => {
+        const a = gpAnalyzeDefense(players, routes, coverages, losY);
+        if (!a) {
+            alert("Draw or load a defense first — COUNTER needs a few defenders on the field to read.");
+            return;
+        }
+        const names = [...Object.keys(FORMATIONS.offense || {}), ...Object.keys((customForms && customForms.offense) || {}).map(n => "★ " + n)];
+        setCounterRec(gpRecommendCounter(a, names, plays));
+    };
+    const applyCounterFormation = (name) => {
+        loadFormation(name.replace(/^★ /, ""), "offense", false, true);
+        setCounterRec(null);
+    };
+    // Map a recommendation label onto a real Front dropdown entry.
+    const resolveDefFront = (label) => {
+        const names = [...Object.keys(FORMATIONS.defense || {}), ...Object.keys((customForms && customForms.defense) || {})];
+        const l = String(label || "").toLowerCase();
+        let hit = names.find(n => l.includes(n.toLowerCase()));
+        if (!hit)
+            hit = names.find(n => n.toLowerCase().split(/[^a-z0-9]+/).some(w => w && w.length >= 2 && l.includes(w)));
+        return hit || null;
+    };
+    const applyCounterFront = (label) => {
+        const key = resolveDefFront(label);
+        if (!key) {
+            alert('Couldn\'t match "' + label + '" to a front in your dropdown — pick it there by hand.');
+            return;
+        }
+        loadFormation(key, "defense", false, true);
+        setCounterRec(null);
+    };
+    // Offense drawn → defensive answer, presented in the unified COUNTER cards.
+    const openCounterDef = () => {
+        const rec = getDefenseRec();
+        if (!rec || !rec.ok) {
+            alert("Draw or load an offensive play first — COUNTER needs the offense on the field to answer it.");
+            return;
+        }
+        const m = matchPlaybook(rec);
+        const saved = ((m && m.plays) || []).slice(0, 3)
+            .map(it => ({ play: it.p, why: (Array.isArray(it.reasons) && it.reasons.length ? it.reasons.slice(0, 2).join(" · ") : "fits the look") }))
+            .filter(x => x.play && x.play.id);
+        const cts = rec.counts || {};
+        const read = [
+            rec.personnel + " · " + rec.wr + " WR · " + rec.te + " TE · " + rec.rb + " back" + (rec.rb === 1 ? "" : "s") + (rec.shotgun ? " · gun" : ""),
+            rec.empty ? "EMPTY — nobody home to protect" : (rec.trips ? ("TRIPS " + (rec.strength || "")) : ("receivers " + (rec.strength || "balanced"))),
+            (cts.vertical || 0) + " vert · " + (cts.crossers || 0) + " crossers · " + (cts.short || 0) + " quick · " + (cts.screen || 0) + " screen" + (rec.hasMotion ? " · motion" : ""),
+        ];
+        setCounterRec({ mode: "def", read, front: rec.front, coverage: rec.coverage, alt: rec.alt, blitz: rec.blitz, keys: rec.keys || [], saved, lib: (m && m.lib) || { coverages: [], formations: [], blitzes: [] } });
+    };
+    // ── Offline: status pill + one-tap "save the playbook to this device" ──
+    const [offSync, setOffSync] = useState({ off: false, pend: 0 });
+    useEffect(() => {
+        const read = () => setOffSync({ off: !!window.__gpOfflineMode || !navigator.onLine, pend: window.__gpPendingSync || 0 });
+        read();
+        const iv = setInterval(() => { read(); if (navigator.onLine && (window.__gpPendingSync || 0) > 0 && window.__gpFlushOutbox) window.__gpFlushOutbox(); }, 4000);
+        const onUp = () => { read(); if (window.__gpFlushOutbox) window.__gpFlushOutbox(); };
+        window.addEventListener("online", onUp);
+        window.addEventListener("offline", read);
+        return () => { clearInterval(iv); window.removeEventListener("online", onUp); window.removeEventListener("offline", read); };
+    }, []);
+    const gpSaveOffline = async (label) => {
+        if (!window.storage || !window.storage.list) {
+            alert("Open the playbook from your team dashboard first — offline copies come from the team cloud.");
+            return;
+        }
+        try {
+            const grab = async (shared) => {
+                const r = await window.storage.list("", shared);
+                const keys = (r && r.keys) || [];
+                for (const k of keys.slice(0, 400)) {
+                    try { await window.storage.get(k, shared); }
+                    catch (e) { }
+                }
+                return keys.length;
+            };
+            const n = (await grab(true)) + (await grab(false));
+            alert("✓ Saved to this device (" + n + " items). " + label + " — and the whole playbook — now opens with zero internet. Anything you change offline syncs back on its own when you reconnect.");
+        }
+        catch (e) {
+            alert("Couldn't refresh the offline copy — check your connection and try again. (Anything already saved here still works offline.)");
+        }
+    };
+    // One button, both directions: answer whichever side is being drawn.
+    const openCounterSmart = () => {
+        if (tab === "offense") {
+            openCounterDef();
+            return;
+        }
+        if (tab === "defense") {
+            openCounter();
+            return;
+        }
+        const defs = players.filter(p => p && p.ptype === "defense");
+        if (defs.length >= 3) {
+            openCounter();
+            return;
+        }
+        const off = players.filter(p => p && p.ptype !== "defense");
+        if (off.length >= 5) {
+            openCounterDef();
+            return;
+        }
+        alert("Draw or load a play first — COUNTER answers whichever side is on the field.");
+    };
     const [helpCat, setHelpCat] = useState("start");
     const [helpQuery, setHelpQuery] = useState("");
     // Multi-select mode in the playbook browser
@@ -5135,7 +5481,7 @@ function PlaybookApp() {
         if (!ALL_ROUTE_TYPES.includes(routeType))
             setRouteType("pass");
         // Defense-only tools shouldn't stay active on other tabs
-        if (tab !== "defense" && (tool === "zone" || tool === "man"))
+        if (tab !== "defense" && tool === "man") // zones are allowed on every tab
             setTool("select");
         setManFromId(null);
         setCoverageDraft(null);
@@ -6663,7 +7009,7 @@ function PlaybookApp() {
             setCoverages(covToSave);
             setRoutes(routesToSave);
         }
-        const play = { id: (currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) || uid(), name: playName, category: tab, formation, formations, personnel, personnelLooks: JSON.parse(JSON.stringify(personnelLooks)), type: playTypes, tags: [], levels: (currentPlay && Array.isArray(currentPlay.levels)) ? currentPlay.levels : [], players: JSON.parse(JSON.stringify(players)), routes: JSON.parse(JSON.stringify(routesToSave)), coverages: JSON.parse(JSON.stringify(covToSave)), texts: JSON.parse(JSON.stringify(texts)), ballX, losY, ballPlan: JSON.parse(JSON.stringify(ballPlan)), notes: playNotes, positionNotes: JSON.parse(JSON.stringify(positionNotes || {})), showNotes: !!showNotes, coverage: selectedCoverage || null, blitz: selectedBlitz || null, autoAssign };
+        const play = { id: (currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) || uid(), name: playName, category: tab, scout: isScout, formation, formations, personnel, personnelLooks: JSON.parse(JSON.stringify(personnelLooks)), type: playTypes, tags: [], levels: (currentPlay && Array.isArray(currentPlay.levels)) ? currentPlay.levels : [], players: JSON.parse(JSON.stringify(players)), routes: JSON.parse(JSON.stringify(routesToSave)), coverages: JSON.parse(JSON.stringify(covToSave)), texts: JSON.parse(JSON.stringify(texts)), ballX, losY, ballPlan: JSON.parse(JSON.stringify(ballPlan)), notes: playNotes, positionNotes: JSON.parse(JSON.stringify(positionNotes || {})), showNotes: !!showNotes, coverage: selectedCoverage || null, blitz: selectedBlitz || null, autoAssign };
         setPlays(prev => { const i = prev.findIndex(p => p.id === play.id); if (i >= 0) {
             const u = [...prev];
             u[i] = play;
@@ -6687,6 +7033,7 @@ function PlaybookApp() {
         setSelectedTextId(null);
         setEditingTextId(null);
         setAutoAssign(!!play.autoAssign);
+        setIsScout(!!play.scout);
         setManFromId(null);
         // Restore which coverage / blitz preset was selected when the play was saved.
         setSelectedCoverage(play.coverage || "");
@@ -6782,7 +7129,7 @@ function PlaybookApp() {
     }, []);
     const newPlay = useCallback(() => {
         setCurrentPlay(null);
-        setPlayName("New Play");
+        setPlayName("New Play"); setIsScout(false);
         setPlayNotes("");
         setPositionNotes({});
         setShowNotes(false);
@@ -6833,7 +7180,7 @@ function PlaybookApp() {
         if (players.length || routes.length || coverages.length || texts.length || currentPlay)
             pushUndo();
         setCurrentPlay(null);
-        setPlayName("New Play");
+        setPlayName("New Play"); setIsScout(false);
         setPlayNotes("");
         setPositionNotes({});
         setShowNotes(false);
@@ -11199,7 +11546,7 @@ function PlaybookApp() {
                 return;
             if (typeof document !== "undefined" && document.querySelector(".mover"))
                 return; // a modal dialog is open
-            if (show3D || showHelp || showGuide || quiz || alignMode || exportingVideo)
+            if (show3D || showHelp || showGuide || quiz || quizPick || quizBoard || counterRec || alignMode || exportingVideo)
                 return;
             e.preventDefault();
             if (startAnimRef.current)
@@ -11207,7 +11554,40 @@ function PlaybookApp() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [runningScriptId, runningInstallId, show3D, showHelp, showGuide, quiz, alignMode, exportingVideo]);
+    }, [runningScriptId, runningInstallId, show3D, showHelp, showGuide, quiz, quizPick, quizBoard, counterRec, alignMode, exportingVideo]);
+    // Desktop muscle memory: Ctrl/Cmd+Z = undo, Ctrl/Cmd+S = save this play
+    // (instead of the browser's save-page dialog).
+    const undoFnRef = useRef(null);
+    undoFnRef.current = undo;
+    const saveFnRef = useRef(null);
+    saveFnRef.current = savePlay;
+    useEffect(() => {
+        const onKey = (e) => {
+            if (!(e.ctrlKey || e.metaKey))
+                return;
+            const k = (e.key || "").toLowerCase();
+            if (k !== "z" && k !== "s")
+                return;
+            const el = document.activeElement;
+            const tag = el && el.tagName;
+            const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el && el.isContentEditable);
+            if (k === "s") {
+                e.preventDefault(); // never show the browser's save-page dialog
+                if (!typing && capsRef.current.edit && saveFnRef.current)
+                    saveFnRef.current();
+                return;
+            }
+            if (typing || e.shiftKey)
+                return;
+            if (show3D || showHelp || showGuide || quiz || quizPick || quizBoard || counterRec || alignMode || exportingVideo)
+                return;
+            e.preventDefault();
+            if (undoFnRef.current)
+                undoFnRef.current();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [show3D, showHelp, showGuide, quiz, quizPick, quizBoard, counterRec, alignMode, exportingVideo]);
     // Duplicate a play (deep copy: players, routes, zones, ball, LOS), then open it for renaming.
     const duplicatePlay = useCallback((play) => {
         if (!capsRef.current.edit) {
@@ -11575,11 +11955,16 @@ function PlaybookApp() {
         }));
     }, [setPlays]);
     const filteredPlays = plays.filter(p => p.category === tab && (levelFilter === "all" || (Array.isArray(p.levels) && p.levels.includes(levelFilter))));
+    // 🕵️ Scout looks: own collapsible section at the bottom of the list.
+    const scoutPlays = filteredPlays.filter(p => p.scout);
+    const normalPlays = filteredPlays.filter(p => !p.scout);
+    const [scoutOpen, setScoutOpen] = useState(false);
+    const libraryList = [...normalPlays, ...(scoutPlays.length ? [{ __scoutHdr: true }] : []), ...(scoutOpen ? scoutPlays : [])];
     // Flip through the plays already made in this tab/scope (the same list shown in
     // the library). dir = -1 prev, +1 next; wraps around. If nothing is loaded yet,
     // jumps to the first (next) or last (prev) play.
     const cyclePlay = (dir) => {
-        const list = filteredPlays;
+        const list = normalPlays; // cycling skips scout looks
         if (!list.length)
             return;
         const idx = currentPlay ? list.findIndex(p => p.id === currentPlay.id) : -1;
@@ -12039,6 +12424,14 @@ function PlaybookApp() {
       /* floating on-field panels: never wider/taller than the phone, scroll if needed,
          and sit clear of the fixed bottom toolbar */
       .mobsheet{max-width:94vw!important;max-height:56vh!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch;}
+      /* top bar scrolls sideways so STUDY / HELP / MENU never fall off the edge */
+      .app-header{overflow-x:auto!important;overflow-y:hidden!important;flex-wrap:nowrap!important;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+      .app-header::-webkit-scrollbar{display:none;}
+      .app-header>*{flex-shrink:0!important;}
+      /* thumb-sized field-editing chrome (route/zone/man banners) */
+      .gp-fieldbar{gap:10px!important;}
+      .gp-fieldbar button{min-height:44px;min-width:44px;padding:9px 13px!important;font-size:13px!important;}
+      .gp-fieldbar input,.gp-fieldbar select{min-height:38px;font-size:14px!important;}
     }
     .print-sheet{display:none;}
     /* Full-screen "show off" mode — hide every bit of chrome, field fills screen */
@@ -12201,7 +12594,11 @@ function PlaybookApp() {
                         return `SAVED ${m}m AGO`;
                     })()),
                     React.createElement("span", { style: { fontSize: 9, color: "rgba(110,231,183,0.55)", borderLeft: "1px solid rgba(110,231,183,0.25)", paddingLeft: 6, marginLeft: 1 } }, "BACKUP"))),
-                React.createElement("button", { className: "sbtn dim", onClick: () => startQuiz(plays, plays, "All plays", "all"), title: "Study mode — quiz yourself on the plays in this library. Phone-friendly.", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0 } },
+                (offSync.off || offSync.pend > 0) && (React.createElement("span", { className: "mono", title: offSync.off ? "No internet — you're working from the copy saved on this device. Edits queue up and sync automatically when you're back online." : "Back online — pushing your offline edits to the team cloud.", style: { display: "flex", alignItems: "center", gap: 5, padding: "5px 9px", borderRadius: 6, fontSize: 10, letterSpacing: "0.05em", flexShrink: 0,
+                        border: "1px solid " + (offSync.off ? "rgba(251,191,36,0.5)" : "rgba(125,211,252,0.5)"),
+                        background: offSync.off ? "rgba(251,191,36,0.1)" : "rgba(125,211,252,0.1)",
+                        color: offSync.off ? "#fcd34d" : "#7dd3fc" } }, offSync.off ? "📴 OFFLINE — saving here" : `⟳ SYNCING ${offSync.pend}`)),
+                React.createElement("button", { className: "sbtn dim", onClick: () => setQuizPick(true), title: "Study mode — pick plays, an install, or a script and quiz yourself. Phone-friendly.", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0 } },
                     React.createElement("span", { style: { fontSize: 14, lineHeight: 1 } }, "🎓"),
                     React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.06em" } }, "STUDY")),
                 React.createElement("button", { className: "sbtn dim", onClick: () => { setHelpQuery(""); setHelpCat("start"); setShowHelp(true); }, title: "Help \u2014 an interactive guide to every control in the app", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0 } },
@@ -12235,7 +12632,7 @@ function PlaybookApp() {
                             " plays.",
                             React.createElement("br", null),
                             "Tag plays with the chips on each card.")),
-                        filteredPlays.map(play => (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => loadPlay(play) },
+                        libraryList.map(play => play.__scoutHdr ? (React.createElement("button", { key: "__scoutHdr", onClick: () => setScoutOpen(v => !v), className: "mono", style: { width: "100%", textAlign: "left", margin: "10px 0 6px", padding: "7px 10px", borderRadius: 8, border: "1px dashed rgba(196,181,253,0.35)", background: "rgba(196,181,253,0.06)", color: "#c4b5fd", cursor: "pointer", fontSize: 11, letterSpacing: "0.08em" } }, "🕵️ SCOUT (", scoutPlays.length, ") ", scoutOpen ? "▾ shown" : "▸ hidden")) : (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => loadPlay(play) },
                             React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
                                 React.createElement("span", { style: { fontWeight: 600, fontSize: 14, color: "#fff" } }, play.name),
                                 caps.deleteContent && (React.createElement("button", { onClick: e => { e.stopPropagation(); setPlays(p => p.filter(x => x.id !== play.id)); if ((currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id)
@@ -12262,6 +12659,7 @@ function PlaybookApp() {
                         React.createElement(SearchSelect, { value: formation, width: 140, placeholder: tab === "defense" ? "Front" : "Formation", title: tab === "defense" ? "Front — type to search built-in or custom fronts" : "Formation — type to search built-in or custom", options: [...formNames.filter(f => { var _a; return !((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[f]); }).map(f => ({ value: f, label: f })), ...orderedNames(Object.keys(customForms[tab] || {}), catSortPref("formations")).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (!f)
                                 return; pushUndo(); setTexts(prev => prev.filter(t => !["blitz", "coverage", "formation"].includes(t.owner))); setSelectedTextId(null); setEditingTextId(null); setFormation(f); loadFormation(f, undefined, undefined, true); } }),
                         !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: openSaveFormation, title: "Save current layout as custom formation", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => setIsScout(v => !v), title: "Scout look — files this play under 🕵️ SCOUT at the bottom of the library and keeps it out of COUNTER picks and the All-plays quiz.", style: { padding: "7px 10px", color: isScout ? "#c4b5fd" : undefined, borderColor: isScout ? "rgba(196,181,253,0.6)" : undefined, background: isScout ? "rgba(196,181,253,0.12)" : undefined } }, "🕵️", isScout ? " SCOUT ✓" : " SCOUT")),
                         React.createElement("div", { style: { position: "relative" } },
                             React.createElement("input", { className: "inp", style: { width: 128 }, placeholder: "Personnel", value: personnelOpen ? personnelQuery : personnel, onFocus: () => { setPersonnelOpen(true); setPersonnelQuery(""); }, onChange: e => { setPersonnelQuery(e.target.value); setPersonnelOpen(true); }, onBlur: () => { setTimeout(() => setPersonnelOpen(false), 130); }, title: "Personnel \u2014 pick one to stamp its saved numbers/letters/colors onto the field (positions stay put). Type a new name, then hit \uD83D\uDCBE to save the current look. The package tag is saved with the play." }),
                             personnelOpen && (() => {
@@ -12499,8 +12897,8 @@ function PlaybookApp() {
                                     border: `1px solid ${showBallPanel ? "#daa520" : "rgba(255,255,255,0.12)"}`, background: showBallPanel ? "rgba(218,165,32,0.16)" : "transparent", color: showBallPanel ? "#fde68a" : "rgba(255,255,255,0.6)" } }, "\uD83C\uDFC8 Ball"),
                             React.createElement("button", { onClick: open3D, title: "3D walkthrough \u2014 watch this play run in 3D with the same player numbers", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
                                     border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.6)" } }, "\uD83C\uDFAC 3D"),
-                            React.createElement("button", { onClick: () => setShowDefRec(true), title: "Suggest a defense \u2014 front, coverage and pressure for the offense you've drawn, plus the best-matching calls from your own playbook", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
-                                    border: "1px solid rgba(96,165,250,0.4)", background: "rgba(96,165,250,0.12)", color: "#93c5fd" } }, "\uD83D\uDEE1 D-Call"),
+                            React.createElement("button", { onClick: openCounterSmart, title: "COUNTER \u2014 reads whichever side you're drawing and answers it: draw offense, get the defensive call; draw defense, get the pass/run answer and your best saved plays", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
+                                    border: "1px solid rgba(245,158,11,0.5)", background: "rgba(245,158,11,0.14)", color: "#fcd34d" } }, "🧠 COUNTER"),
                             React.createElement("button", { onClick: () => setShowFilmModal(true), title: "Film Room \u2014 upload a game video or image, scrub to the play, and trace it on the field", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
                                     border: `1px solid ${filmSrc ? "#f472b6" : "rgba(255,255,255,0.12)"}`,
                                     background: filmSrc ? "rgba(244,114,182,0.14)" : "transparent",
@@ -13268,7 +13666,7 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: () => setLinkingFromId(null), style: { padding: "3px 8px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)",
                                     background: "rgba(10,10,18,0.5)", color: "rgba(255,255,255,0.65)",
                                     fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "CANCEL"))),
-                        tool === "man" && (React.createElement("div", { ref: manHintRef, style: { position: "absolute",
+                        tool === "man" && (React.createElement("div", { ref: manHintRef, className: "gp-fieldbar", style: { position: "absolute",
                                 ...(manHintPos ? { left: manHintPos.x, top: manHintPos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
                                 background: "rgba(10,10,18,0.92)", border: `1px solid #fb923c80`, padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 5, display: "flex", alignItems: "center", gap: 10, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)" } },
                             React.createElement("span", { onMouseDown: (e) => startFloatingDrag(e, manHintRef, setManHintPos), onTouchStart: (e) => startFloatingDrag(e, manHintRef, setManHintPos), title: "Drag to move this panel", style: { cursor: "move", touchAction: "none", color: "rgba(255,255,255,0.4)", fontSize: 14, padding: "2px 4px 2px 0", letterSpacing: "-1px", userSelect: "none" } }, "\u283F"),
@@ -13451,7 +13849,7 @@ function PlaybookApp() {
                                 setSelectedZoneId(z.id);
                                 setEditingZoneId(null);
                             };
-                            return (React.createElement("div", { ref: editZoneRef, style: { position: "absolute",
+                            return (React.createElement("div", { ref: editZoneRef, className: "gp-fieldbar", style: { position: "absolute",
                                     ...(editZonePos ? { left: editZonePos.x, top: editZonePos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
                                     background: "rgba(10,10,18,0.94)", border: `1px solid ${z.color}aa`, padding: "7px 11px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 6, display: "flex", alignItems: "center", gap: 9, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", flexWrap: "wrap", maxWidth: "94%" } },
                                 React.createElement("span", { onMouseDown: (e) => startFloatingDrag(e, editZoneRef, setEditZonePos), onTouchStart: (e) => startFloatingDrag(e, editZoneRef, setEditZonePos), title: "Drag to move this panel", style: { cursor: "move", touchAction: "none", color: "rgba(255,255,255,0.4)", fontSize: 14, padding: "2px 4px 2px 0", letterSpacing: "-1px", userSelect: "none" } }, "\u283F"),
@@ -13511,7 +13909,7 @@ function PlaybookApp() {
                                 React.createElement("button", { onClick: () => { setCoverages(prev => prev.filter(c => c.id !== z.id)); setSelectedZoneId(null); setEditingZoneId(null); }, style: { padding: "3px 9px", borderRadius: 5, cursor: "pointer", border: "1px solid rgba(239,68,68,0.6)", background: "rgba(239,68,68,0.14)", color: "#f87171", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em" } }, "DELETE"),
                                 React.createElement("button", { onClick: () => { setSelectedZoneId(null); setEditingZoneId(null); }, style: { padding: "3px 8px", borderRadius: 5, cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "DONE")));
                         })(),
-                        attachingZoneId && (React.createElement("div", { ref: attachHintRef, style: { position: "absolute",
+                        attachingZoneId && (React.createElement("div", { ref: attachHintRef, className: "gp-fieldbar", style: { position: "absolute",
                                 ...(attachHintPos ? { left: attachHintPos.x, top: attachHintPos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
                                 background: "rgba(10,10,18,0.94)", border: "1px solid #22c55eaa", padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 7, display: "flex", alignItems: "center", gap: 10, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)" } },
                             React.createElement("span", { onMouseDown: (e) => startFloatingDrag(e, attachHintRef, setAttachHintPos), onTouchStart: (e) => startFloatingDrag(e, attachHintRef, setAttachHintPos), title: "Drag to move this panel", style: { cursor: "move", touchAction: "none", color: "rgba(255,255,255,0.4)", fontSize: 14, padding: "2px 4px 2px 0", letterSpacing: "-1px", userSelect: "none" } }, "\u283F"),
@@ -13519,7 +13917,7 @@ function PlaybookApp() {
                             React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u00B7"),
                             React.createElement("span", { style: { color: "rgba(255,255,255,0.6)" } }, "Click a player \u2014 the zone will move with them"),
                             React.createElement("button", { onClick: () => setAttachingZoneId(null), style: { padding: "3px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "CANCEL"))),
-                        pendingAssignRoute && (React.createElement(DraggablePanel, { style: { position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)",
+                        pendingAssignRoute && (React.createElement(DraggablePanel, { className: "gp-fieldbar", style: { position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)",
                                 background: "rgba(10,10,18,0.94)", border: "1px solid #38bdf8aa", padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 7, display: "flex", alignItems: "center", gap: 10, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", maxWidth: "95%", flexWrap: "wrap" } },
                             React.createElement("span", { style: { color: "#7dd3fc", fontWeight: "bold" } }, "\u21B1 ASSIGN ROUTE"),
                             React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u00B7"),
@@ -13528,13 +13926,13 @@ function PlaybookApp() {
                                 pendingAssignRoute.name,
                                 "\" drops on them at the same depth & angle"),
                             React.createElement("button", { onClick: () => setPendingAssignRoute(null), style: { padding: "3px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "CANCEL"))),
-                        pendingCaptureRoute && (React.createElement(DraggablePanel, { style: { position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)",
+                        pendingCaptureRoute && (React.createElement(DraggablePanel, { className: "gp-fieldbar", style: { position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)",
                                 background: "rgba(10,10,18,0.94)", border: "1px solid #38bdf8aa", padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 7, display: "flex", alignItems: "center", gap: 10, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", maxWidth: "95%", flexWrap: "wrap" } },
                             React.createElement("span", { style: { color: "#7dd3fc", fontWeight: "bold" } }, "\u21B1 SAVE ROUTE"),
                             React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u00B7"),
                             React.createElement("span", { style: { color: "rgba(255,255,255,0.6)" } }, "Tap the player whose route you want to save"),
                             React.createElement("button", { onClick: () => setPendingCaptureRoute(false), style: { padding: "3px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "CANCEL"))),
-                        drawingRoute && (React.createElement("div", { ref: routeBannerRef, style: { position: "absolute",
+                        drawingRoute && (React.createElement("div", { ref: routeBannerRef, className: "gp-fieldbar", style: { position: "absolute",
                                 ...(routeBannerPos ? { left: routeBannerPos.x, top: routeBannerPos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
                                 background: "rgba(10,10,18,0.92)", border: `1px solid ${((_d = ROUTE_CFG[routeType]) === null || _d === void 0 ? void 0 : _d.color) || "#3b82f6"}80`, padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 5, display: "flex", alignItems: "center", gap: 10, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", maxWidth: "95%", flexWrap: "wrap" } },
                             React.createElement("span", { onMouseDown: startBannerDrag, onTouchStart: startBannerDrag, title: "Drag to move this out of the way", style: { cursor: "move", touchAction: "none", color: "rgba(255,255,255,0.35)", fontSize: 14, padding: "2px 4px 2px 0", letterSpacing: "-1px", userSelect: "none" } }, "\u283F"),
@@ -13573,7 +13971,7 @@ function PlaybookApp() {
                     React.createElement("div", { className: "mob-hide mob-toolbar", style: { display: "none", background: "#0c0c17", borderTop: "1px solid rgba(255,255,255,0.06)", padding: "8px 10px", gap: 6, overflowX: "auto" } },
                         [
                             { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
-                            { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8", defOnly: true }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
+                            { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8" }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
                         ].filter(t => (!t.defOnly || tab === "defense") && (!fieldReadOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { minWidth: 54, flexShrink: 0, color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                             React.createElement("span", { style: { fontSize: 17 } }, t.icon),
                             t.lbl))),
@@ -13596,7 +13994,7 @@ function PlaybookApp() {
                     React.createElement("div", { className: "hd", style: { fontSize: 10, color: "#3a3a4a", letterSpacing: "0.12em", marginBottom: 2 } }, "TOOLS"),
                     [
                         { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
-                        { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8", defOnly: true }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
+                        { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8" }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
                     ].filter(t => (!t.defOnly || tab === "defense") && (!fieldReadOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                         React.createElement("span", { style: { fontSize: 18 } }, t.icon),
                         t.lbl))),
@@ -13633,7 +14031,7 @@ function PlaybookApp() {
                         React.createElement("button", { onClick: () => { clearSide("offense"); setMobilePanel(null); }, title: "Clear offense only", style: { padding: "5px 10px", borderRadius: 6, border: "1px solid rgba(74,222,128,0.4)", background: "rgba(74,222,128,0.1)", color: "#86efac", cursor: "pointer" }, className: "hd" }, "CLR O"),
                         React.createElement("button", { onClick: () => { clearSide("defense"); setMobilePanel(null); }, title: "Clear defense only", style: { padding: "5px 10px", borderRadius: 6, border: "1px solid rgba(248,113,113,0.4)", background: "rgba(248,113,113,0.1)", color: "#fca5a5", cursor: "pointer" }, className: "hd" }, "CLR D"),
                         React.createElement("button", { onClick: () => setMobilePanel(null), style: { background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 20, cursor: "pointer" } }, "\u2715"))),
-                React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 10 } }, filteredPlays.map(play => (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => { loadPlay(play); setMobilePanel(null); } },
+                React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 10 } }, libraryList.map(play => play.__scoutHdr ? (React.createElement("button", { key: "__scoutHdr", onClick: () => setScoutOpen(v => !v), className: "mono", style: { width: "100%", textAlign: "left", margin: "10px 0 6px", padding: "7px 10px", borderRadius: 8, border: "1px dashed rgba(196,181,253,0.35)", background: "rgba(196,181,253,0.06)", color: "#c4b5fd", cursor: "pointer", fontSize: 11, letterSpacing: "0.08em" } }, "🕵️ SCOUT (", scoutPlays.length, ") ", scoutOpen ? "▾ shown" : "▸ hidden")) : (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => { loadPlay(play); setMobilePanel(null); } },
                     React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
                         React.createElement("span", { style: { fontWeight: 600, fontSize: 15, color: "#fff" } }, play.name),
                         caps.deleteContent && (React.createElement("button", { onClick: e => { e.stopPropagation(); setPlays(p => p.filter(x => x.id !== play.id)); }, style: { background: "none", border: "none", color: "rgba(239,68,68,0.5)", cursor: "pointer", fontSize: 13 } }, "\u2715"))),
@@ -14047,6 +14445,152 @@ function PlaybookApp() {
                         React.createElement("div", { style: { marginTop: 4 } },
                             React.createElement("b", { style: { color: "#f87171" } }, "Defense:"),
                             " place the front, box, and secondary, then draw coverage zones (or man lines) and pass-rush arrows \u2014 or, for a run, draw each defender's gap-fit arrow to show how everyone fits."))))),
+            counterRec && (() => {
+                const R = counterRec;
+                const card = { border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.03)", borderRadius: 14, padding: "14px 14px", marginBottom: 12 };
+                const hd = (color) => ({ fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, letterSpacing: "0.1em", marginBottom: 8, color });
+                const applyBtn = { padding: "9px 14px", minHeight: 40, borderRadius: 10, border: "1px solid rgba(74,222,128,0.55)", background: "rgba(74,222,128,0.14)", color: "#86efac", cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.06em", touchAction: "manipulation", flexShrink: 0 };
+                return (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 7100, background: "#0a0a14", display: "flex", flexDirection: "column", fontFamily: "system-ui,sans-serif", WebkitTapHighlightColor: "transparent" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", paddingTop: "max(10px, env(safe-area-inset-top))", borderBottom: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 } },
+                        React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 16, letterSpacing: "0.1em", color: "#fcd34d", flexShrink: 0 } }, "🧠 COUNTER"),
+                        React.createElement("span", { style: { fontSize: 12, color: "rgba(255,255,255,0.45)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 } }, "your answer to what's drawn"),
+                        React.createElement("div", { style: { flex: 1 } }),
+                        React.createElement("button", { onClick: openCounter, title: "Re-read the field", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 15, flexShrink: 0, touchAction: "manipulation" } }, "\u21BB"),
+                        React.createElement("button", { onClick: () => setCounterRec(null), title: "Close", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 16, flexShrink: 0, touchAction: "manipulation" } }, "\u2715")),
+                    React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "14px 12px", paddingBottom: "max(20px, env(safe-area-inset-bottom))" } },
+                        React.createElement("div", { style: { maxWidth: 560, margin: "0 auto" } },
+                            React.createElement("div", { style: card },
+                                React.createElement("div", { style: hd("#fcd34d") }, "👀 THE READ"),
+                                R.read.map((ln, i) => (React.createElement("div", { key: i, style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 12.5, color: i === 1 ? "#fff" : "rgba(255,255,255,0.7)", fontWeight: i === 1 ? 700 : 400, marginBottom: 4 } }, ln)))),
+                            R.mode === "def" && (React.createElement("div", { style: card },
+                                React.createElement("div", { style: hd("#fca5a5") }, "🛡️ DEFENSIVE ANSWER"),
+                                R.front && R.front.name && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" } },
+                                    React.createElement("span", { style: { fontSize: 16, fontWeight: 800, color: "#f1f5f9" } }, R.front.name),
+                                    React.createElement("button", { onClick: () => applyCounterFront(R.front.name), style: applyBtn }, "APPLY FRONT"))),
+                                R.front && R.front.why && React.createElement("div", { style: { fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 10, lineHeight: 1.5 } }, R.front.why),
+                                R.coverage && R.coverage.name && React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#fecaca", marginBottom: 4 } }, R.coverage.name),
+                                R.coverage && R.coverage.why && React.createElement("div", { style: { fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginBottom: 8, lineHeight: 1.5 } }, R.coverage.why),
+                                R.alt && R.alt.name && React.createElement("div", { style: { fontSize: 11.5, color: "rgba(255,255,255,0.45)", marginBottom: 8, lineHeight: 1.5 } }, "Also fits: ",
+                                    React.createElement("b", { style: { color: "rgba(255,255,255,0.7)" } }, R.alt.name), R.alt.why ? " — " + R.alt.why : ""),
+                                R.blitz && R.blitz.name && React.createElement("div", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 12, color: "#fdba74", marginBottom: 4 } }, R.blitz.name),
+                                R.blitz && R.blitz.why && React.createElement("div", { style: { fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginBottom: 8, lineHeight: 1.5 } }, R.blitz.why),
+                                (R.keys || []).map((k, i) => (React.createElement("div", { key: i, style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 12, color: "rgba(255,255,255,0.75)", marginBottom: 3 } }, "• ", k))),
+                                R.lib && (R.lib.formations.length + R.lib.coverages.length + R.lib.blitzes.length) > 0 && (React.createElement("div", { style: { marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" } },
+                                    React.createElement("span", { style: { fontSize: 10.5, color: "rgba(255,255,255,0.4)" } }, "matches your dropdowns:"),
+                                    [...R.lib.formations, ...R.lib.coverages, ...R.lib.blitzes].map((n, i) => (React.createElement("span", { key: i, style: { fontSize: 10.5, padding: "3px 8px", borderRadius: 99, border: "1px solid rgba(196,181,253,0.4)", color: "#c4b5fd", background: "rgba(196,181,253,0.08)" } }, n))))))),
+                            R.mode !== "def" && React.createElement(React.Fragment, null,
+                            React.createElement("div", { style: card },
+                                React.createElement("div", { style: hd("#7dd3fc") }, "🎯 PASS ANSWER"),
+                                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" } },
+                                    React.createElement("span", { style: { fontSize: 16, fontWeight: 800, color: "#f1f5f9" } }, R.pass.formation),
+                                    React.createElement("button", { onClick: () => applyCounterFormation(R.pass.formation), style: applyBtn }, "APPLY FORMATION")),
+                                React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#bae6fd", marginBottom: 6 } }, R.pass.concept),
+                                R.pass.routes.map((r, i) => (React.createElement("div", { key: i, style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 12, color: "rgba(255,255,255,0.75)", marginBottom: 3 } }, "\u2022 ", r))),
+                                React.createElement("div", { style: { fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 8, lineHeight: 1.5 } }, R.pass.why),
+                                React.createElement("div", { style: { fontSize: 11.5, color: "rgba(253,211,77,0.75)", marginTop: 8, lineHeight: 1.5 } }, "\uD83D\uDCA1 ", R.pass.tip)),
+                            React.createElement("div", { style: card },
+                                React.createElement("div", { style: hd("#86efac") }, "🏃 RUN ANSWER"),
+                                React.createElement("div", { style: { fontSize: 15, fontWeight: 800, color: "#f1f5f9", marginBottom: 4 } },
+                                    R.run.concept,
+                                    React.createElement("span", { style: { fontWeight: 400, color: "rgba(255,255,255,0.55)", fontSize: 13 } }, " \u2014 ", R.run.direction)),
+                                React.createElement("div", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 12, color: "rgba(255,255,255,0.75)", marginBottom: 6 } }, R.run.scheme),
+                                React.createElement("div", { style: { fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 } }, R.run.why))),
+                            React.createElement("div", { style: card },
+                                React.createElement("div", { style: hd("#c4b5fd") }, "📚 FROM YOUR PLAYBOOK"),
+                                R.saved.length ? R.saved.map((pk, i) => (React.createElement("div", { key: pk.play.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderTop: i ? "1px solid rgba(255,255,255,0.06)" : "none" } },
+                                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                                        React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, pk.play.name),
+                                        React.createElement("div", { style: { fontSize: 11.5, color: "rgba(255,255,255,0.5)", marginTop: 2 } }, pk.why)),
+                                    React.createElement("button", { onClick: () => { loadPlay(pk.play); setCounterRec(null); }, style: applyBtn }, "LOAD")))) : (React.createElement("div", { style: { fontSize: 12.5, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 } }, "No saved plays fit this look yet \u2014 save a few and COUNTER will start pulling from them."))),
+                            React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.3)", textAlign: "center", marginTop: 4, lineHeight: 1.6 } }, "A rules-based read of what's drawn on the field. You're the coach \u2014 trust your eyes over the machine.")))));
+            })(),
+            quizBoard && (() => {
+                const rows = quizBoard.rows || [];
+                const ago = (iso) => {
+                    const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+                    return d <= 0 ? "today" : d === 1 ? "yesterday" : d + " days ago";
+                };
+                return (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 7250, background: "#0a0a14", display: "flex", flexDirection: "column", fontFamily: "system-ui,sans-serif", WebkitTapHighlightColor: "transparent" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", paddingTop: "max(10px, env(safe-area-inset-top))", borderBottom: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 } },
+                        React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 16, letterSpacing: "0.1em", color: "#fcd34d", flexShrink: 0 } }, "📊 WHO'S STUDYING"),
+                        React.createElement("span", { style: { fontSize: 11, color: "rgba(255,255,255,0.4)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 } }, "quiz rounds \u00B7 last 60 days"),
+                        React.createElement("div", { style: { flex: 1 } }),
+                        React.createElement("button", { onClick: openQuizBoard, title: "Refresh", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 15, flexShrink: 0, touchAction: "manipulation" } }, "\u21BB"),
+                        React.createElement("button", { onClick: () => setQuizBoard(null), title: "Close", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 16, flexShrink: 0, touchAction: "manipulation" } }, "\u2715")),
+                    React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "14px 12px", paddingBottom: "max(20px, env(safe-area-inset-bottom))" } },
+                        React.createElement("div", { style: { maxWidth: 560, margin: "0 auto" } },
+                            quizBoard.loading ? (React.createElement("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.5)", fontSize: 13, paddingTop: "10vh" } }, "Loading\u2026")) : quizBoard.err ? (React.createElement("div", { style: { textAlign: "center", color: "#fca5a5", fontSize: 13, lineHeight: 1.6, padding: "8vh 10px 0" } }, quizBoard.err)) : rows.length === 0 ? (React.createElement("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.5)", fontSize: 13, paddingTop: "8vh", lineHeight: 1.6 } },
+                                "No study rounds yet.",
+                                React.createElement("br", null),
+                                "Results show up the moment anyone finishes a \uD83C\uDF93 STUDY quiz.")) : rows.map((r, i) => (React.createElement("div", { key: r.userId, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 8, borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)", background: i === 0 ? "rgba(245,158,11,0.08)" : "rgba(255,255,255,0.03)" } },
+                                React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, color: i === 0 ? "#fcd34d" : "rgba(255,255,255,0.4)", width: 26, textAlign: "center", flexShrink: 0 } }, i + 1),
+                                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                                    React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.name),
+                                    React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 2 } }, "last studied ", ago(r.lastAt))),
+                                React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } },
+                                    React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: r.rounds7 > 0 ? "#fdba74" : "rgba(255,255,255,0.4)" } }, "\uD83D\uDD25 ", r.rounds7, " this wk"),
+                                    React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: "'JetBrains Mono',monospace", marginTop: 2 } }, r.rounds, " total \u00B7 avg ", r.avgPct, "% \u00B7 best ", r.bestPct, "%"))))),
+                            !quizBoard.loading && !quizBoard.err && (React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.3)", textAlign: "center", marginTop: 14, lineHeight: 1.6 } }, "Every finished quiz counts as a round. Players record rounds but never see this board."))))));
+            })(),
+            quizPick && (() => {
+                const namedCount = (list) => (list || []).filter(p => p && (p.name || "").trim()).length;
+                const allN = namedCount(plays.filter(p => p && !p.scout));
+                const secHd = { fontFamily: "'JetBrains Mono',monospace", fontSize: 10, letterSpacing: "0.14em", color: "rgba(255,255,255,0.4)", margin: "18px 2px 8px" };
+                const rowBtn = (enabled) => ({
+                    display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", minHeight: 54,
+                    padding: "12px 14px", marginBottom: 8, borderRadius: 12, fontSize: 15, fontWeight: 600,
+                    fontFamily: "system-ui,sans-serif", touchAction: "manipulation",
+                    border: "1px solid " + (enabled ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.07)"),
+                    background: enabled ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.02)",
+                    color: enabled ? "#f1f5f9" : "rgba(255,255,255,0.3)",
+                    cursor: enabled ? "pointer" : "not-allowed",
+                });
+                const badge = { marginLeft: "auto", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.45)", flexShrink: 0 };
+                const launch = (qPlays, title, key) => { if (startQuiz(qPlays, plays, title, key)) setQuizPick(false); };
+                // Mastery badges: best % per set from this device (gp_quiz_v1).
+                let bests = {};
+                try {
+                    bests = JSON.parse(localStorage.getItem("gp_quiz_v1") || "{}");
+                }
+                catch (e) { }
+                const bestBadge = (key) => { const b = (bests[key] && bests[key].bestPct) || 0; return b > 0 ? (React.createElement("span", { style: { marginLeft: 8, fontSize: 11, fontFamily: "'JetBrains Mono',monospace", flexShrink: 0, color: b >= 100 ? "#4ade80" : "#fbbf24" } }, b >= 100 ? "\u2713 100%" : "best " + b + "%")) : null; };
+                return (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 7150, background: "#0a0a14", display: "flex", flexDirection: "column", fontFamily: "system-ui,sans-serif", WebkitTapHighlightColor: "transparent" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", paddingTop: "max(10px, env(safe-area-inset-top))", borderBottom: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 } },
+                        React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 16, letterSpacing: "0.1em", color: "#fcd34d", flexShrink: 0 } }, "🎓 STUDY"),
+                        React.createElement("span", { style: { fontSize: 12, color: "rgba(255,255,255,0.45)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 } }, "what do you want to drill?"),
+                        React.createElement("div", { style: { flex: 1 } }),
+                        realRole !== "player" && (React.createElement("button", { onClick: openQuizBoard, title: "See who's been studying — quiz rounds and scores for the whole team. Players don't see this.", style: { height: 40, padding: "0 12px", borderRadius: 10, border: "1px solid rgba(245,158,11,0.5)", background: "rgba(245,158,11,0.14)", color: "#fcd34d", cursor: "pointer", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", flexShrink: 0, touchAction: "manipulation" } }, "📊 WHO'S STUDYING")),
+                        React.createElement("button", { onClick: () => setQuizPick(false), title: "Close", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 16, flexShrink: 0, touchAction: "manipulation" } }, "\u2715")),
+                    React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "14px 12px", paddingBottom: "max(20px, env(safe-area-inset-bottom))" } },
+                        React.createElement("div", { style: { maxWidth: 520, margin: "0 auto" } },
+                            React.createElement("button", { onClick: () => launch(plays.filter(p => p && !p.scout), "All plays", "all"), disabled: allN < 2, style: rowBtn(allN >= 2) },
+                                React.createElement("span", { style: { fontSize: 18, flexShrink: 0 } }, "📚"),
+                                React.createElement("span", null, "All plays"),
+                                React.createElement("span", { style: badge }, allN, " play", allN === 1 ? "" : "s"), bestBadge("all")),
+                            installs.length > 0 && (React.createElement(React.Fragment, null,
+                                React.createElement("div", { style: secHd }, "INSTALLS"),
+                                installs.map(inst => {
+                                    const list = (inst.playIds || []).map(pid => plays.find(p => p.id === pid)).filter(Boolean);
+                                    const n = namedCount(list);
+                                    return (React.createElement("button", { key: inst.id, onClick: () => launch(list, inst.name || "Install", "inst_" + inst.id), disabled: n < 2, style: rowBtn(n >= 2) },
+                                        React.createElement("span", { style: { fontSize: 18, flexShrink: 0 } }, "📋"),
+                                        React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, inst.name || "Install"),
+                                        React.createElement("span", { style: badge }, n, " play", n === 1 ? "" : "s"), bestBadge("inst_" + inst.id)));
+                                }))),
+                            scripts.length > 0 && (React.createElement(React.Fragment, null,
+                                React.createElement("div", { style: secHd }, "PRACTICE SCRIPTS"),
+                                scripts.map(s => {
+                                    const ids = [...new Set((s.periods || []).flatMap(per => per.playIds || []))];
+                                    const list = ids.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
+                                    const n = namedCount(list);
+                                    return (React.createElement("button", { key: s.id, onClick: () => launch(list, s.name || "Script", "script_" + s.id), disabled: n < 2, style: rowBtn(n >= 2) },
+                                        React.createElement("span", { style: { fontSize: 18, flexShrink: 0 } }, "📝"),
+                                        React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, s.name || "Script"),
+                                        React.createElement("span", { style: badge }, n, " play", n === 1 ? "" : "s"), bestBadge("script_" + s.id)));
+                                }))),
+                            installs.length === 0 && scripts.length === 0 && (React.createElement("div", { style: { fontSize: 12, color: "rgba(255,255,255,0.4)", textAlign: "center", marginTop: 16, lineHeight: 1.6 } }, "Installs and practice scripts you build will show up here as study sets.")),
+                            React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.3)", textAlign: "center", marginTop: 14 } }, "Sets need at least 2 named plays.")))));
+            })(),
             quiz && (() => {
                 const cur = quiz.qs[quiz.i];
                 const picked = quiz.picked;
@@ -14065,7 +14609,7 @@ function PlaybookApp() {
                     transition: "border .15s, background .15s, color .15s",
                 });
                 const thumbBtn = (o) => ({
-                    padding: 6, borderRadius: 12, cursor: answered ? "default" : "pointer", touchAction: "manipulation",
+                    padding: 6, borderRadius: 12, cursor: answered ? "zoom-in" : "pointer", touchAction: "manipulation",
                     border: "2px solid " + (answered ? (o.id === correctId ? "rgba(74,222,128,0.9)" : o.id === picked ? "rgba(248,113,113,0.9)" : "rgba(255,255,255,0.06)") : "rgba(255,255,255,0.16)"),
                     background: answered && o.id === correctId ? "rgba(74,222,128,0.12)" : "rgba(255,255,255,0.04)",
                     opacity: answered && o.id !== correctId && o.id !== picked ? 0.45 : 1,
@@ -14088,7 +14632,7 @@ function PlaybookApp() {
                         React.createElement("button", { onClick: () => setQuiz(null), title: "Exit the quiz", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 16, flexShrink: 0, touchAction: "manipulation" } }, "\u2715")),
                     React.createElement("div", { style: { height: 4, background: "rgba(255,255,255,0.07)", flexShrink: 0 } },
                         React.createElement("div", { style: { height: "100%", width: `${quiz.done ? 100 : Math.round(((quiz.i + (answered ? 1 : 0)) / quiz.qs.length) * 100)}%`, background: "#f59e0b", transition: "width .25s" } })),
-                    React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "16px 14px", paddingBottom: "max(20px, env(safe-area-inset-bottom))" } },
+                    React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "12px 10px", paddingBottom: "max(20px, env(safe-area-inset-bottom))" } },
                         React.createElement("div", { style: { maxWidth: 520, margin: "0 auto" } },
                             quiz.done ? (React.createElement("div", { style: { textAlign: "center", paddingTop: "6vh" } },
                                 React.createElement("div", { style: { fontSize: 52, lineHeight: 1, marginBottom: 10 } }, pct >= 90 ? "🏆" : pct >= 70 ? "💪" : "📖"),
@@ -14099,20 +14643,33 @@ function PlaybookApp() {
                                     missedPlays.length > 0 && (React.createElement("button", { onClick: () => startQuiz(missedPlays, quiz.pool, quiz.title, quiz.scopeKey), style: bigBtn("amber") }, "🎯 RETRY THE ", missedPlays.length, " YOU MISSED")),
                                     React.createElement("button", { onClick: () => startQuiz(quiz.pool, quiz.pool, quiz.title, quiz.scopeKey), style: bigBtn("green") }, "🔁 PLAY AGAIN"),
                                     React.createElement("button", { onClick: () => setQuiz(null), style: bigBtn() }, "DONE")))) : cur.mode === "pickName" ? (React.createElement(React.Fragment, null,
-                                React.createElement("div", { style: { fontSize: 13, color: "rgba(255,255,255,0.5)", textAlign: "center", marginBottom: 10, letterSpacing: "0.04em" } }, "What's this play called?"),
-                                React.createElement("div", { className: "gp-quiz-thumb", style: { maxWidth: 420, margin: "0 auto 16px", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" } },
-                                    React.createElement(PlayThumbnail, { play: cur.play, w: 420, h: 280 })),
+                                React.createElement("div", { style: { fontSize: 13, color: "rgba(255,255,255,0.5)", textAlign: "center", marginBottom: 8, letterSpacing: "0.04em" } }, "What's this play called?"),
+                                React.createElement("div", { className: "gp-quiz-thumb", onClick: () => setQuizZoom(cur.play), title: "Tap to see the play near full-screen", style: { position: "relative", width: "100%", margin: "0 auto 14px", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", cursor: "zoom-in" } },
+                                    React.createElement(PlayThumbnail, { play: cur.play, w: 480, h: 620 }),
+                                    React.createElement("span", { style: { position: "absolute", right: 8, bottom: 8, fontSize: 11, padding: "4px 9px", borderRadius: 99, background: "rgba(0,0,0,0.55)", color: "rgba(255,255,255,0.85)", pointerEvents: "none" } }, "⤢ tap to enlarge")),
                                 cur.opts.map(o => (React.createElement("button", { key: o.id, onClick: () => answerQuiz(o.id), style: optBtn(o) },
                                     o.name,
                                     answered && o.id === correctId ? "  \u2713" : answered && o.id === picked ? "  \u2717" : ""))))) : (React.createElement(React.Fragment, null,
                                 React.createElement("div", { style: { fontSize: 13, color: "rgba(255,255,255,0.5)", textAlign: "center", marginBottom: 6, letterSpacing: "0.04em" } }, "Which one is\u2026"),
                                 React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, color: "#fff", textAlign: "center", marginBottom: 14, lineHeight: 1.15 } }, "\u201C", cur.play.name, "\u201D"),
-                                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, cur.opts.map(o => (React.createElement("button", { key: o.id, onClick: () => answerQuiz(o.id), style: thumbBtn(o) },
+                                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, cur.opts.map(o => (React.createElement("button", { key: o.id, onClick: () => { if (answered) setQuizZoom(o.play); else answerQuiz(o.id); }, style: thumbBtn(o) },
                                     React.createElement("div", { className: "gp-quiz-thumb" },
-                                        React.createElement(PlayThumbnail, { play: o.play, w: 220, h: 150 })))))))),
+                                        React.createElement(PlayThumbnail, { play: o.play, w: 240, h: 210 })))))))),
                             answered && !quiz.done && (React.createElement("div", { style: { marginTop: 14 } },
                                 React.createElement("div", { style: { textAlign: "center", fontSize: 15, fontWeight: 700, marginBottom: 10, color: wasRight ? "#86efac" : "#fca5a5" } }, wasRight ? "\u2713 Correct!" : `\u2717 It's \u201C${cur.play.name}\u201D`),
+                                cur.mode === "pickDiagram" && React.createElement("div", { style: { textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 10 } }, "Tap any diagram to enlarge it."),
                                 React.createElement("button", { onClick: nextQuizQ, style: { ...bigBtn(wasRight ? "green" : "amber"), maxWidth: 340, margin: "0 auto", marginBottom: 0 } }, quiz.i + 1 >= quiz.qs.length ? "SEE MY SCORE \u2192" : "NEXT \u2192")))))));
+            })(),
+            quizZoom && (() => {
+                const vw = typeof window !== "undefined" ? window.innerWidth : 800;
+                const vh = typeof window !== "undefined" ? window.innerHeight : 600;
+                const zw = Math.max(200, Math.round(vw * 0.95));
+                const zh = Math.max(200, Math.round(vh * 0.90));
+                return (React.createElement("div", { onClick: () => setQuizZoom(null), title: "Tap anywhere to close", style: { position: "fixed", inset: 0, zIndex: 7300, background: "rgba(4,5,10,0.97)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out", WebkitTapHighlightColor: "transparent" } },
+                    React.createElement("div", { style: { borderRadius: 10, overflow: "hidden", boxShadow: "0 10px 60px rgba(0,0,0,0.8)" } },
+                        React.createElement(PlayThumbnail, { play: quizZoom, w: zw, h: zh })),
+                    React.createElement("button", { onClick: () => setQuizZoom(null), style: { position: "absolute", top: "max(10px, env(safe-area-inset-top))", right: 10, width: 42, height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)", color: "#fff", cursor: "pointer", fontSize: 17, touchAction: "manipulation" } }, "\u2715"),
+                    React.createElement("span", { style: { position: "absolute", bottom: "max(10px, env(safe-area-inset-bottom))", left: 0, right: 0, textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.45)", pointerEvents: "none" } }, "tap anywhere to close")));
             })(),
             showGuide && (() => {
                 const gSteps = GUIDE_STEPS.filter(s => (!s.need || caps[s.need]) && (!s.viewOnly || !caps.edit));
@@ -14192,7 +14749,7 @@ function PlaybookApp() {
                 return (React.createElement("div", { ref: defRecRef, className: "mobsheet", style: { position: "fixed", ...(defRecPos ? { left: defRecPos.x, top: defRecPos.y } : { top: 70, left: 14 }), zIndex: 2650, width: 338, maxHeight: "calc(100vh - 100px)", display: "flex", flexDirection: "column", background: "#0b0f1c", border: "1px solid rgba(96,165,250,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.55)", fontFamily: "system-ui,sans-serif", overflow: "hidden" } },
                     React.createElement("div", { onMouseDown: (e) => startPanelDrag(e, defRecRef, setDefRecPos), onTouchStart: (e) => startPanelDrag(e, defRecRef, setDefRecPos), style: { display: "flex", alignItems: "center", gap: 8, padding: "11px 13px", cursor: "move", touchAction: "none", borderBottom: "1px solid rgba(255,255,255,0.07)", userSelect: "none" } },
                         React.createElement("span", { style: { color: "rgba(255,255,255,0.35)", fontSize: 14, letterSpacing: "-1px" } }, "\u283F"),
-                        React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: "0.06em", color: "#93c5fd", flex: 1 } }, "\uD83D\uDEE1 DEFENSE CALL"),
+                        React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: "0.06em", color: "#fcd34d", flex: 1 } }, "🧠 COUNTER — DEFENSIVE ANSWER"),
                         React.createElement("button", { onMouseDown: (e) => e.stopPropagation(), onClick: () => setShowDefRec(false), title: "Close", style: { width: 24, height: 24, borderRadius: 6, cursor: "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.6)", fontSize: 13 } }, "\u2715")),
                     React.createElement("div", { style: { padding: "12px 14px", overflowY: "auto" } }, !rec.ok ? (React.createElement("div", { style: { fontSize: 12.5, color: "rgba(255,255,255,0.7)", lineHeight: 1.55 } }, "Draw the offensive play first \u2014 players and their routes \u2014 then I'll suggest a front, coverage and pressure to match it.")) : (React.createElement(React.Fragment, null,
                         React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 6 } }, [rec.personnel, rec.empty ? "Empty" : (rec.shotgun ? "Shotgun" : "Under center"), rec.mode === "play-action" ? "Play-action" : rec.mode.charAt(0).toUpperCase() + rec.mode.slice(1), rec.trips ? ("Trips " + rec.strength) : null, rec.hasMotion ? "Motion" : null].filter(Boolean).map((c, i) => (React.createElement("span", { key: i, style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#cbd5e1", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 5, padding: "2px 7px" } }, c)))),
@@ -16021,6 +16578,7 @@ function PlaybookApp() {
                                         background: playCount === 0 ? "transparent" : "rgba(74,222,128,0.16)",
                                         color: playCount === 0 ? "rgba(255,255,255,0.3)" : "#86efac",
                                         opacity: playCount === 0 ? 0.6 : 1 } }, "\u25B6 RUN"),
+                                React.createElement("button", { onClick: () => gpSaveOffline("This script"), title: "Save an offline copy to this device — the whole playbook comes with it, so everything works with zero internet at practice.", style: { padding: "5px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", border: "1px solid rgba(125,211,252,0.5)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc" } }, "⬇ OFFLINE"),
                                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginLeft: "auto" } }, scriptViewMode === "edit" ? "manage periods & order" : "visual show — share with players")),
                             scriptViewMode === "cards" ? (React.createElement("div", { style: { padding: "12px 22px 16px", overflowY: "auto", flex: 1 } }, openScript.periods.length === 0 || playCount === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "20px 0", textAlign: "center" } }, "No plays to show \u2014 switch to EDIT and add some.")) : (openScript.periods.map((per) => {
                                 const playsInPer = per.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
@@ -16238,6 +16796,7 @@ function PlaybookApp() {
                                         background: openInst.playIds.length < 2 ? "rgba(245,158,11,0.05)" : "rgba(245,158,11,0.18)",
                                         color: openInst.playIds.length < 2 ? "rgba(245,158,11,0.4)" : "#fcd34d",
                                         opacity: openInst.playIds.length < 2 ? 0.5 : 1 } }, "🎓 STUDY"),
+                                React.createElement("button", { onClick: () => gpSaveOffline("This install"), title: "Save an offline copy to this device — the whole playbook comes with it, so everything works with zero internet at practice.", style: { padding: "5px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", border: "1px solid rgba(125,211,252,0.5)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc" } }, "⬇ OFFLINE"),
                                 caps.exportGif && (React.createElement("button", { onClick: () => runBulkExport(openInst), disabled: openInst.playIds.length === 0 || exportingVideo || playingAnim, title: "Export every play in this install as its own animated GIF \u2014 one file per play, downloaded to your Downloads folder", style: { padding: "5px 12px", borderRadius: 5, cursor: (openInst.playIds.length === 0 || exportingVideo || playingAnim) ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
                                         border: "1px solid rgba(167,139,250,0.5)",
                                         background: (openInst.playIds.length === 0 || exportingVideo || playingAnim) ? "rgba(167,139,250,0.05)" : "rgba(167,139,250,0.18)",
@@ -16495,9 +17054,10 @@ function PlaybookApp() {
 // and three failures are caught so they can never white-screen the whole app.
 function Walkthrough3D({ data, onClose }) {
     const mountRef = useRef(null);
-    const stateRef = useRef({ t: 0, playing: true, speed: 1, autoRotate: false, mode: "aerial", mode3d: (data && data.sync && data.sync.frames && data.sync.frames.length) ? "sync" : "real", povIdx: -1, theta: Math.PI * 0.5, phi: 0.85, radius: 140, groundDist: 22, dragging: false, lastX: 0, lastY: 0 });
+    const stateRef = useRef({ t: 0, playing: true, speed: 1, autoRotate: false, perf: (() => { try { return localStorage.getItem("gp_3dPerf") === "1"; } catch (e) { return false; } })(), mode: "aerial", mode3d: (data && data.sync && data.sync.frames && data.sync.frames.length) ? "sync" : "real", povIdx: -1, theta: Math.PI * 0.5, phi: 0.85, radius: 140, groundDist: 22, dragging: false, lastX: 0, lastY: 0 });
     const [, force] = useState(0);
     const ui = stateRef.current;
+    const rendererRef = useRef(null);
     useEffect(() => {
         const mount = mountRef.current;
         if (!mount)
@@ -16511,7 +17071,8 @@ function Walkthrough3D({ data, onClose }) {
             const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 4000);
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(W, H);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+            renderer.setPixelRatio(stateRef.current.perf ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+            rendererRef.current = renderer;
             mount.appendChild(renderer.domElement);
             scene.add(new THREE.AmbientLight(0xffffff, 0.78));
             const dl = new THREE.DirectionalLight(0xffffff, 0.85);
@@ -16697,15 +17258,23 @@ function Walkthrough3D({ data, onClose }) {
                 const matStripe = new THREE.MeshStandardMaterial({ color: new THREE.Color(lum > 0.55 ? "#14171c" : "#f1f5ff"), roughness: 0.45 });
                 const addR = (mesh, x, y, z, rx, ry, rz) => { mesh.position.set(x || 0, y || 0, z || 0); if (rx || ry || rz)
                     mesh.rotation.set(rx || 0, ry || 0, rz || 0); g.add(mesh); parts.push(mesh); return mesh; };
-                // LEGS — LONG: thigh (pants) + knee pad + sock + cleat
-                [-1, 1].forEach(sgn => {
-                    const x = sgn * 0.42;
-                    addR(new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.30, 1.24, 14), matPants), x, 2.20, 0.02); // thigh (long)
-                    const kn = addR(new THREE.Mesh(new THREE.SphereGeometry(0.31, 14, 12), matPants), x, 1.62, 0.05);
+                // Limb pivot groups: legs hang from the hips, arms from the shoulders,
+                // so the run cycle can swing them like a human. Children are positioned
+                // RELATIVE to the pivot; meshes still go into `parts` for disposal.
+                const HIP_Y = 2.84, SHO_Y = 3.98;
+                const mkPivot = (px, py, pz) => { const pg = new THREE.Group(); pg.position.set(px, py, pz); g.add(pg); return pg; };
+                const addP = (pg, mesh, x, y, z, rx, ry, rz) => { mesh.position.set(x || 0, y || 0, z || 0); if (rx || ry || rz)
+                    mesh.rotation.set(rx || 0, ry || 0, rz || 0); pg.add(mesh); parts.push(mesh); return mesh; };
+                // LEGS — LONG: thigh (pants) + knee pad + sock + cleat, on hip pivots
+                const legPiv = [-1, 1].map(sgn => {
+                    const pg = mkPivot(sgn * 0.42, HIP_Y, 0);
+                    addP(pg, new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.30, 1.24, 14), matPants), 0, -0.64, 0.02); // thigh (long)
+                    const kn = addP(pg, new THREE.Mesh(new THREE.SphereGeometry(0.31, 14, 12), matPants), 0, -1.22, 0.05);
                     kn.scale.set(1, 0.82, 1.1); // knee pad
-                    addR(new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.18, 1.34, 12), matSock), x, 0.95, 0.0); // sock (long)
-                    addR(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.15, 1.02), matShoe), x, 0.15, 0.20); // cleat sole
-                    addR(new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.22, 0.52), matShoe), x, 0.32, 0.04); // cleat upper
+                    addP(pg, new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.18, 1.34, 12), matSock), 0, -1.89, 0.0); // sock (long)
+                    addP(pg, new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.15, 1.02), matShoe), 0, -2.69, 0.20); // cleat sole
+                    addP(pg, new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.22, 0.52), matShoe), 0, -2.52, 0.04); // cleat upper
+                    return pg;
                 });
                 // PELVIS + belt seam at the jersey/pants line
                 addR(new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.64, 0.78), matPants), 0, 2.85, 0);
@@ -16718,13 +17287,14 @@ function Walkthrough3D({ data, onClose }) {
                 const yoke = addR(new THREE.Mesh(new THREE.SphereGeometry(0.70, 20, 14), matJersey), 0, 3.98, 0);
                 yoke.scale.set(1.85, 0.44, 1.05);
                 [-1, 1].forEach(sgn => { const cap = addR(new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12), matJersey), sgn * 1.0, 4.02, 0); cap.scale.set(1, 0.88, 1.1); });
-                // ARMS — upper sleeve + elbow + forearm bent forward + glove, at the sides
-                [-1, 1].forEach(sgn => {
-                    const x = sgn * 1.02;
-                    addR(new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.20, 1.00, 12), matJersey), x, 3.60, 0.03); // upper arm
-                    addR(new THREE.Mesh(new THREE.SphereGeometry(0.19, 12, 10), matSkin), x, 3.10, 0.05); // elbow
-                    addR(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.15, 0.90, 12), matSkin), x, 2.66, 0.24, -0.4, 0, 0); // forearm
-                    addR(new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 10), matGlove), x, 2.30, 0.46); // glove
+                // ARMS — upper sleeve + elbow + forearm bent forward + glove, on shoulder pivots
+                const armPiv = [-1, 1].map(sgn => {
+                    const pg = mkPivot(sgn * 1.02, SHO_Y, 0);
+                    addP(pg, new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.20, 1.00, 12), matJersey), 0, -0.38, 0.03); // upper arm
+                    addP(pg, new THREE.Mesh(new THREE.SphereGeometry(0.19, 12, 10), matSkin), 0, -0.88, 0.05); // elbow
+                    addP(pg, new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.15, 0.90, 12), matSkin), 0, -1.32, 0.24, -0.4, 0, 0); // forearm
+                    addP(pg, new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 10), matGlove), 0, -1.68, 0.46); // glove
+                    return pg;
                 });
                 // NECK + HEAD — head rides clearly ABOVE the pads on a visible neck
                 addR(new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.24, 0.44, 12), matSkin), 0, 4.42, 0.02);
@@ -16749,6 +17319,8 @@ function Walkthrough3D({ data, onClose }) {
                 addR(new THREE.Mesh(numGeo, new THREE.MeshStandardMaterial({ map: numTexBack, roughness: 0.6 })), 0, 3.60, -0.60, 0, Math.PI, 0);
                 // Turn the sides to face each other: offense sits at +Z, so spin it 180°
                 // to look back toward the defense (which faces +Z by default).
+                // YXZ order = yaw first, then a LOCAL forward lean while sprinting.
+                g.rotation.order = "YXZ";
                 g.rotation.y = (p.side === "off") ? Math.PI : 0;
                 // Floating ID tag above the helmet (color-matched text, always camera-facing)
                 const sprite = makeLabel(p.label || "", "#ffffff", 0.85);
@@ -16757,7 +17329,7 @@ function Walkthrough3D({ data, onClose }) {
                 scene.add(g);
                 const motion = mkSub(p.motionPath);
                 const main = mkSub(p.mainPath) || mkSub([{ x: p.x, y: p.y }]);
-                figs.push({ g, side: p.side || "off", role: p.role || "", motion, main, rushDelay: p.rushDelay || 0, moving: !!p.moving, snapFrac: (typeof p.snapFrac === "number" ? p.snapFrac : 0.8), mainFinishFrac: (typeof p.mainFinishFrac === "number" ? p.mainFinishFrac : 0.15) });
+                figs.push({ g, side: p.side || "off", role: p.role || "", motion, main, rushDelay: p.rushDelay || 0, moving: !!p.moving, snapFrac: (typeof p.snapFrac === "number" ? p.snapFrac : 0.8), mainFinishFrac: (typeof p.mainFinishFrac === "number" ? p.mainFinishFrac : 0.15), legL: legPiv[0], legR: legPiv[1], armL: armPiv[0], armR: armPiv[1], yaw: g.rotation.y, phase: Math.random() * 6.28, lastX: null, lastZ: null });
                 // Thick tube so routes read clearly in 3D — plain WebGL lines render at
                 // 1px and wash out. Colors come straight from the 2D ROUTE_CFG / zones.
                 const drawLine = (sub, color) => {
@@ -17053,7 +17625,52 @@ function Walkthrough3D({ data, onClose }) {
                 }
                 if (s.mode === "aerial" && s.autoRotate && !s.dragging)
                     s.theta += dt * 0.28;
-                figs.forEach((f, i) => { const p = figPos(i, s.t); f.g.position.set(p.x, 0, p.z); });
+                figs.forEach((f, i) => {
+                    const p = figPos(i, s.t);
+                    // Face where you're headed (sampled a touch ahead so it works while
+                    // paused too); players standing still hold their stance.
+                    const ah = figPos(i, Math.min(1, s.t + 0.006));
+                    const hx = ah.x - p.x, hz = ah.z - p.z;
+                    if (Math.hypot(hx, hz) > 0.02) {
+                        const tgt = Math.atan2(hx, hz);
+                        let dy = tgt - f.yaw;
+                        while (dy > Math.PI)
+                            dy -= Math.PI * 2;
+                        while (dy < -Math.PI)
+                            dy += Math.PI * 2;
+                        f.yaw += dy * Math.min(1, dt * 9);
+                    }
+                    f.g.rotation.y = f.yaw;
+                    // Gait speed from actual per-frame travel; loop-wrap teleports skipped.
+                    let spd = 0;
+                    if (f.lastX != null && s.playing) {
+                        const mvd = Math.hypot(p.x - f.lastX, p.z - f.lastZ);
+                        if (mvd < 6)
+                            spd = mvd / Math.max(dt, 0.001);
+                    }
+                    f.lastX = p.x;
+                    f.lastZ = p.z;
+                    if (spd > 1.2) {
+                        f.phase += dt * Math.min(14, 5.5 + spd * 0.55); // cadence rises with speed
+                        const sw = Math.sin(f.phase);
+                        const amp = Math.min(0.75, 0.35 + spd * 0.03);
+                        f.legL.rotation.x = sw * amp;
+                        f.legR.rotation.x = -sw * amp;
+                        f.armL.rotation.x = -sw * amp * 0.9;
+                        f.armR.rotation.x = sw * amp * 0.9; // arms counter the legs
+                        f.g.rotation.x = 0.15; // sprint lean
+                        f.g.position.set(p.x, Math.abs(Math.cos(f.phase)) * 0.10, p.z); // stride bob
+                    }
+                    else {
+                        const k = Math.min(1, dt * 8); // ease back to the stance
+                        f.legL.rotation.x *= 1 - k;
+                        f.legR.rotation.x *= 1 - k;
+                        f.armL.rotation.x *= 1 - k;
+                        f.armR.rotation.x *= 1 - k;
+                        f.g.rotation.x *= 1 - k;
+                        f.g.position.set(p.x, f.g.position.y * (1 - k), p.z);
+                    }
+                });
                 if (ballMesh)
                     ballMesh.position.copy(ballPos(s.t));
                 if (s.mode === "offense") {
@@ -17152,6 +17769,18 @@ function Walkthrough3D({ data, onClose }) {
             return () => { };
         }
     }, []); // build once on open
+    // Performance mode: drop to 1x pixel ratio for older phones. Live + remembered.
+    useEffect(() => {
+        const r = rendererRef.current, m = mountRef.current;
+        if (r && m) {
+            r.setPixelRatio(ui.perf ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+            r.setSize(m.clientWidth || 800, m.clientHeight || 500);
+        }
+        try {
+            localStorage.setItem("gp_3dPerf", ui.perf ? "1" : "0");
+        }
+        catch (e) { }
+    }, [ui.perf]);
     const apply = (patch) => { Object.assign(stateRef.current, patch); force(n => n + 1); };
     return (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 4000, background: "#06080f", display: "flex", flexDirection: "column" } },
         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", flexWrap: "wrap" } },
@@ -17176,7 +17805,8 @@ function Walkthrough3D({ data, onClose }) {
             ui.mode === "aerial" && (React.createElement("label", { style: { display: "flex", gap: 5, alignItems: "center", fontSize: 11, color: "rgba(255,255,255,0.6)" } },
                 React.createElement("input", { type: "checkbox", checked: ui.autoRotate, onChange: e => apply({ autoRotate: e.target.checked }), style: { accentColor: "#4ade80" } }),
                 " auto-spin")),
-            React.createElement("button", { onClick: onClose, className: "sbtn", style: { borderColor: "rgba(248,113,113,0.5)", color: "#fca5a5" } }, "\u2715 CLOSE")),
+            React.createElement("button", { onClick: () => apply({ perf: !ui.perf }), className: "sbtn dim", title: "Performance mode — lowers render resolution so the walkthrough stays smooth on older phones. Remembered on this device.", style: { padding: "5px 9px", opacity: ui.perf ? 1 : 0.5, borderColor: ui.perf ? "rgba(74,222,128,0.55)" : undefined, color: ui.perf ? "#86efac" : undefined } }, "\u26A1 PERF"),
+                React.createElement("button", { onClick: onClose, className: "sbtn", style: { borderColor: "rgba(248,113,113,0.5)", color: "#fca5a5" } }, "\u2715 CLOSE")),
         React.createElement("div", { ref: mountRef, style: { flex: 1, minHeight: 0, cursor: ui.mode === "aerial" ? "grab" : "default" } }),
         React.createElement("div", { style: { padding: "6px 14px", fontSize: 10.5, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.4)", borderTop: "1px solid rgba(255,255,255,0.06)" } },
             ui.mode === "aerial" ? "Drag to orbit · scroll to zoom" : ui.mode === "player" ? "First-person — defenders track the ball; others look where they run" : "Ground view · scroll to zoom in and out",
@@ -17311,34 +17941,108 @@ function friendlyError(e) {
 // the whole app saves into THIS team's private rows with zero app changes.
 function makeTeamStorage(teamId, userId, readOnly) {
   const tk = (key, shared) => (shared ? "s:" : "p:" + userId + ":") + key;
+  // ── Offline layer: reads mirror to this device and fall back to the mirror
+  // when the network is gone; writes land locally first and queue in an outbox
+  // that flushes itself when you're back online (last write per key wins).
+  const CK = "gp_offc::" + teamId + "::";
+  const OB = "gp_outbox_v1::" + teamId;
+  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+  const cachePut = (k, value) => { lsSet(CK + k, value == null ? "\u0000null" : value); };
+  const cacheGet = (k) => { const r = lsGet(CK + k); return r == null ? undefined : (r === "\u0000null" ? null : r); };
+  const obRead = () => { try { return JSON.parse(lsGet(OB) || "[]"); } catch (e) { return []; } };
+  const obWrite = (q) => { lsSet(OB, JSON.stringify(q)); window.__gpPendingSync = q.length; };
+  const netErr = (e) => !navigator.onLine || /fetch|network|load failed|timeout|connection/i.test(String((e && e.message) || e));
+  window.__gpPendingSync = obRead().length;
+  const raw = {
+    get: async (k) => { const { data, error } = await db.from("team_data").select("value").eq("team_id", teamId).eq("key", k).maybeSingle(); if (error) throw error; return data ? data.value : null; },
+    set: async (k, value) => { const { error } = await db.from("team_data").upsert({ team_id: teamId, key: k, value, updated_by: userId, updated_at: new Date().toISOString() }, { onConflict: "team_id,key" }); if (error) throw error; },
+    del: async (k) => { const { error } = await db.from("team_data").delete().eq("team_id", teamId).eq("key", k); if (error) throw error; },
+  };
+  let flushing = false;
+  const flush = async () => {
+    if (flushing || readOnly) return;
+    flushing = true;
+    try {
+      let q = obRead();
+      while (q.length) {
+        const it = q[0];
+        try { if (it.op === "del") await raw.del(it.k); else await raw.set(it.k, it.value); }
+        catch (e) {
+          if (netErr(e)) break; // still offline — try again later
+          console.warn("Gridiron offline sync: dropping unsyncable item", it.k, e);
+        }
+        q = q.slice(1); obWrite(q);
+      }
+      if (!obRead().length && navigator.onLine) window.__gpOfflineMode = false;
+    } finally { flushing = false; }
+  };
+  window.__gpFlushOutbox = flush;
+  try { window.addEventListener("online", () => { flush(); }); } catch (e) {}
+  if (obRead().length) setTimeout(flush, 2500);
   return {
     async get(key, shared) {
       const k = tk(key, shared);
-      const { data, error } = await db.from("team_data").select("value").eq("team_id", teamId).eq("key", k).maybeSingle();
-      if (error) throw error;
-      return data ? { key, value: data.value, shared: !!shared } : null;
+      try {
+        const value = await raw.get(k);
+        cachePut(k, value);
+        if (navigator.onLine) window.__gpOfflineMode = false;
+        return value == null ? null : { key, value, shared: !!shared };
+      } catch (e) {
+        if (!netErr(e)) throw e;
+        window.__gpOfflineMode = true;
+        const hit = cacheGet(k);
+        if (hit === undefined) throw e;
+        return hit == null ? null : { key, value: hit, shared: !!shared };
+      }
     },
     async set(key, value, shared) {
       if (readOnly) return { key, value, shared: !!shared }; // view-only: never writes
       const k = tk(key, shared);
-      const { error } = await db.from("team_data").upsert(
-        { team_id: teamId, key: k, value, updated_by: userId, updated_at: new Date().toISOString() },
-        { onConflict: "team_id,key" });
-      if (error) throw error;
+      cachePut(k, value);
+      try { await raw.set(k, value); if (window.__gpPendingSync) flush(); }
+      catch (e) {
+        if (!netErr(e)) throw e;
+        window.__gpOfflineMode = true;
+        const q = obRead().filter(it => it.k !== k);
+        q.push({ op: "set", k, value, ts: Date.now() });
+        obWrite(q);
+      }
       return { key, value, shared: !!shared };
     },
     async delete(key, shared) {
       if (readOnly) return { key, deleted: false, shared: !!shared };
       const k = tk(key, shared);
-      const { error } = await db.from("team_data").delete().eq("team_id", teamId).eq("key", k);
-      if (error) throw error;
+      cachePut(k, null);
+      try { await raw.del(k); }
+      catch (e) {
+        if (!netErr(e)) throw e;
+        window.__gpOfflineMode = true;
+        const q = obRead().filter(it => it.k !== k);
+        q.push({ op: "del", k, ts: Date.now() });
+        obWrite(q);
+      }
       return { key, deleted: true, shared: !!shared };
     },
     async list(prefix, shared) {
       const base = (shared ? "s:" : "p:" + userId + ":");
-      const { data, error } = await db.from("team_data").select("key").eq("team_id", teamId).like("key", base + (prefix || "") + "%");
-      if (error) throw error;
-      return { keys: (data || []).map(r => r.key.slice(base.length)) };
+      try {
+        const { data, error } = await db.from("team_data").select("key").eq("team_id", teamId).like("key", base + (prefix || "") + "%");
+        if (error) throw error;
+        return { keys: (data || []).map(r => r.key.slice(base.length)) };
+      } catch (e) {
+        if (!netErr(e)) throw e;
+        window.__gpOfflineMode = true;
+        const keys = [];
+        try {
+          const want = CK + base + (prefix || "");
+          for (let i = 0; i < localStorage.length; i++) {
+            const lk = localStorage.key(i);
+            if (lk && lk.indexOf(want) === 0 && lsGet(lk) !== "\u0000null") keys.push(lk.slice((CK + base).length));
+          }
+        } catch (e2) {}
+        return { keys };
+      }
     },
   };
 }
@@ -17802,11 +18506,40 @@ function App() {
   const [previewRole, setPreviewRole] = useState(null);
 
   const loadMemberships = useCallback(async (sess) => {
-    if (!sess) { setMemberships(undefined); return; }
-    const { data } = await db.from("memberships")
-      .select("team_id, role, display_name, teams(name)")
-      .eq("user_id", sess.user.id)
-      .order("created_at");
+    // No network? Boot straight into the editor from the identity this device
+    // saved on its last online open. Edits queue up and sync when back online.
+    const tryOfflineOpen = () => {
+      let cached = null;
+      try { cached = JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null"); } catch (e) {}
+      if (!cached || !cached.teamId || !cached.userId) return false;
+      window.storage = makeTeamStorage(cached.teamId, cached.userId, !roleCanEdit(cached.role));
+      window.__gridironRole = cached.role || "player";
+      window.GP_EMAIL = cached.email || "";
+      window.GP_DB = db;
+      window.GP_TEAM_ID = cached.teamId;
+      window.GP_USER_ID = cached.userId;
+      window.GP_NAME = cached.name || cached.email || "";
+      window.__gpOfflineMode = true;
+      setMemberships([]);
+      setShowEditor(true);
+      return true;
+    };
+    if (!sess) {
+      if (!navigator.onLine && tryOfflineOpen()) return;
+      setMemberships(undefined); return;
+    }
+    let data = null;
+    try {
+      const r = await db.from("memberships")
+        .select("team_id, role, display_name, teams(name)")
+        .eq("user_id", sess.user.id)
+        .order("created_at");
+      data = r.data;
+    } catch (e) {
+      if (tryOfflineOpen()) return;
+      setMemberships([]);
+      return;
+    }
     let list = data || [];
     // Auto-redeem a code saved during sign-up (covers the email-confirm gap).
     if (list.length === 0) {
@@ -17864,6 +18597,8 @@ function App() {
       window.GP_TEAM_ID = m.team_id;
       window.GP_USER_ID = session.user.id;
       window.GP_NAME = m.display_name || (session.user && session.user.email) || "";
+      // Remember who/where for offline boots (see the loadMemberships fallback).
+      try { localStorage.setItem("gp_off_shell_v1", JSON.stringify({ teamId: m.team_id, userId: session.user.id, email: (session.user && session.user.email) || "", name: window.GP_NAME || "", role: openRole, ts: Date.now() })); } catch (e) {}
       setLoadingEditor(false);
       setShowEditor(true);
     } catch (e) { setLoadingEditor(false); setEditorErr(friendlyError(e)); }
