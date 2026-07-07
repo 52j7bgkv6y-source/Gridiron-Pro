@@ -440,7 +440,7 @@ const HELP_GUIDE = [
             { t: "⚡ Flash blitzes", d: "Numbered blitz badges can pulse to draw the eye to the pressure. Toggle ⚡ FLASH BLZ on or off in the VIEW bar; the setting is remembered. It shows on the live field including full screen (static play cards and GIFs stay steady)." },
             { t: "🧠 COUNTER", d: "🧠 COUNTER (next to 🎬 3D) answers whichever side you're drawing. Draw a DEFENSE and it reads the front, box, shell and pressure, then hands you a pass answer (formation + routes, with APPLY), a run answer with blocking scheme and direction, and your best saved offensive plays. Draw an OFFENSE and it flips: you get the defensive call — front, coverage and pressure — plus the best-matching calls and vocabulary from your own defensive playbook. On special teams it answers whichever side is on the field." },
             { t: "Zones", d: "Draw a coverage zone with the Zone tool, then select it to resize or recolor it. The Zone tool now works on every tab — coverage on defense, landmarks and read areas on offense or special teams." },
-            { t: "Man coverage", d: "Draw a link from a defender to the receiver he's responsible for with the Man tool." },
+            { t: "Man coverage", d: "Draw a link from a defender to the receiver he's responsible for with the Man tool. It works on every tab now — cover the vs-look receivers on the offense tab, or mark gunner/jammer matchups on special teams. The link always starts on a defender." },
             { t: "Spread a zone (2× / 3× / 4×)", d: "Select a field zone and use SPREAD to copy it evenly across the field at the same level — 2× makes thirds (3 zones), 3× fourths (4), 4× fifths (5). One deep zone becomes a Cover-3/4/5 shell in a tap." },
             { t: "Fronts & schemes", d: "Save and re-apply defensive fronts and offensive schemes so you're not redrawing the same look every time. A Scheme bundles a coverage + blitz + any blocking AND run action under one name — applying it restores only the route types it carries and leaves your other routes alone." },
         ],
@@ -2573,18 +2573,45 @@ function PlaybookApp() {
             alert("Open the playbook from your team dashboard first — offline copies come from the team cloud.");
             return;
         }
+        if (!navigator.onLine) {
+            alert("You're offline right now — connect to the internet first, then tap ⬇ OFFLINE to pull a fresh copy. (Whatever was saved here before still works offline.)");
+            return;
+        }
         try {
-            const grab = async (shared) => {
-                const r = await window.storage.list("", shared);
-                const keys = (r && r.keys) || [];
-                for (const k of keys.slice(0, 400)) {
-                    try { await window.storage.get(k, shared); }
-                    catch (e) { }
+            let rows = 0, fails = 0;
+            const warmKey = async (k, shared) => {
+                let res;
+                try { res = await window.storage.get(k, shared); }
+                catch (e) { fails++; return; }
+                rows++;
+                try {
+                    const v = res && res.value;
+                    if (v && v.length < 256 && v.indexOf(STORAGE_CHUNK_MARKER) !== -1) {
+                        const man = JSON.parse(v);
+                        const n = (man && man[STORAGE_CHUNK_MARKER] && man.n) ? man.n : 0;
+                        for (let i = 0; i < n; i++) {
+                            try { await window.storage.get(k + "::c" + i, shared); rows++; }
+                            catch (e) { fails++; }
+                        }
+                    }
                 }
-                return keys.length;
+                catch (e) { }
             };
-            const n = (await grab(true)) + (await grab(false));
-            alert("✓ Saved to this device (" + n + " items). " + label + " — and the whole playbook — now opens with zero internet. Anything you change offline syncs back on its own when you reconnect.");
+            const sharedKnown = [...MINE_TYPES.map(t => t[1] + ":personal"), ...MINE_TYPES.map(t => t[1]), "gridiron:mine:autosnap", "gridiron:mine:flag", "gridiron:playbookScope:personal"];
+            const personalKnown = [...MINE_TYPES.map(t => t[1]), "gp_flashBlitz"];
+            const listKeys = async (shared) => { try { const r = await window.storage.list("", shared); return (r && r.keys) || []; } catch (e) { return []; } };
+            const sharedAll = [...new Set([...sharedKnown, ...(await listKeys(true))])].filter(k => k.indexOf("::c") === -1).slice(0, 400);
+            const personalAll = [...new Set([...personalKnown, ...(await listKeys(false))])].filter(k => k.indexOf("::c") === -1).slice(0, 400);
+            for (const k of sharedAll) await warmKey(k, true);
+            for (const k of personalAll) await warmKey(k, false);
+            console.log("[gridiron offline] warmed", { shared: sharedAll, personal: personalAll, rows, fails });
+            const forms = customForms || {};
+            const formN = Object.keys(forms.offense || {}).length + Object.keys(forms.defense || {}).length + Object.keys(forms.special || {}).length;
+            if (window.__gpOfflineMode || fails > 3) {
+                alert("The connection dropped partway — saved " + rows + " pieces so far. Get back on the internet and tap ⬇ OFFLINE again to finish the copy.");
+                return;
+            }
+            alert("✓ Offline copy refreshed — " + plays.length + " plays, " + installs.length + " installs, " + scripts.length + " scripts, " + formN + " formations, plus presets & settings (" + rows + " storage rows). " + label + " and the whole playbook now open with zero internet, and offline changes sync back on their own when you reconnect.");
         }
         catch (e) {
             alert("Couldn't refresh the offline copy — check your connection and try again. (Anything already saved here still works offline.)");
@@ -5502,8 +5529,7 @@ function PlaybookApp() {
         if (!ALL_ROUTE_TYPES.includes(routeType))
             setRouteType("pass");
         // Defense-only tools shouldn't stay active on other tabs
-        if (tab !== "defense" && tool === "man") // zones are allowed on every tab
-            setTool("select");
+        // every drawing tool now works on every tab — nothing to kick off here
         setManFromId(null);
         setCoverageDraft(null);
         setSelectedZoneId(null);
@@ -13999,7 +14025,7 @@ function PlaybookApp() {
                     React.createElement("div", { className: "mob-hide mob-toolbar", style: { display: "none", background: "#0c0c17", borderTop: "1px solid rgba(255,255,255,0.06)", padding: "8px 10px", gap: 6, overflowX: "auto" } },
                         [
                             { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
-                            { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8" }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
+                            { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8" }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c" }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
                         ].filter(t => (!t.defOnly || tab === "defense") && (!fieldReadOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { minWidth: 54, flexShrink: 0, color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                             React.createElement("span", { style: { fontSize: 17 } }, t.icon),
                             t.lbl))),
@@ -14022,7 +14048,7 @@ function PlaybookApp() {
                     React.createElement("div", { className: "hd", style: { fontSize: 10, color: "#3a3a4a", letterSpacing: "0.12em", marginBottom: 2 } }, "TOOLS"),
                     [
                         { key: "select", icon: "⊹", lbl: "SELECT" }, { key: "addOffense", icon: "⬤", lbl: "OFF +", col: "#4ade80" }, { key: "addDefense", icon: "◼", lbl: "DEF +", col: "#f87171" },
-                        { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8" }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c", defOnly: true }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
+                        { key: "route", icon: "⟶", lbl: "ROUTE" }, { key: "zone", icon: "◯", lbl: "ZONE", col: "#38bdf8" }, { key: "man", icon: "⇄", lbl: "MAN", col: "#fb923c" }, { key: "text", icon: "T", lbl: "TEXT", col: "#fde68a" }, { key: "erase", icon: "⌫", lbl: "ERASE" }, { key: "pan", icon: "✋", lbl: "PAN" },
                     ].filter(t => (!t.defOnly || tab === "defense") && (!fieldReadOnly || t.key === "select" || t.key === "pan")).map(t => (React.createElement("button", { key: t.key, className: `tbtn ${tool === t.key ? "on" : ""}`, onClick: () => setTool(t.key), style: { color: tool === t.key ? "#f59e0b" : (t.col || undefined) } },
                         React.createElement("span", { style: { fontSize: 18 } }, t.icon),
                         t.lbl))),
