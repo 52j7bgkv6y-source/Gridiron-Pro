@@ -410,6 +410,7 @@ const HELP_GUIDE = [
         topics: [
             { t: "Drawing a route", d: "Pick the Route tool, optionally tap the player first, then click points on the field to lay the path. The route belongs to whoever it starts on." },
             { t: "⌫ Undo last dot", d: "While you're drawing a route, tap ⌫ DOT in the route banner (or press Backspace) to remove just the last point you placed and keep drawing — no need to cancel and start over. ESC cancels the whole route." },
+            { t: "Reshape a drawn route", d: "Tap a route to select it (it lights amber) and grab dots appear on every bend and the endpoint. Drag any of them to swing the route angle or move where it ends. The starting dot stays hollow and locked on the player, so the route always stays attached to whoever runs it. Undo (Ctrl/Cmd+Z) steps back one drag at a time." },
             { t: "Routes dropdown on every tab", d: "The Routes… dropdown (single routes ↱ and combinations ≣) now lives on offense, defense, and special teams. Singles drop onto any player you tap. Combinations capture and reload the routes for the side that tab owns — offense on offense, defense on defense, and both sides at once on special teams." },
             { t: "Route types & combinations", d: "While the Route tool is active a strip of route types appears. Single routes attach to one player; combinations load onto the whole formation at once." },
             { t: "Option routes", d: "Branch a route off a point on an existing route. In Play in Action the receiver runs the primary first, then the play replays him running the option branch." },
@@ -6791,6 +6792,41 @@ function PlaybookApp() {
         window.addEventListener("touchmove", onMove, { passive: false });
         window.addEventListener("touchend", onUp);
     }, [routes, getSVGPt]);
+
+    // ── Drag a single point of an already-drawn route (reshape after drawing) ──
+    // Point 0 stays pinned to the player; only bends and the endpoint move.
+    const startRoutePointDrag = useCallback((e, rid, idx) => {
+        if (e.stopPropagation) e.stopPropagation();
+        if (e.preventDefault) e.preventDefault();
+        if (idx === 0) return;
+        const route = routes.find(r => r.id === rid);
+        if (!route || !route.points || !route.points[idx]) return;
+        pushUndo(players, routes);
+        const startPt = getSVGPt(e);
+        const orig = { x: route.points[idx].x, y: route.points[idx].y };
+        const onMove = (ev) => {
+            if (ev.cancelable) ev.preventDefault();
+            const pt = getSVGPt(ev);
+            const nx = Math.max(0, Math.min(FW, orig.x + (pt.x - startPt.x)));
+            const ny = Math.max(0, Math.min(FH, orig.y + (pt.y - startPt.y)));
+            setRoutes(rs => rs.map(r => {
+                if (r.id !== rid) return r;
+                const pts = r.points.slice();
+                pts[idx] = { ...pts[idx], x: nx, y: ny };
+                return { ...r, points: pts };
+            }));
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("touchmove", onMove);
+            window.removeEventListener("touchend", onUp);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        window.addEventListener("touchmove", onMove, { passive: false });
+        window.addEventListener("touchend", onUp);
+    }, [routes, players, getSVGPt, pushUndo]);
     // ───────── Coverage AUTO-ASSIGN ─────────
     // Attach every zone to the nearest defender who is NOT blitzing, using the
     // formation's real alignment. Blitzers (rushers) are removed from the pool,
@@ -13082,6 +13118,9 @@ function PlaybookApp() {
                                             const skipArrow = motionsWithFollowUp.has(route.id);
                                             return (React.createElement("g", { key: route.id },
                                                 React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff", strokeWidth: (((_b = ROUTE_CFG[route.rtype]) === null || _b === void 0 ? void 0 : _b.width) || 2.5) * 1.0 * (selectedId === route.id ? 1.4 : 1), strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: ((_c = ROUTE_CFG[route.rtype]) === null || _c === void 0 ? void 0 : _c.dash) || "none", markerEnd: skipArrow ? "none" : `url(#arr-${route.rtype})`, style: { cursor: "pointer", filter: selectedId === route.id ? "drop-shadow(0 0 3px rgba(251,191,36,0.6))" : "none" }, onClick: () => onRouteClick(route.id) }),
+                  selectedId === route.id && tool !== "erase" && (route.points || []).map((pt, pi) => (pi === 0 ? (React.createElement("circle", { key: route.id + "-anchor", cx: pt.x, cy: pt.y, r: 4.5, fill: "none", stroke: (ROUTE_CFG[route.rtype] ? ROUTE_CFG[route.rtype].color : null) || "#fbbf24", strokeWidth: 1.6, style: { pointerEvents: "none" } })) : (React.createElement("g", { key: route.id + "-h" + pi },
+                    React.createElement("circle", { cx: pt.x, cy: pt.y, r: 12, fill: "transparent", onMouseDown: (e) => startRoutePointDrag(e, route.id, pi), onTouchStart: (e) => startRoutePointDrag(e, route.id, pi), style: { cursor: "move", touchAction: "none" } }),
+                    React.createElement("circle", { cx: pt.x, cy: pt.y, r: 5, fill: "#fbbf24", stroke: "#0a0a14", strokeWidth: 1.5, style: { pointerEvents: "none" } }))))),
                                                 route.optionOf && route.points && route.points[0] && (React.createElement("circle", { cx: route.points[0].x, cy: route.points[0].y, r: 3.8, fill: ((_d = ROUTE_CFG.option) === null || _d === void 0 ? void 0 : _d.color) || "#14b8a6", stroke: "#fff", strokeWidth: 1.2, style: { pointerEvents: "none" } })),
                                                 route.order != null && route.points && route.points[0] && (() => {
                                                     var _a;
@@ -18156,6 +18195,7 @@ function AuthScreen({ backendHost, onChangeBackend }) {
   const [mode, setMode] = useState("login"); // 'login' | 'signup'
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
+  const [showPass, setShowPass] = useState(false);
   const [code, setCode] = useState("");
   const [first, setFirst] = useState("");
   const [last, setLast] = useState("");
@@ -18203,7 +18243,15 @@ function AuthScreen({ backendHost, onChangeBackend }) {
       <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="coach@school.edu" autoComplete="email" />
 
       <label>Password</label>
-      <input type="password" value={pass} onChange={e=>setPass(e.target.value)} placeholder="••••••••" autoComplete={mode==="signup"?"new-password":"current-password"} onKeyDown={e=>e.key==="Enter"&&mode==="login"&&submit()} />
+      <div style={{position:"relative"}}>
+        <input type={showPass?"text":"password"} value={pass} onChange={e=>setPass(e.target.value)} placeholder="••••••••" autoComplete={mode==="signup"?"new-password":"current-password"} onKeyDown={e=>e.key==="Enter"&&mode==="login"&&submit()} style={{paddingRight:44,width:"100%"}} />
+        <button type="button" onClick={()=>setShowPass(v=>!v)} aria-label={showPass?"Hide password":"Show password"} title={showPass?"Hide password":"Show password"}
+          style={{position:"absolute",right:1,top:1,bottom:1,width:40,display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",border:"none",cursor:"pointer",color:"var(--muted)",fontSize:16,padding:0}}>
+          {showPass
+            ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-7-10-7a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>}
+        </button>
+      </div>
 
       {mode === "signup" && <>
         <div style={{display:"flex",gap:8}}>
@@ -18561,40 +18609,40 @@ function App() {
   const [previewRole, setPreviewRole] = useState(null);
 
   const loadMemberships = useCallback(async (sess) => {
-    // No network? Boot straight into the editor from the identity this device
-    // saved on its last online open. Edits queue up and sync when back online.
-    const tryOfflineOpen = () => {
-      let cached = null;
-      try { cached = JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null"); } catch (e) {}
-      if (!cached || !cached.teamId || !cached.userId) return false;
-      window.storage = makeTeamStorage(cached.teamId, cached.userId, !roleCanEdit(cached.role));
-      window.__gridironRole = cached.role || "player";
-      window.GP_EMAIL = cached.email || "";
-      window.GP_DB = db;
-      window.GP_TEAM_ID = cached.teamId;
-      window.GP_USER_ID = cached.userId;
-      window.GP_NAME = cached.name || cached.email || "";
+    // Offline / failed-fetch boot: fall back to the identity this device saved
+    // on its last online open. supabase-js reports failures via r.error — it
+    // does NOT throw — so the error must be checked explicitly.
+    const readOffCache = () => { try { return JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null"); } catch (e) { return null; } };
+    const offlineMemberships = () => {
+      const cached = readOffCache();
+      if (!cached || !cached.teamId || !cached.userId) return null;
       window.__gpOfflineMode = true;
-      setMemberships([]);
-      setShowEditor(true);
-      return true;
+      // A synthesized membership renders the normal team card; the card sees
+      // the __offlineAuto flag and opens the editor immediately.
+      return [{ team_id: cached.teamId, role: cached.role || "player", display_name: cached.name || "", teams: { name: cached.teamName || "Your Team" }, __offlineAuto: true }];
     };
     if (!sess) {
-      if (!navigator.onLine && tryOfflineOpen()) return;
+      const off = offlineMemberships();
+      if (off && !navigator.onLine) { setMemberships(off); return; }
       setMemberships(undefined); return;
     }
-    let data = null;
-    try {
-      const r = await db.from("memberships")
-        .select("team_id, role, display_name, teams(name)")
-        .eq("user_id", sess.user.id)
-        .order("created_at");
-      data = r.data;
-    } catch (e) {
-      if (tryOfflineOpen()) return;
+    const runQuery = () => db.from("memberships")
+      .select("team_id, role, display_name, teams(name)")
+      .eq("user_id", sess.user.id)
+      .order("created_at");
+    let r = await runQuery();
+    if (r.error && navigator.onLine) {
+      // Transient failure while online (e.g. a token mid-refresh): retry once.
+      await new Promise(res => setTimeout(res, 1200));
+      r = await runQuery();
+    }
+    if (r.error) {
+      const off = offlineMemberships();
+      if (off) { setMemberships(off); return; }
       setMemberships([]);
       return;
     }
+    const data = r.data;
     let list = data || [];
     // Auto-redeem a code saved during sign-up (covers the email-confirm gap).
     if (list.length === 0) {
@@ -18628,6 +18676,11 @@ function App() {
   const m = (memberships && memberships[active]) || null;
 
   const openEditor = useCallback(async () => {
+      // Identity that survives a null session (offline boot): prefer the live
+      // session, fall back to what this device cached on its last online open.
+      const offc = (() => { try { return JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null") || {}; } catch (e) { return {}; } })();
+      const uid = ((session || {}).user || {}).id || offc.userId || "offline";
+      const uemail = ((session || {}).user || {}).email || offc.email || "";
     if (!m) return;
     setEditorErr(null); setLoadingEditor(true);
     const load = (src) => new Promise((res, rej) => {
@@ -18642,22 +18695,24 @@ function App() {
       // role drives both the editor's caps and whether storage is writable.
       const canPrev = m.role === "admin" || m.role === "coadmin";
       const openRole = (canPrev && previewRole && ROLE_LABEL[previewRole]) ? previewRole : m.role;
-      window.storage = makeTeamStorage(m.team_id, session.user.id, !roleCanEdit(openRole));
+      window.storage = makeTeamStorage(m.team_id, uid, !roleCanEdit(openRole));
       window.__gridironRole = openRole;
-      window.GP_EMAIL = (session.user && session.user.email) || "";
+      window.GP_EMAIL = uemail || "";
       // Direct backend handle + identity so the editor can read/write the
       // per-player install-progress and play-questions tables (which the
       // key-value team storage can't model, and which players must write to).
       window.GP_DB = db;
       window.GP_TEAM_ID = m.team_id;
-      window.GP_USER_ID = session.user.id;
-      window.GP_NAME = m.display_name || (session.user && session.user.email) || "";
+      window.GP_USER_ID = uid;
+      window.GP_NAME = m.display_name || uemail || "";
       // Remember who/where for offline boots (see the loadMemberships fallback).
-      try { localStorage.setItem("gp_off_shell_v1", JSON.stringify({ teamId: m.team_id, userId: session.user.id, email: (session.user && session.user.email) || "", name: window.GP_NAME || "", role: openRole, ts: Date.now() })); } catch (e) {}
+      try { localStorage.setItem("gp_off_shell_v1", JSON.stringify({ teamId: m.team_id, userId: uid, email: uemail || "", teamName: (m.teams && m.teams.name) || "", name: window.GP_NAME || "", role: openRole, ts: Date.now() })); } catch (e) {}
       setLoadingEditor(false);
       setShowEditor(true);
     } catch (e) { setLoadingEditor(false); setEditorErr(friendlyError(e)); }
   }, [m, session, previewRole]);
+  // Offline boot: a synthesized membership opens its editor immediately.
+  useEffect(() => { if (m && m.__offlineAuto && window.GridironApp) openEditor(); }, []);
 
   if (showEditor && window.GridironApp) {
     // Expose a return-to-dashboard hook so the in-editor presentation (install /
