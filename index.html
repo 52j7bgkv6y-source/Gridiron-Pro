@@ -410,6 +410,7 @@ const HELP_GUIDE = [
         topics: [
             { t: "Drawing a route", d: "Pick the Route tool, optionally tap the player first, then click points on the field to lay the path. The route belongs to whoever it starts on." },
             { t: "⌫ Undo last dot", d: "While you're drawing a route, tap ⌫ DOT in the route banner (or press Backspace) to remove just the last point you placed and keep drawing — no need to cancel and start over. ESC cancels the whole route." },
+            { t: "Routes dropdown on every tab", d: "The Routes… dropdown (single routes ↱ and combinations ≣) now lives on offense, defense, and special teams. Singles drop onto any player you tap. Combinations capture and reload the routes for the side that tab owns — offense on offense, defense on defense, and both sides at once on special teams." },
             { t: "Route types & combinations", d: "While the Route tool is active a strip of route types appears. Single routes attach to one player; combinations load onto the whole formation at once." },
             { t: "Option routes", d: "Branch a route off a point on an existing route. In Play in Action the receiver runs the primary first, then the play replays him running the option branch." },
             { t: "Pre-snap motion", d: "A motion route runs before the snap. Chain a follow-up route and the player motions, then flows straight into his real route as one continuous path." },
@@ -693,6 +694,25 @@ const gpRecommendCounter = (a, names, plays) => {
   });
   picks.sort((x, y) => y.score - x.score);
   return { mode: "off", read, pass, run, saved: picks.slice(0, 3) };
+};
+
+// SVG text chips for thumbnails and the run view (live editor uses HTML chips).
+const gpTextChipSVG = (t, keyPrefix) => {
+  const fs = t.size || 16;
+  const lines = String(t.text || "").split("\n");
+  if (!lines.join("").trim() || typeof t.x !== "number") return null;
+  const lh = fs * 1.25;
+  const w = Math.max.apply(null, lines.map(l => l.length)) * fs * 0.62 + 16;
+  const h = lines.length * lh + 10;
+  const shape = t.shape || "none";
+  const col = t.color || "#fff";
+  const kids = [];
+  if (shape !== "none") {
+    if (shape === "ellipse") kids.push(React.createElement("ellipse", { key: "bg", cx: t.x, cy: t.y, rx: w / 2 + 8, ry: h / 2 + 6, fill: "rgba(10,10,20,0.84)", stroke: "rgba(255,255,255,0.55)", strokeWidth: "1.5" }));
+    else kids.push(React.createElement("rect", { key: "bg", x: t.x - w / 2, y: t.y - h / 2, width: w, height: h, rx: shape === "pill" ? h / 2 : shape === "rect" ? 0 : 9, fill: "rgba(10,10,20,0.84)", stroke: "rgba(255,255,255,0.55)", strokeWidth: "1.5" }));
+  }
+  kids.push(React.createElement("text", { key: "tx", x: t.x, y: t.y - ((lines.length - 1) * lh) / 2, textAnchor: "middle", dominantBaseline: "central", fontFamily: "'JetBrains Mono', monospace", fontWeight: "700", fontSize: fs, fill: col, paintOrder: "stroke", stroke: shape === "none" ? "rgba(10,10,20,0.85)" : "none", strokeWidth: shape === "none" ? 3 : 0, style: { pointerEvents: "none", userSelect: "none" } }, lines.map((ln, i) => React.createElement("tspan", { key: i, x: t.x, dy: i === 0 ? 0 : lh }, ln))));
+  return React.createElement("g", { key: (keyPrefix || "txt") + "-" + t.id }, kids);
 };
 
 // Strip any leading formation name(s) off a blitz name so a mass-duplicate
@@ -1366,6 +1386,7 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
         maxY = y; };
     players.forEach(p => acc(p.x, p.y));
     routes.forEach(r => (r.points || []).forEach(pt => acc(pt.x, pt.y)));
+    (play.texts || []).forEach(t => { if (typeof t.x === "number" && String(t.text || "").trim()) acc(t.x, t.y); });
     // Use computed positions for attached zones so the frame actually
     // includes them when they sit at an offset from their attached player.
     covs.forEach(c => {
@@ -1560,7 +1581,7 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
                             React.createElement("circle", { cx: p.x, cy: p.y, r: R }))),
                     React.createElement("rect", { x: p.x - R * 0.24, y: p.y - R, width: R * 0.48, height: R * 2, fill: "rgba(0,0,0,0.55)", clipPath: `url(#${clipIdT})` }))),
                 label && (React.createElement("text", { x: p.x, y: p.y + fs * 0.36, textAnchor: "middle", fill: isOff ? "#000" : rc, fontSize: fs, fontWeight: "bold", stroke: isOff && shadeKind ? "rgba(255,255,255,0.95)" : "none", strokeWidth: isOff && shadeKind ? fs * 0.22 : 0, strokeLinejoin: "round", paintOrder: "stroke", fontFamily: "'JetBrains Mono', monospace", style: { pointerEvents: "none", userSelect: "none" } }, label))));
-        })));
+        }), (play.texts || []).map(t => gpTextChipSVG(t, "th"))));
 }
 class ErrorBoundary extends React.Component {
     constructor(props) { super(props); this.state = { err: null }; }
@@ -8396,7 +8417,9 @@ function PlaybookApp() {
         const trimmed = (name || "").trim();
         if (!trimmed)
             return;
-        const cx = offenseCenterX(players);
+        const elig = (pl) => tab === "special" ? true : pl.ptype === (tab === "defense" ? "defense" : "offense");
+        const els = players.filter(elig);
+        const cx = tab === "offense" ? offenseCenterX(players) : (els.length ? els.reduce((a, p) => a + p.x, 0) / els.length : 240);
         const out = [];
         routes.forEach(r => {
             if (!r.points || r.points.length < 2)
@@ -8416,11 +8439,11 @@ function PlaybookApp() {
                 if (!owner || bd > 40)
                     return;
             }
-            if ((owner.ptype || "offense") !== "offense")
+            if (!elig(owner))
                 return;
             const ox = owner.x, oy = owner.y;
             const e = {
-                label: owner.label || "", role: owner.role || "", side: "offense",
+                label: owner.label || "", role: owner.role || "", side: owner.ptype || "offense",
                 relX: ox - cx, relY: oy - losY,
                 rtype: r.rtype,
                 offsets: r.points.map(pt => ({ dx: pt.x - ox, dy: pt.y - oy })),
@@ -8439,7 +8462,7 @@ function PlaybookApp() {
             return;
         setSortPrefs(prev => ({ ...prev, routePresets: { ...(prev.routePresets || {}), [trimmed]: { kind: "combo", routes: out } } }));
         setSelectedRouteCombo(trimmed);
-    }, [routes, players, losY, offenseCenterX, OFF_DRAWN, setSortPrefs]);
+    }, [routes, players, losY, tab, offenseCenterX, OFF_DRAWN, setSortPrefs]);
     const saveSelectedAsSingleRoute = useCallback((name, pid) => {
         const trimmed = (name || "").trim();
         if (!trimmed)
@@ -8466,18 +8489,22 @@ function PlaybookApp() {
         if (!preset || preset.kind !== "combo")
             return;
         pushUndo(players, routes);
-        const cx = offenseCenterX(players);
+        // Side follows the tab: offense combos on offense, defense on defense,
+        // anyone on special teams.
+        const elig = (pl) => tab === "special" ? true : pl.ptype === (tab === "defense" ? "defense" : "offense");
+        const els = players.filter(elig);
+        const cx = tab === "offense" ? offenseCenterX(players) : (els.length ? els.reduce((a, p) => a + p.x, 0) / els.length : 240);
         const used = new Set();
         const built = [];
         (preset.routes || []).forEach(pr => {
-            let owner = pr.label ? players.find(p => p.ptype === "offense" && !used.has(p.id) && p.label === pr.label) : null;
+            let owner = pr.label ? players.find(p => elig(p) && !used.has(p.id) && p.label === pr.label) : null;
             if (!owner && pr.role)
-                owner = players.find(p => p.ptype === "offense" && !used.has(p.id) && p.role === pr.role);
+                owner = players.find(p => elig(p) && !used.has(p.id) && p.role === pr.role);
             if (!owner) {
                 // nearest unused offensive player by saved relative alignment
                 let bd = Infinity;
                 for (const pl of players) {
-                    if (pl.ptype !== "offense" || used.has(pl.id))
+                    if (!elig(pl) || used.has(pl.id))
                         continue;
                     const d = Math.abs((pl.x - cx) - (pr.relX || 0));
                     if (d < bd) {
@@ -8505,12 +8532,12 @@ function PlaybookApp() {
         });
         // Replace existing offensive drawn routes; keep motion, blitz, and defense.
         setRoutes(prev => {
-            const offIds = new Set(players.filter(p => p.ptype === "offense").map(p => p.id));
+            const offIds = new Set(players.filter(elig).map(p => p.id));
             const keep = prev.filter(r => !(OFF_DRAWN(r.rtype) && r.ownerId && offIds.has(r.ownerId)));
             return [...keep, ...built];
         });
         setSelectedRouteCombo(name);
-    }, [sortPrefs, players, routes, offenseCenterX, OFF_DRAWN, pushUndo]);
+    }, [sortPrefs, players, routes, tab, offenseCenterX, OFF_DRAWN, pushUndo]);
     const beginAssignRoute = useCallback((name) => {
         const preset = (sortPrefs.routePresets || {})[name];
         if (!preset || preset.kind !== "single" || !preset.route)
@@ -12703,12 +12730,13 @@ function PlaybookApp() {
                             React.createElement("button", { className: "sbtn dim", onClick: () => setConfirmDeleteForm(formation), title: ((_c = FORMATIONS[tab]) === null || _c === void 0 ? void 0 : _c[formation]) ? "Delete your override — restores the built-in" : "Delete this custom formation", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         tab !== "special" && (React.createElement(SearchSelect, { value: "", width: 148, placeholder: `+ vs ${tab === "offense" ? "DEF" : "OFF"} look…`, title: `Add ${tab === "offense" ? "defense" : "offense"} formation onto the field`, options: (() => { const ot = tab === "offense" ? "defense" : "offense"; const cns = Object.keys(customForms[ot] || {}); const cs = new Set(cns); return [...Object.keys(FORMATIONS[ot] || {}).filter(f => !cs.has(f)).map(f => ({ value: f, label: f })), ...cns.map(f => ({ value: f, label: "★ " + f }))]; })(), onPick: f => { if (f)
                                 addOpposingFormation(f); } })),
-                        tab === "offense" && (() => {
+                        (() => {
                             const names = orderedNames(Object.keys(routePresets), catSortPref("routes"));
                             const sel = selectedRouteCombo && routePresets[selectedRouteCombo] ? routePresets[selectedRouteCombo] : null;
                             const selIsCombo = !!(sel && sel.kind === "combo");
                             const selPlayerRoute = selectedId ? routes.find(r => r.ownerId === selectedId && r.points && r.points.length >= 2 && r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz") : null;
-                            const offIds = new Set(players.filter(p => p.ptype === "offense").map(p => p.id));
+                            const elig = (pl) => tab === "special" ? true : pl.ptype === (tab === "defense" ? "defense" : "offense");
+                            const offIds = new Set(players.filter(elig).map(p => p.id));
                             const anyOffRoute = routes.some(r => offIds.has(r.ownerId) && r.points && r.points.length >= 2 && r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz");
                             const comboCount = Object.keys(routePresets).filter(k => routePresets[k] && routePresets[k].kind === "combo").length;
                             const singleCount = Object.keys(routePresets).length - comboCount;
@@ -12724,7 +12752,7 @@ function PlaybookApp() {
                                 !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                         const base = selIsCombo ? selectedRouteCombo : `Routes ${comboCount + 1}`;
                                         setPresetNameEditor({ target: "routeCombo", mode: "save", value: uniqueVariantName(base, Object.keys(routePresets)) });
-                                    }, title: "Save every route currently on offense as a combination", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
+                                    }, title: "Save every route currently on this tab's side of the ball as a combination (both sides on special teams)", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
                                 anyOffRoute && (React.createElement("button", { className: "sbtn dim", onClick: () => {
                                         if (selPlayerRoute)
                                             setPresetNameEditor({ target: "routeSingle", mode: "save", value: uniqueVariantName(`Route ${singleCount + 1}`, Object.keys(routePresets)), capturePid: selectedId });
@@ -15961,7 +15989,7 @@ function PlaybookApp() {
                 // Current on-field routes for the routes-dropdown "replace layout" path:
                 // a combo replaces with every offensive route; a single replaces with
                 // the selected player's drawn route.
-                const offIdsEd = new Set(players.filter(p => p.ptype === "offense").map(p => p.id));
+                const offIdsEd = new Set(players.filter(pl => tab === "special" ? true : pl.ptype === (tab === "defense" ? "defense" : "offense")).map(p => p.id));
                 const currentOffRouteCount = routes.filter(r => offIdsEd.has(r.ownerId) && r.points && r.points.length >= 2 && r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz").length;
                 const selSingleRoute = selectedId ? routes.find(r => r.ownerId === selectedId && r.points && r.points.length >= 2 && r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz") : null;
                 const replaceWouldBeEmpty = replaceLayout && ((ed.target === "coverage" && currentZoneCount === 0) ||
@@ -16259,6 +16287,7 @@ function PlaybookApp() {
                 const vPlayers = vAnimating ? players : (step.play.players || []);
                 const vRoutes = vAnimating ? routes : (step.play.routes || []);
                 const vCoverages = vAnimating ? coverages : (step.play.coverages || []);
+                const vTexts = vAnimating ? texts : (step.play.texts || []);
                 const vLosY = vAnimating ? losY : (typeof step.play.losY === "number" ? step.play.losY : LOS_Y);
                 return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "#0a0a14", zIndex: 2147483646, display: "flex", flexDirection: "column" } },
                     typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", style: { position: "fixed", left: 10, top: 10, zIndex: 2147483647, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2190 Dashboard")),
@@ -16444,7 +16473,7 @@ function PlaybookApp() {
                                     React.createElement("ellipse", { cx: bp.x, cy: bp.y, rx: 7.5, ry: 5.5, fill: "#8B4513", stroke: "#fde68a", strokeWidth: "2" }),
                                     React.createElement("line", { x1: bp.x - 6, y1: bp.y, x2: bp.x + 6, y2: bp.y, stroke: "#f5deb3", strokeWidth: "0.8" }),
                                     React.createElement("line", { x1: bp.x, y1: bp.y - 4, x2: bp.x, y2: bp.y + 4, stroke: "#f5deb3", strokeWidth: "0.8" })));
-                            })())),
+                            })(), vTexts.map(t => gpTextChipSVG(t, "run")))),
                     React.createElement("div", { style: { padding: "12px 22px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
                         React.createElement("button", { onClick: prev, disabled: idx === 0, title: "Previous play  (\u2190  or  P)", style: { padding: "9px 22px", borderRadius: 7, cursor: idx === 0 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${idx === 0 ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.25)"}`,
