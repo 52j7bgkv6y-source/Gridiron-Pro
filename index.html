@@ -2608,11 +2608,23 @@ function PlaybookApp() {
             let gotTeam = false, gotPersonal = false;
             for (const k of sharedAll) { const ok = await warmKey(k, true); if (k === MINE_ALL_SHARED_KEY && ok) gotTeam = true; if (k === MINE_ALL_PERSONAL_KEY && ok) gotPersonal = true; }
             for (const k of personalAll) await warmKey(k, false);
-            console.log("[gridiron offline] warmed", { shared: sharedAll, personal: personalAll, rows, fails, gotTeam, gotPersonal });
+            let storedTeam = gotTeam, storedPersonal = gotPersonal;
+            if (window.__gpOffHas) {
+                try {
+                    storedTeam = gotTeam && await window.__gpOffHas("s:" + MINE_ALL_SHARED_KEY);
+                    storedPersonal = gotPersonal && await window.__gpOffHas("s:" + MINE_ALL_PERSONAL_KEY);
+                }
+                catch (e) { }
+            }
+            console.log("[gridiron offline] warmed", { shared: sharedAll, personal: personalAll, rows, fails, gotTeam, gotPersonal, storedTeam, storedPersonal });
             const forms = customForms || {};
             const formN = Object.keys(forms.offense || {}).length + Object.keys(forms.defense || {}).length + Object.keys(forms.special || {}).length;
             if (window.__gpOfflineMode || (!gotTeam && !gotPersonal)) {
                 alert("The connection dropped before your playbook finished downloading — get back on the internet and tap ⬇ OFFLINE again. (Nothing was lost.)");
+                return;
+            }
+            if (!storedTeam && !storedPersonal) {
+                alert("Downloaded your playbook but couldn't store it on this device — Safari may be low on storage. Free up some space (or make sure you're not in a Private tab) and tap ⬇ OFFLINE again.");
                 return;
             }
             alert("✓ Offline copy refreshed — " + plays.length + " plays, " + installs.length + " installs, " + scripts.length + " scripts, " + formN + " formations, plus presets & settings (" + rows + " storage rows). " + label + " and the whole team playbook now open with zero internet, and offline changes sync back on their own when you reconnect.");
@@ -18036,6 +18048,34 @@ function friendlyError(e) {
 // team's shared library; shared=false is namespaced per user. In Pass 2 we set
 // window.storage = makeTeamStorage(team, user) before mounting the editor, so
 // the whole app saves into THIS team's private rows with zero app changes.
+// Tiny promise wrapper over IndexedDB for the offline mirror. localStorage
+// tops out around 5 MB on iOS — one big playbook blows straight through it,
+// and setItem fails SILENTLY in our guarded helpers. IndexedDB holds hundreds
+// of MB, so the whole team playbook (chunks and all) fits comfortably.
+const gpIDB = (() => {
+  let p = null;
+  const open = () => p || (p = new Promise((res, rej) => {
+    try {
+      const r = indexedDB.open("gp_offline", 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore("kv"); };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    } catch (e) { rej(e); }
+  }));
+  const op = (mode, fn) => open().then(db => new Promise((res, rej) => {
+    const tx = db.transaction("kv", mode);
+    const rq = fn(tx.objectStore("kv"));
+    tx.oncomplete = () => res(rq && ("result" in rq) ? rq.result : undefined);
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error);
+  }));
+  return {
+    get: (k) => op("readonly", st => st.get(k)),
+    set: (k, v) => op("readwrite", st => st.put(v, k)),
+    keys: () => op("readonly", st => st.getAllKeys()),
+  };
+})();
+
 function makeTeamStorage(teamId, userId, readOnly) {
   const tk = (key, shared) => (shared ? "s:" : "p:" + userId + ":") + key;
   // ── Offline layer: reads mirror to this device and fall back to the mirror
@@ -18045,8 +18085,31 @@ function makeTeamStorage(teamId, userId, readOnly) {
   const OB = "gp_outbox_v1::" + teamId;
   const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
-  const cachePut = (k, value) => { lsSet(CK + k, value == null ? "\u0000null" : value); };
-  const cacheGet = (k) => { const r = lsGet(CK + k); return r == null ? undefined : (r === "\u0000null" ? null : r); };
+  const SENT = "\u0000null";
+  // Mirror writes go to IndexedDB (roomy); reads check IndexedDB first and fall
+  // back to any old localStorage entries from earlier builds, promoting them.
+  const cachePut = async (k, value) => {
+    const v = value == null ? SENT : value;
+    try { await gpIDB.set(CK + k, v); return true; }
+    catch (e) { try { localStorage.setItem(CK + k, v); return true; } catch (e2) { return false; } }
+  };
+  const cacheGet = async (k) => {
+    try {
+      let r = await gpIDB.get(CK + k);
+      if (r === undefined) {
+        const ls = lsGet(CK + k);
+        if (ls != null) { r = ls; gpIDB.set(CK + k, ls).catch(() => {}); }
+      }
+      if (r === undefined) return undefined;
+      return r === SENT ? null : r;
+    } catch (e) {
+      const ls = lsGet(CK + k);
+      return ls == null ? undefined : (ls === SENT ? null : ls);
+    }
+  };
+  // Lets the editor VERIFY a mirror entry actually persisted (no silent-quota
+  // false positives): resolves true only if the namespaced key is stored here.
+  window.__gpOffHas = async (nk) => { try { return (await cacheGet(nk)) !== undefined; } catch (e) { return false; } };
   const obRead = () => { try { return JSON.parse(lsGet(OB) || "[]"); } catch (e) { return []; } };
   const obWrite = (q) => { lsSet(OB, JSON.stringify(q)); window.__gpPendingSync = q.length; };
   const netErr = (e) => !navigator.onLine || /fetch|network|load failed|timeout|connection/i.test(String((e && e.message) || e));
@@ -18082,13 +18145,13 @@ function makeTeamStorage(teamId, userId, readOnly) {
       const k = tk(key, shared);
       try {
         const value = await raw.get(k);
-        cachePut(k, value);
+        await cachePut(k, value);
         if (navigator.onLine) window.__gpOfflineMode = false;
         return value == null ? null : { key, value, shared: !!shared };
       } catch (e) {
         if (!netErr(e)) throw e;
         window.__gpOfflineMode = true;
-        const hit = cacheGet(k);
+        const hit = await cacheGet(k);
         if (hit === undefined) throw e;
         return hit == null ? null : { key, value: hit, shared: !!shared };
       }
@@ -18096,7 +18159,7 @@ function makeTeamStorage(teamId, userId, readOnly) {
     async set(key, value, shared) {
       if (readOnly) return { key, value, shared: !!shared }; // view-only: never writes
       const k = tk(key, shared);
-      cachePut(k, value);
+      await cachePut(k, value);
       try { await raw.set(k, value); if (window.__gpPendingSync) flush(); }
       catch (e) {
         if (!netErr(e)) throw e;
@@ -18110,7 +18173,7 @@ function makeTeamStorage(teamId, userId, readOnly) {
     async delete(key, shared) {
       if (readOnly) return { key, deleted: false, shared: !!shared };
       const k = tk(key, shared);
-      cachePut(k, null);
+      await cachePut(k, null);
       try { await raw.del(k); }
       catch (e) {
         if (!netErr(e)) throw e;
@@ -18131,13 +18194,19 @@ function makeTeamStorage(teamId, userId, readOnly) {
         if (!netErr(e)) throw e;
         window.__gpOfflineMode = true;
         const keys = [];
+        const want = CK + base + (prefix || "");
         try {
-          const want = CK + base + (prefix || "");
-          for (let i = 0; i < localStorage.length; i++) {
-            const lk = localStorage.key(i);
-            if (lk && lk.indexOf(want) === 0 && lsGet(lk) !== "\u0000null") keys.push(lk.slice((CK + base).length));
+          const all = await gpIDB.keys();
+          for (const lk of (all || [])) {
+            if (typeof lk === "string" && lk.indexOf(want) === 0) keys.push(lk.slice((CK + base).length));
           }
         } catch (e2) {}
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const lk = localStorage.key(i);
+            if (lk && lk.indexOf(want) === 0 && lsGet(lk) !== "\u0000null") { const short = lk.slice((CK + base).length); if (keys.indexOf(short) === -1) keys.push(short); }
+          }
+        } catch (e3) {}
         return { keys };
       }
     },
