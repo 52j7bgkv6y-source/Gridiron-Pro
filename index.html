@@ -2583,8 +2583,9 @@ function PlaybookApp() {
             const warmKey = async (k, shared) => {
                 let res;
                 try { res = await window.storage.get(k, shared); }
-                catch (e) { fails++; return; }
+                catch (e) { fails++; return false; }
                 rows++;
+                const gotValue = !!(res && res.value);
                 try {
                     const v = res && res.value;
                     if (v && v.length < 256 && v.indexOf(STORAGE_CHUNK_MARKER) !== -1) {
@@ -2597,22 +2598,24 @@ function PlaybookApp() {
                     }
                 }
                 catch (e) { }
+                return gotValue;
             };
-            const sharedKnown = [...MINE_TYPES.map(t => t[1] + ":personal"), ...MINE_TYPES.map(t => t[1]), "gridiron:mine:autosnap", "gridiron:mine:flag", "gridiron:playbookScope:personal"];
+            const sharedKnown = [MINE_ALL_PERSONAL_KEY, MINE_ALL_SHARED_KEY, "gridiron:mine:autosnap", "gridiron:mine:flag", "gridiron:playbookScope:personal", ...MINE_TYPES.map(t => t[1] + ":personal"), ...MINE_TYPES.map(t => t[1])];
             const personalKnown = [...MINE_TYPES.map(t => t[1]), "gp_flashBlitz"];
             const listKeys = async (shared) => { try { const r = await window.storage.list("", shared); return (r && r.keys) || []; } catch (e) { return []; } };
             const sharedAll = [...new Set([...sharedKnown, ...(await listKeys(true))])].filter(k => k.indexOf("::c") === -1).slice(0, 400);
             const personalAll = [...new Set([...personalKnown, ...(await listKeys(false))])].filter(k => k.indexOf("::c") === -1).slice(0, 400);
-            for (const k of sharedAll) await warmKey(k, true);
+            let gotTeam = false, gotPersonal = false;
+            for (const k of sharedAll) { const ok = await warmKey(k, true); if (k === MINE_ALL_SHARED_KEY && ok) gotTeam = true; if (k === MINE_ALL_PERSONAL_KEY && ok) gotPersonal = true; }
             for (const k of personalAll) await warmKey(k, false);
-            console.log("[gridiron offline] warmed", { shared: sharedAll, personal: personalAll, rows, fails });
+            console.log("[gridiron offline] warmed", { shared: sharedAll, personal: personalAll, rows, fails, gotTeam, gotPersonal });
             const forms = customForms || {};
             const formN = Object.keys(forms.offense || {}).length + Object.keys(forms.defense || {}).length + Object.keys(forms.special || {}).length;
-            if (window.__gpOfflineMode || fails > 3) {
-                alert("The connection dropped partway — saved " + rows + " pieces so far. Get back on the internet and tap ⬇ OFFLINE again to finish the copy.");
+            if (window.__gpOfflineMode || (!gotTeam && !gotPersonal)) {
+                alert("The connection dropped before your playbook finished downloading — get back on the internet and tap ⬇ OFFLINE again. (Nothing was lost.)");
                 return;
             }
-            alert("✓ Offline copy refreshed — " + plays.length + " plays, " + installs.length + " installs, " + scripts.length + " scripts, " + formN + " formations, plus presets & settings (" + rows + " storage rows). " + label + " and the whole playbook now open with zero internet, and offline changes sync back on their own when you reconnect.");
+            alert("✓ Offline copy refreshed — " + plays.length + " plays, " + installs.length + " installs, " + scripts.length + " scripts, " + formN + " formations, plus presets & settings (" + rows + " storage rows). " + label + " and the whole team playbook now open with zero internet, and offline changes sync back on their own when you reconnect.");
         }
         catch (e) {
             alert("Couldn't refresh the offline copy — check your connection and try again. (Anything already saved here still works offline.)");
