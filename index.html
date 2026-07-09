@@ -494,6 +494,7 @@ const HELP_GUIDE = [
             { t: "Practice scripts", d: "Build a script of periods, each holding the plays for that segment of practice." },
             { t: "Running them", d: "Run an install or script to step through its plays; each one animates from its own saved diagram, not the live field." },
             { t: "🎓 Study quiz", d: "STUDY in the top bar lets you pick what to drill — every play, one install, or a practice script — then turns it into a quick multiple-choice quiz: see a play and pick its name, or see a name and pick the diagram. Tap any play to blow it up to nearly the whole screen so it's easy to read. Wrong answers show the right one, you can re-drill just the plays you missed, and your best score is remembered on your device. Built phone-first for players. Coaches and staff: tap 📊 WHO'S STUDYING inside the STUDY picker for a team leaderboard of rounds and scores — players never see it." },
+            { t: "Study part of an install", d: "In 🎓 STUDY, tap the ⚙ button on any install or practice script to open its play list and check off just the ones you want to drill — then hit STUDY SELECTED. Great for cleaning up the two or three plays you keep missing instead of re-running the whole set." },
         ],
     },
     {
@@ -505,7 +506,7 @@ const HELP_GUIDE = [
             { t: "Auto-fit view", d: "The view slides to keep your whole play framed without ever shrinking the players or routes." },
             { t: "CLEAR vs NEW", d: "CLEAR wipes the field back to this tab's default look. NEW duplicates the current play so you can save it as a separate copy." },
             { t: "📱 Add it to your phone", d: "Gridiron installs like an app: open it in your phone's browser, then use Share → Add to Home Screen (iPhone) or the Install prompt (Android). It opens instantly after that, keeps working on weak sidelines WiFi, and picks up new versions automatically whenever you're online." },
-            { t: "🕵️ Scout plays", d: "Toggle 🕵️ SCOUT next to SAVE to file a play as a scout-team look. Scout plays live in their own collapsible SCOUT section at the bottom of the play list (hidden by default, one tap to show), and they stay out of 🧠 COUNTER suggestions and the All-plays study quiz — installs and scripts can still include them." },
+            { t: "🕵️ Scout plays", d: "Toggle 🕵️ SCOUT next to SAVE to file a play as a scout-team look. Scout plays live in their own collapsible SCOUT section at the bottom of the play list (hidden by default, one tap to show), and they stay out of 🧠 COUNTER suggestions and the All-plays study quiz — installs and scripts can still include them. With 🕵️ SCOUT on, a \"+ scout look\" dropdown appears on every tab so you can stamp the opposing offense or defense (both, on special teams) right onto the card." },
             { t: "📴 Working offline", d: "Tap ⬇ OFFLINE inside any install or practice script to save a fresh copy of the whole playbook to that device. After that the app opens and works with zero internet — browse, run plays, quiz, even edit. Anything you change offline is kept on the device and syncs to the team cloud by itself the moment you reconnect (last save wins). The leaderboard and other live-cloud features still need a connection." },
         ],
     },
@@ -2353,6 +2354,8 @@ function PlaybookApp() {
     const [quiz, setQuiz] = useState(null);
     // Scope picker ("what do you want to drill?") and tap-to-enlarge play viewer.
     const [quizPick, setQuizPick] = useState(false);
+    const [quizExpand, setQuizExpand] = useState(null);
+    const [quizSel, setQuizSel] = useState(() => new Set());
     const [quizZoom, setQuizZoom] = useState(null);
     const [quizBoard, setQuizBoard] = useState(null); // null | {loading, rows, err}
     const [counterRec, setCounterRec] = useState(null); // 🧠 COUNTER result — declared early: the Escape effect below lists it in deps
@@ -3609,6 +3612,10 @@ function PlaybookApp() {
     // overwrite its stored layout with whatever's currently on the field.
     const [showEditForm, setShowEditForm] = useState(false);
     const [editFormOriginalName, setEditFormOriginalName] = useState("");
+    const [saveFormSide, setSaveFormSide] = useState(null);
+    const [editFormSide, setEditFormSide] = useState(null);
+    const [confirmDeleteSide, setConfirmDeleteSide] = useState(null);
+    const [vsSel, setVsSel] = useState({});
     const [editFormName, setEditFormName] = useState("");
     const [editFormReplaceLayout, setEditFormReplaceLayout] = useState(false);
     // Route gesture state — distinguishes "click to add snap point" vs "drag to free-draw"
@@ -5299,9 +5306,9 @@ function PlaybookApp() {
         setSelectedMotion("");
     }, [tab, losY, ballX, customForms]);
     // Add OPPOSING formation onto the field without clearing current players
-    const addOpposingFormation = useCallback((fname) => {
+    const addOpposingFormation = useCallback((fname, sideOverride) => {
         var _a, _b;
-        const oppTab = tab === "offense" ? "defense" : tab === "defense" ? "offense" : null;
+        const oppTab = sideOverride || (tab === "offense" ? "defense" : tab === "defense" ? "offense" : null);
         if (!oppTab)
             return;
         const builtIn = (_a = FORMATIONS[oppTab]) === null || _a === void 0 ? void 0 : _a[fname];
@@ -5328,24 +5335,26 @@ function PlaybookApp() {
         setSelectedId(null);
     }, [tab, losY, ballX, customForms, players, routes, pushUndo]);
     // Open the "Save Formation" dialog (replaces window.prompt — those don't run in the artifact iframe)
-    const openSaveFormation = useCallback(() => {
+    const openSaveFormation = useCallback((sideArg) => {
         if (!capsRef.current.edit) {
             alert("View-only: your role can browse and run the playbook, but can't change it.");
             return;
         }
-        const targetPType = tab === "defense" ? "defense" : "offense";
-        const teamPlayers = players.filter(p => p.ptype === targetPType);
-        if (teamPlayers.length === 0)
+        // sideArg lets scout vs-looks save into the OPPOSING side's formation store;
+        // without it, save this tab's side exactly as before.
+        const side = sideArg || (tab === "defense" ? "defense" : "offense");
+        const teamPlayers = players.filter(p => p.ptype === side);
+        if (teamPlayers.length === 0) {
+            alert("Draw a " + side + " look on the field first, then save it.");
             return;
-        // Base the suggested name on the CURRENT formation (as a "copy") so saving
-        // a tweaked version of it is one edit away, bumped so it won't collide with
-        // the original or any built-in. Falls back to a generic name if none.
-        const existing = [...Object.keys(FORMATIONS[tab] || {}), ...Object.keys(customForms[tab] || {})];
-        const base = formation || `Custom ${Object.keys(customForms[tab] || {}).length + 1}`;
+        }
+        const existing = [...Object.keys(FORMATIONS[side] || {}), ...Object.keys(customForms[side] || {})];
+        const base = (sideArg ? vsSel[side] : formation) || `Custom ${Object.keys(customForms[side] || {}).length + 1}`;
         const suggested = uniqueVariantName(base, existing);
+        setSaveFormSide(sideArg || null);
         setSaveFormName(suggested);
         setShowSaveForm(true);
-    }, [tab, players, customForms, formation]);
+    }, [tab, players, customForms, formation, vsSel]);
     // Actually save with the name typed in the dialog
     const confirmSaveFormation = useCallback(() => {
         const trimmed = saveFormName.trim();
@@ -5354,27 +5363,34 @@ function PlaybookApp() {
         // A custom MAY share a built-in's name — saving under that name stores an
         // override of the built-in (loadFormation prefers the custom version, and
         // deleting it restores the built-in).
-        const targetPType = tab === "defense" ? "defense" : "offense";
-        const teamPlayers = players.filter(p => p.ptype === targetPType);
+        const side = saveFormSide || (tab === "defense" ? "defense" : "offense");
+        const teamPlayers = players.filter(p => p.ptype === side);
         if (teamPlayers.length === 0) {
             setShowSaveForm(false);
+            setSaveFormSide(null);
             return;
         }
         const def = teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY), ...(p.color ? { color: p.color } : {}), ...(p.sizeMul && p.sizeMul !== 1 ? { sizeMul: p.sizeMul } : {}) }));
-        setCustomForms(prev => ({ ...prev, [tab]: { ...(prev[tab] || {}), [trimmed]: def } }));
-        setFormation(trimmed);
+        setCustomForms(prev => ({ ...prev, [side]: { ...(prev[side] || {}), [trimmed]: def } }));
+        if (saveFormSide)
+            setVsSel(v => ({ ...v, [side]: trimmed }));
+        else
+            setFormation(trimmed);
         setShowSaveForm(false);
-    }, [tab, players, losY, ballX, customForms, saveFormName]);
+        setSaveFormSide(null);
+    }, [tab, players, losY, ballX, customForms, saveFormName, saveFormSide]);
     // Hard-protected delete — only ever runs against a custom formation
-    const doDeleteFormation = useCallback((fname) => {
+    const doDeleteFormation = useCallback((fname, sideArg) => {
         var _a, _b;
-        if (!((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[fname]))
+        const side = sideArg || tab;
+        if (!((_a = customForms[side]) === null || _a === void 0 ? void 0 : _a[fname]))
             return; // never deletes built-in formations
-        setCustomForms(prev => { const next = { ...prev, [tab]: { ...prev[tab] } }; delete next[tab][fname]; return next; });
-        // If this custom was OVERRIDING a built-in of the same name, deleting it
-        // restores the built-in — reload it (forced) under the same name. Otherwise
-        // fall back to the first built-in formation.
-        if ((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[fname]) {
+        setCustomForms(prev => { const next = { ...prev, [side]: { ...prev[side] } }; delete next[side][fname]; return next; });
+        if (sideArg) {
+            // A scout vs-look: just move the selection pointer; don't touch this tab's field.
+            setVsSel(v => { var _c; return { ...v, [side]: ((_c = FORMATIONS[side]) === null || _c === void 0 ? void 0 : _c[fname]) ? fname : "" }; });
+        }
+        else if ((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[fname]) {
             setFormation(fname);
             loadFormation(fname, undefined, true);
         }
@@ -5386,16 +5402,20 @@ function PlaybookApp() {
             }
         }
         setConfirmDeleteForm(null);
+        setConfirmDeleteSide(null);
     }, [customForms, tab, loadFormation]);
     // Open the edit dialog for the currently-loaded custom formation.
-    const openEditFormation = useCallback(() => {
+    const openEditFormation = useCallback((fnameArg, sideArg) => {
         var _a, _b;
-        if (!formation || !((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]))
-            return; // must be a custom formation in this category
-        if ((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation])
+        const side = sideArg || tab;
+        const fname = (typeof fnameArg === "string" && fnameArg) ? fnameArg : formation;
+        if (!fname || !((_a = customForms[side]) === null || _a === void 0 ? void 0 : _a[fname]))
+            return; // must be a custom formation
+        if ((_b = FORMATIONS[side]) === null || _b === void 0 ? void 0 : _b[fname])
             return; // never edits a built-in
-        setEditFormOriginalName(formation);
-        setEditFormName(formation);
+        setEditFormSide(sideArg || null);
+        setEditFormOriginalName(fname);
+        setEditFormName(fname);
         setEditFormReplaceLayout(false);
         setShowEditForm(true);
     }, [formation, tab, customForms]);
@@ -5408,14 +5428,14 @@ function PlaybookApp() {
         const oldName = editFormOriginalName;
         if (!newName || !oldName)
             return;
-        if ((_a = FORMATIONS[tab]) === null || _a === void 0 ? void 0 : _a[newName])
+        const eSide = editFormSide || tab;
+        if ((_a = FORMATIONS[eSide]) === null || _a === void 0 ? void 0 : _a[newName])
             return; // refuse to collide with a built-in
-        if (newName !== oldName && ((_b = customForms[tab]) === null || _b === void 0 ? void 0 : _b[newName]))
+        if (newName !== oldName && ((_b = customForms[eSide]) === null || _b === void 0 ? void 0 : _b[newName]))
             return; // refuse to collide with another custom
-        const targetPType = tab === "defense" ? "defense" : "offense";
-        const teamPlayers = players.filter(p => p.ptype === targetPType);
+        const teamPlayers = players.filter(p => p.ptype === eSide);
         setCustomForms(prev => {
-            const tabCustom = { ...(prev[tab] || {}) };
+            const tabCustom = { ...(prev[eSide] || {}) };
             // If user opted in, snapshot the current field positions as the new layout;
             // otherwise keep the existing stored layout (renaming only).
             const newLayout = (editFormReplaceLayout && teamPlayers.length > 0)
@@ -5424,7 +5444,7 @@ function PlaybookApp() {
             if (newName !== oldName)
                 delete tabCustom[oldName];
             tabCustom[newName] = newLayout;
-            return { ...prev, [tab]: tabCustom };
+            return { ...prev, [eSide]: tabCustom };
         });
         // If the formation got renamed, update every play in THIS scope that
         // referenced the old name so its tags stay consistent. (Cross-scope
@@ -5449,7 +5469,9 @@ function PlaybookApp() {
             else
                 setSharedPlays(renameInList);
             // Keep the active formation pointer in sync so the dropdown doesn't show a stale value
-            if (formation === oldName)
+            if (editFormSide)
+                setVsSel(v => (v[editFormSide] === oldName ? { ...v, [editFormSide]: newName } : v));
+            else if (formation === oldName)
                 setFormation(newName);
             // Same for the currently-loaded play, if any
             setCurrentPlay(cp => {
@@ -5469,7 +5491,7 @@ function PlaybookApp() {
             });
         }
         setShowEditForm(false);
-    }, [tab, editFormOriginalName, editFormName, editFormReplaceLayout, customForms, players, ballX, losY, formation, playbookScope]);
+    }, [tab, editFormSide, editFormOriginalName, editFormName, editFormReplaceLayout, customForms, players, ballX, losY, formation, playbookScope]);
     // Each field view returns the SVG y-range to display (and natural width FW).
     // Field y-axis: y=68 is opp goal line, y=752 is own goal line. YARD=6.84.
     // "own X" = y = (FH-EZ) - X*YARD. "opp X" = y = EZ + X*YARD.
@@ -12803,10 +12825,24 @@ function PlaybookApp() {
                             React.createElement("button", { className: "sbtn dim", onClick: () => { const nm = personnel; deletePersonnelGroup(nm); setPersonnel(""); }, title: "Delete this custom personnel", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
                         !readOnly && Object.keys(customForms[tab] || {}).length > 1 && (React.createElement("button", { className: "sbtn dim", onClick: () => setReorderUI("formations"), title: "Reorder or delete your custom formations", style: { padding: "7px 9px" } }, "\u21C5")),
                         !readOnly && ((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[formation]) && (React.createElement(React.Fragment, null,
-                            !((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation]) && (React.createElement("button", { className: "sbtn dim", onClick: openEditFormation, title: "Edit this custom formation (rename or update layout)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270F")),
+                            !((_b = FORMATIONS[tab]) === null || _b === void 0 ? void 0 : _b[formation]) && (React.createElement("button", { className: "sbtn dim", onClick: () => openEditFormation(), title: "Edit this custom formation (rename or update layout)", style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" } }, "\u270F")),
                             React.createElement("button", { className: "sbtn dim", onClick: () => setConfirmDeleteForm(formation), title: ((_c = FORMATIONS[tab]) === null || _c === void 0 ? void 0 : _c[formation]) ? "Delete your override — restores the built-in" : "Delete this custom formation", style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" } }, "\uD83D\uDDD1"))),
-                        tab !== "special" && (React.createElement(SearchSelect, { value: "", width: 148, placeholder: `+ vs ${tab === "offense" ? "DEF" : "OFF"} look…`, title: `Add ${tab === "offense" ? "defense" : "offense"} formation onto the field`, options: (() => { const ot = tab === "offense" ? "defense" : "offense"; const cns = Object.keys(customForms[ot] || {}); const cs = new Set(cns); return [...Object.keys(FORMATIONS[ot] || {}).filter(f => !cs.has(f)).map(f => ({ value: f, label: f })), ...cns.map(f => ({ value: f, label: "★ " + f }))]; })(), onPick: f => { if (f)
-                                addOpposingFormation(f); } })),
+                        (() => {
+                            const own = tab === "offense" ? "offense" : tab === "defense" ? "defense" : null;
+                            const sides = isScout ? ["offense", "defense"].filter(sd => sd !== own) : (own ? [own === "offense" ? "defense" : "offense"] : []);
+                            if (!sides.length) return null;
+                            const optsFor = (sd) => { const cns = Object.keys(customForms[sd] || {}); const cs = new Set(cns); return [...Object.keys(FORMATIONS[sd] || {}).filter(f => !cs.has(f)).map(f => ({ value: f, label: f })), ...cns.map(f => ({ value: f, label: "★ " + f }))]; };
+                            return sides.map(sd => {
+                                const cur = vsSel[sd] || "";
+                                const curIsCustom = !!(cur && customForms[sd] && customForms[sd][cur]);
+                                return React.createElement("span", { key: sd, style: { display: "inline-flex", gap: 4, alignItems: "center" } },
+                                    React.createElement(SearchSelect, { value: cur, width: 148, placeholder: `+ ${isScout ? "scout " : "vs "}${sd === "offense" ? "OFF" : "DEF"} look…`, title: `Stamp a ${sd} formation onto the field${isScout ? " as a scout look" : ""}`, options: optsFor(sd), onPick: f => { if (f) { addOpposingFormation(f, sd); setVsSel(v => ({ ...v, [sd]: f })); } } }),
+                                    !readOnly && React.createElement("button", { className: "sbtn dim", title: `Save the ${sd} look you've arranged as a custom ${sd} formation`, style: { padding: "7px 9px" }, onClick: () => openSaveFormation(sd) }, "\uD83D\uDCBE"),
+                                    !readOnly && curIsCustom && React.createElement(React.Fragment, null,
+                                        React.createElement("button", { className: "sbtn dim", title: `Rename or update this custom ${sd} vs-look`, style: { padding: "7px 9px", color: "#fcd34d", borderColor: "rgba(245,158,11,0.4)" }, onClick: () => openEditFormation(cur, sd) }, "\u270F"),
+                                        React.createElement("button", { className: "sbtn dim", title: `Delete this custom ${sd} vs-look`, style: { padding: "7px 9px", color: "rgba(239,68,68,0.7)", borderColor: "rgba(239,68,68,0.3)" }, onClick: () => { setConfirmDeleteForm(cur); setConfirmDeleteSide(sd); } }, "\uD83D\uDDD1")));
+                            });
+                        })(),
                         (() => {
                             const names = orderedNames(Object.keys(routePresets), catSortPref("routes"));
                             const sel = selectedRouteCombo && routePresets[selectedRouteCombo] ? routePresets[selectedRouteCombo] : null;
@@ -14273,7 +14309,7 @@ function PlaybookApp() {
                         "\"? This can't be undone. Plays already saved with this formation will keep their player positions, but the formation will no longer appear in the dropdown."),
                     React.createElement("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end" } },
                         React.createElement("button", { onClick: () => setConfirmDeleteForm(null), className: "sbtn dim" }, "CANCEL"),
-                        React.createElement("button", { onClick: () => doDeleteFormation(confirmDeleteForm), className: "sbtn", style: { background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.5)", color: "#f87171", padding: "7px 16px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, letterSpacing: "0.1em", cursor: "pointer" } }, "DELETE"))))),
+                        React.createElement("button", { onClick: () => doDeleteFormation(confirmDeleteForm, confirmDeleteSide), className: "sbtn", style: { background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.5)", color: "#f87171", padding: "7px 16px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, letterSpacing: "0.1em", cursor: "pointer" } }, "DELETE"))))),
             showPlaybook && (() => {
                 const q = playbookSearch.trim().toLowerCase();
                 const list = plays.filter(p => {
@@ -14662,13 +14698,41 @@ function PlaybookApp() {
                 }
                 catch (e) { }
                 const bestBadge = (key) => { const b = (bests[key] && bests[key].bestPct) || 0; return b > 0 ? (React.createElement("span", { style: { marginLeft: 8, fontSize: 11, fontFamily: "'JetBrains Mono',monospace", flexShrink: 0, color: b >= 100 ? "#4ade80" : "#fbbf24" } }, b >= 100 ? "\u2713 100%" : "best " + b + "%")) : null; };
+                const toggleSel = (pid) => setQuizSel(prev => { const nx = new Set(prev); nx.has(pid) ? nx.delete(pid) : nx.add(pid); return nx; });
+                const renderSet = (key, icon, title, list) => {
+                    const named = list.filter(p => p && (p.name || "").trim());
+                    const n = named.length;
+                    const expanded = quizExpand === key;
+                    const selCount = expanded ? named.filter(p => quizSel.has(p.id)).length : 0;
+                    return (React.createElement("div", { key: key, style: { marginBottom: 8 } },
+                        React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "stretch" } },
+                            React.createElement("button", { onClick: () => launch(list, title, key), disabled: n < 2, style: { ...rowBtn(n >= 2), marginBottom: 0, flex: 1, minWidth: 0 } },
+                                React.createElement("span", { style: { fontSize: 18, flexShrink: 0 } }, icon),
+                                React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, title),
+                                React.createElement("span", { style: badge }, n, " play", n === 1 ? "" : "s"), bestBadge(key)),
+                            React.createElement("button", { onClick: () => { if (expanded) { setQuizExpand(null); } else { setQuizExpand(key); setQuizSel(new Set(named.map(p => p.id))); } }, disabled: n < 2, title: "Pick certain plays to study", style: { width: 48, flexShrink: 0, borderRadius: 12, border: "1px solid " + (expanded ? "rgba(245,158,11,0.5)" : "rgba(255,255,255,0.16)"), background: expanded ? "rgba(245,158,11,0.16)" : "rgba(255,255,255,0.06)", color: n < 2 ? "rgba(255,255,255,0.3)" : (expanded ? "#fcd34d" : "#cbd5e1"), cursor: n < 2 ? "not-allowed" : "pointer", fontSize: 16, touchAction: "manipulation" } }, expanded ? "▾" : "⚙")),
+                        expanded && (React.createElement("div", { style: { margin: "2px 0 10px", padding: 8, borderRadius: 12, border: "1px solid rgba(245,158,11,0.25)", background: "rgba(245,158,11,0.04)" } },
+                            React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6, padding: "0 4px" } },
+                                React.createElement("span", { style: { fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.5)" } }, selCount, " of ", n, " selected"),
+                                React.createElement("div", { style: { flex: 1 } }),
+                                React.createElement("button", { onClick: () => setQuizSel(new Set(named.map(p => p.id))), style: { fontSize: 11, padding: "5px 9px", minHeight: 32, borderRadius: 6, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "#cbd5e1", cursor: "pointer", touchAction: "manipulation" } }, "All"),
+                                React.createElement("button", { onClick: () => setQuizSel(new Set()), style: { fontSize: 11, padding: "5px 9px", minHeight: 32, borderRadius: 6, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "#cbd5e1", cursor: "pointer", touchAction: "manipulation" } }, "None")),
+                            named.map(p => {
+                                const on = quizSel.has(p.id);
+                                return (React.createElement("button", { key: p.id, onClick: () => toggleSel(p.id), style: { display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", minHeight: 44, padding: "8px 10px", marginBottom: 4, borderRadius: 9, border: "1px solid " + (on ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)"), background: on ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.03)", color: on ? "#dcfce7" : "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 14, touchAction: "manipulation" } },
+                                    React.createElement("span", { style: { fontSize: 15, flexShrink: 0 } }, on ? "☑" : "☐"),
+                                    React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name)));
+                            }),
+                            React.createElement("button", { onClick: () => { const chosen = named.filter(p => quizSel.has(p.id)); if (chosen.length >= 2) launch(chosen, title + " (part)", key + "_part"); }, disabled: selCount < 2, style: { width: "100%", minHeight: 46, marginTop: 4, borderRadius: 10, border: "1px solid rgba(245,158,11,0.6)", background: selCount < 2 ? "rgba(245,158,11,0.06)" : "rgba(245,158,11,0.18)", color: selCount < 2 ? "rgba(255,255,255,0.3)" : "#fcd34d", cursor: selCount < 2 ? "not-allowed" : "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.06em", touchAction: "manipulation" } }, "🎓 STUDY ", selCount, " SELECTED"),
+                            selCount < 2 && React.createElement("div", { style: { fontSize: 10, color: "rgba(255,255,255,0.3)", textAlign: "center", marginTop: 4 } }, "Pick at least 2 plays.")))));
+                };
                 return (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 7150, background: "#0a0a14", display: "flex", flexDirection: "column", fontFamily: "system-ui,sans-serif", WebkitTapHighlightColor: "transparent" } },
                     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", paddingTop: "max(10px, env(safe-area-inset-top))", borderBottom: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 } },
                         React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 16, letterSpacing: "0.1em", color: "#fcd34d", flexShrink: 0 } }, "🎓 STUDY"),
                         React.createElement("span", { style: { fontSize: 12, color: "rgba(255,255,255,0.45)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 } }, "what do you want to drill?"),
                         React.createElement("div", { style: { flex: 1 } }),
                         realRole !== "player" && (React.createElement("button", { onClick: openQuizBoard, title: "See who's been studying — quiz rounds and scores for the whole team. Players don't see this.", style: { height: 40, padding: "0 12px", borderRadius: 10, border: "1px solid rgba(245,158,11,0.5)", background: "rgba(245,158,11,0.14)", color: "#fcd34d", cursor: "pointer", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", flexShrink: 0, touchAction: "manipulation" } }, "📊 WHO'S STUDYING")),
-                        React.createElement("button", { onClick: () => setQuizPick(false), title: "Close", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 16, flexShrink: 0, touchAction: "manipulation" } }, "\u2715")),
+                        React.createElement("button", { onClick: () => { setQuizExpand(null); setQuizPick(false); }, title: "Close", style: { width: 40, height: 40, borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 16, flexShrink: 0, touchAction: "manipulation" } }, "\u2715")),
                     React.createElement("div", { style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "14px 12px", paddingBottom: "max(20px, env(safe-area-inset-bottom))" } },
                         React.createElement("div", { style: { maxWidth: 520, margin: "0 auto" } },
                             React.createElement("button", { onClick: () => launch(plays.filter(p => p && !p.scout), "All plays", "all"), disabled: allN < 2, style: rowBtn(allN >= 2) },
@@ -14677,25 +14741,12 @@ function PlaybookApp() {
                                 React.createElement("span", { style: badge }, allN, " play", allN === 1 ? "" : "s"), bestBadge("all")),
                             installs.length > 0 && (React.createElement(React.Fragment, null,
                                 React.createElement("div", { style: secHd }, "INSTALLS"),
-                                installs.map(inst => {
-                                    const list = (inst.playIds || []).map(pid => plays.find(p => p.id === pid)).filter(Boolean);
-                                    const n = namedCount(list);
-                                    return (React.createElement("button", { key: inst.id, onClick: () => launch(list, inst.name || "Install", "inst_" + inst.id), disabled: n < 2, style: rowBtn(n >= 2) },
-                                        React.createElement("span", { style: { fontSize: 18, flexShrink: 0 } }, "📋"),
-                                        React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, inst.name || "Install"),
-                                        React.createElement("span", { style: badge }, n, " play", n === 1 ? "" : "s"), bestBadge("inst_" + inst.id)));
-                                }))),
+                                installs.map(inst => renderSet("inst_" + inst.id, "📋", inst.name || "Install", (inst.playIds || []).map(pid => plays.find(p => p.id === pid)).filter(Boolean)))
+                                )),
                             scripts.length > 0 && (React.createElement(React.Fragment, null,
                                 React.createElement("div", { style: secHd }, "PRACTICE SCRIPTS"),
-                                scripts.map(s => {
-                                    const ids = [...new Set((s.periods || []).flatMap(per => per.playIds || []))];
-                                    const list = ids.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
-                                    const n = namedCount(list);
-                                    return (React.createElement("button", { key: s.id, onClick: () => launch(list, s.name || "Script", "script_" + s.id), disabled: n < 2, style: rowBtn(n >= 2) },
-                                        React.createElement("span", { style: { fontSize: 18, flexShrink: 0 } }, "📝"),
-                                        React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, s.name || "Script"),
-                                        React.createElement("span", { style: badge }, n, " play", n === 1 ? "" : "s"), bestBadge("script_" + s.id)));
-                                }))),
+                                scripts.map(sc => renderSet("script_" + sc.id, "📝", sc.name || "Script", [...new Set((sc.periods || []).flatMap(per => per.playIds || []))].map(pid => plays.find(p => p.id === pid)).filter(Boolean)))
+                                )),
                             installs.length === 0 && scripts.length === 0 && (React.createElement("div", { style: { fontSize: 12, color: "rgba(255,255,255,0.4)", textAlign: "center", marginTop: 16, lineHeight: 1.6 } }, "Installs and practice scripts you build will show up here as study sets.")),
                             React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.3)", textAlign: "center", marginTop: 14 } }, "Sets need at least 2 named plays.")))));
             })(),
