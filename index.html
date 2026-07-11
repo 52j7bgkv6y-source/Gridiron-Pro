@@ -17,7 +17,7 @@ if ("serviceWorker" in navigator) {
 }
 </script>
 <script>
-/* Boot watchdog (plain JS — no React/Babel needed). If a CDN script fails to
+/* Boot watchdog (plain JS — no React needed). If a CDN script fails to
    load, an uncaught error fires, or nothing renders within a few seconds, this
    prints the actual reason on screen instead of leaving a black page. */
 (function(){
@@ -40,7 +40,7 @@ if ("serviceWorker" in navigator) {
     if (ev && ev.target && ev.target.tagName === "SCRIPT" && ev.target.src) {
       window.__gpFatal = true;
       showMsg("A required script failed to load",
-        "Couldn't load:\n" + ev.target.src + "\n\nThis page loads React, Babel and Supabase from the internet. Make sure you're online. If you opened this file directly from your computer (the address bar shows file:/// or C:\\...), some browsers block these scripts — host it (e.g. drag the file onto Netlify) or serve it over http instead of double-clicking it.");
+        "Couldn't load:\n" + ev.target.src + "\n\nThis page loads React and Supabase from the internet. Make sure you're online. If you opened this file directly from your computer (the address bar shows file:/// or C:\\...), some browsers block these scripts — host it (e.g. drag the file onto Netlify) or serve it over http instead of double-clicking it.");
       return;
     }
     var m = (ev && ev.error && ev.error.stack) || (ev && ev.message) || "Unknown error";
@@ -53,7 +53,7 @@ if ("serviceWorker" in navigator) {
     var r = document.getElementById("root");
     if (r && r.childElementCount === 0) {
       showMsg("The app didn't start",
-        "Nothing rendered after several seconds and no error was thrown.\n\nUsually this means a library (React / Babel / Supabase) didn't load, or the page is being opened straight from disk (file:///).\n\nTry:\n  1. Open the console (press F12, then the Console tab) and look for red errors.\n  2. Confirm you're online.\n  3. Host the file or serve it over http instead of double-clicking it.");
+        "Nothing rendered after several seconds and no error was thrown.\n\nUsually this means a library (React / Supabase) didn't load, or the page is being opened straight from disk (file:///).\n\nTry:\n  1. Open the console (press F12, then the Console tab) and look for red errors.\n  2. Confirm you're online.\n  3. Host the file or serve it over http instead of double-clicking it.");
     }
   }, 5000);
 })();
@@ -62,11 +62,13 @@ if ("serviceWorker" in navigator) {
 <title>Gridiron Pro — Sign In</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://unpkg.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="preconnect" href="https://brvuqdradofdtlhvpmtk.supabase.co" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script id="gridiron-editor">
 (function(){
 "use strict";
@@ -129,6 +131,10 @@ function goalpostSVG(side, kp, scale, intoField) {
     ];
 }
 const ROLE_COLORS = { OL: "#94a3b8", QB: "#fbbf24", WR: "#4ade80", TE: "#22d3ee", HB: "#c084fc", FB: "#e879f9", DL: "#f87171", LB: "#fb923c", DB: "#60a5fa", K: "#f97316", P: "#f97316", default: "#a1a1aa" };
+// Coarse pointers (phone/tablet) need a finger-sized hit corridor along each
+// route. A mouse is precise, so on desktop the corridor equals the drawn stroke
+// and hit-testing stays exactly as it was.
+const COARSE_POINTER = typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
 const ROUTE_CFG = {
     pass: { color: "#3b82f6", dash: "none", width: 2.5, endStyle: "arrow" },
     run: { color: "#f59e0b", dash: "none", width: 2.5, endStyle: "arrow" },
@@ -151,6 +157,12 @@ const ROUTE_TYPES_BY_TAB = {
 // Every route type, shown in the ROUTE tool regardless of which tab you're on,
 // so offense and defense can both draw any route.
 const ALL_ROUTE_TYPES = ["pass", "run", "preSnapMotion", "postSnapMotion", "blocking", "showBlitz", "hideBlitz", "option"];
+// ── Route snapping (shades + 🧲 targets) ──
+// SHADE_DX ≈ one body width: the lateral offset of a shoulder shade from
+// head-up alignment. ROUTE_SNAP_TOL is the pull-in radius, a touch wider than
+// the player snap-to-level's 8 since fingers are less precise than a mouse.
+const SHADE_DX = 12;
+const ROUTE_SNAP_TOL = 12;
 const ROUTE_LABELS = {
     pass: "PASS",
     run: "RUN",
@@ -1223,10 +1235,36 @@ async function storageSetMaybeChunked(key, value, shared) {
     await window.storage.set(key, JSON.stringify({ [STORAGE_CHUNK_MARKER]: 1, n, len: s.length }), shared);
     return { chunks: n, bytes: s.length };
 }
-async function storageGetMaybeChunked(key, shared) {
+// Pure unpack helpers for the background-refresh listener. (The hydrate
+// effect has closure-local twins of these; they are deliberately left alone.)
+const gpAsArr = (v) => Array.isArray(v) ? v : [];
+const gpAsMap = (v) => (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+const gpNormForms = (f) => ({ offense: (f && f.offense && typeof f.offense === "object") ? f.offense : {}, defense: (f && f.defense && typeof f.defense === "object") ? f.defense : {}, special: (f && f.special && typeof f.special === "object") ? f.special : {} });
+const gpUnpackAll = (raw) => {
+    let all = null;
+    try {
+        const o = JSON.parse(raw);
+        all = (o && typeof o === "object") ? o : null;
+    }
+    catch (_) {
+        all = null;
+    }
+    if (!all)
+        return null;
+    return {
+        plays: gpAsArr(all.plays), customForms: gpNormForms(all.customForms), installs: gpAsArr(all.installs),
+        scripts: gpAsArr(all.scripts), coveragePresets: gpAsMap(all.coveragePresets),
+        blitzPresets: gpAsMap(all.blitzPresets), schemePresets: gpAsMap(all.schemePresets),
+        motionPresets: gpAsMap(all.motionPresets),
+        sortPrefs: (all.sortPrefs && typeof all.sortPrefs === "object") ? all.sortPrefs : {},
+    };
+};
+async function storageGetMaybeChunked(key, shared, fresh) {
     if (typeof window === "undefined" || !window.storage)
         return null;
-    const r = await window.storage.get(key, shared);
+    // fresh=true bypasses the shell's instant-mirror path so a chunked value is
+    // assembled from ONE coherent server snapshot, never a half-refreshed mirror.
+    const r = await window.storage.get(key, shared, fresh ? { fresh: true } : undefined);
     const raw = (r && r.value) ? r.value : null;
     if (!raw)
         return null;
@@ -1243,7 +1281,7 @@ async function storageGetMaybeChunked(key, shared) {
         if (man && man[STORAGE_CHUNK_MARKER] && man.n) {
             let out = "";
             for (let i = 0; i < man.n; i++) {
-                const cr = await window.storage.get(`${key}::c${i}`, shared);
+                const cr = await window.storage.get(`${key}::c${i}`, shared, fresh ? { fresh: true } : undefined);
                 if (!cr || typeof cr.value !== "string" || cr.value.length === 0)
                     throw new Error(`missing storage chunk ${i} for ${key}`);
                 out += cr.value;
@@ -1438,8 +1476,12 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
     // with many plays, playbook browser grid) don't collide on `arr-Fly` etc.
     const idBase = play.id || `t${Math.round((vb.x + vb.y) * 1000) % 99999}`;
     const markerId = (rt) => `arr-${rt}-${idBase}`;
+    // Only emit <defs> markers for route types THIS play uses. Every thumbnail
+    // used to duplicate the full marker set; in a 200-play browser grid that was
+    // thousands of identical, unreferenced defs nodes.
+    const usedTypes = new Set(routes.map(r => r.rtype));
     return (React.createElement("svg", { width: w, height: h, viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, preserveAspectRatio: "xMidYMid slice", style: { display: "block", background: "#16401f", borderRadius: 6 } },
-        React.createElement("defs", null, Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: markerId(rt), markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
+        React.createElement("defs", null, Object.entries(ROUTE_CFG).filter(([rt]) => usedTypes.has(rt)).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: markerId(rt), markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
             React.createElement("line", { x1: "0.5", y1: "0.4", x2: "0.5", y2: "3.6", stroke: cfg.color, strokeWidth: "1.4", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: markerId(rt), markerWidth: "6", markerHeight: "6", refX: "4.6", refY: "2.3", orient: "auto" },
             React.createElement("path", { d: "M0,0 L0,4.6 L6,2.3 z", fill: cfg.color }))))),
         Array.from({ length: 20 }, (_, i) => (React.createElement("rect", { key: `mow${i}`, x: 0, y: EZ + (FIELD_DIM / 20) * i, width: FW, height: FIELD_DIM / 20, fill: i % 2 === 0 ? "#1d7d40" : "#176a37" }))),
@@ -1584,6 +1626,36 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
                     React.createElement("rect", { x: p.x - R * 0.24, y: p.y - R, width: R * 0.48, height: R * 2, fill: "rgba(0,0,0,0.55)", clipPath: `url(#${clipIdT})` }))),
                 label && (React.createElement("text", { x: p.x, y: p.y + fs * 0.36, textAnchor: "middle", fill: isOff ? "#000" : rc, fontSize: fs, fontWeight: "bold", stroke: isOff && shadeKind ? "rgba(255,255,255,0.95)" : "none", strokeWidth: isOff && shadeKind ? fs * 0.22 : 0, strokeLinejoin: "round", paintOrder: "stroke", fontFamily: "'JetBrains Mono', monospace", style: { pointerEvents: "none", userSelect: "none" } }, label))));
         }), (play.texts || []).map(t => gpTextChipSVG(t, "th"))));
+}
+// Memoized thumbnail: identical play/w/h props skip the whole SVG subtree on
+// re-render (search typing, multi-select toggles). LazyThumb mounts the real
+// SVG only when the card nears the viewport, so opening the playbook browser
+// costs only the on-screen thumbnails, not the entire library in one commit.
+"use strict";
+const PlayThumbMemo = React.memo(PlayThumbnail);
+function LazyThumb({ play, w, h }) {
+    const [vis, setVis] = useState(false);
+    const holdRef = useRef(null);
+    useEffect(() => {
+        if (vis)
+            return;
+        const el = holdRef.current;
+        if (!el || typeof IntersectionObserver === "undefined") {
+            setVis(true);
+            return;
+        }
+        const io = new IntersectionObserver((entries) => {
+            if (entries.some(en => en.isIntersecting)) {
+                setVis(true);
+                io.disconnect();
+            }
+        }, { rootMargin: "600px 0px" });
+        io.observe(el);
+        return () => io.disconnect();
+    }, [vis]);
+    return (React.createElement("div", { ref: holdRef, style: { width: w, height: h } }, vis
+        ? React.createElement(PlayThumbMemo, { play: play, w: w, h: h })
+        : React.createElement("div", { style: { width: "100%", height: "100%", background: "#0f2417", borderRadius: 6 } })));
 }
 class ErrorBoundary extends React.Component {
     constructor(props) { super(props); this.state = { err: null }; }
@@ -1983,6 +2055,11 @@ function PlaybookApp() {
     // alignMode: when ON, clicking players toggles them into alignSelIds;
     // pressing APPLY sets all selected players to the median Y of the group.
     const [snapToLevel, setSnapToLevel] = useState(false);
+    // Live indicator while a route point is snapping: {kind:"shade",x,y,label,drag?}
+    // for motion-endpoint shade alignment, {kind:"pt",x,y,drag?} for a 🧲 target
+    // vertex. `drag` marks guides born in a reshape drag so the renderer can show
+    // them when drawingRoute is false.
+    const [snapGuide, setSnapGuide] = useState(null);
     const [alignMode, setAlignMode] = useState(false);
     // Defensive teaching aid: vertical lines through each offensive lineman's
     // center, perpendicular to the LOS. Lets a coach show defenders exactly
@@ -4503,6 +4580,108 @@ function PlaybookApp() {
         })();
         return () => { cancelled = true; };
     }, []); // load once on mount
+    // ── Instant-then-fresh: apply background refreshes from the storage mirror ──
+    // The shell now serves the on-device mirror the moment you log in and
+    // verifies against Supabase in the background, firing "gp-fresh" when the
+    // server copy differs. Apply that fresh copy here — but ONLY while the scope
+    // is untouched since load, so a coach's in-progress edits are never
+    // clobbered by a late fetch. Chunked values are re-read with fresh=true for
+    // one coherent server snapshot.
+    const hydratedRawRef = useRef(null);
+    useEffect(() => {
+        if (!mineHydrated || typeof window === "undefined" || !window.storage)
+            return;
+        if (hydratedRawRef.current === null)
+            hydratedRawRef.current = { ...mineWriteCacheRef.current };
+        let dead = false;
+        let timer = null;
+        const pending = new Set();
+        const KEYS = [MINE_ALL_PERSONAL_KEY, MINE_ALL_SHARED_KEY];
+        const scopePristine = (KEY) => {
+            const base = hydratedRawRef.current || {};
+            return mineWriteCacheRef.current[KEY] === base[KEY]
+                && (mineWriteTargetRef.current[KEY] === undefined || mineWriteTargetRef.current[KEY] === mineWriteCacheRef.current[KEY])
+                && !mineLoadFailedRef.current;
+        };
+        const applyScope = async (KEY) => {
+            if (!scopePristine(KEY))
+                return;
+            let raw = null;
+            try {
+                raw = await storageGetMaybeChunked(KEY, true, true);
+            }
+            catch (_) {
+                return;
+            }
+            if (dead || !raw)
+                return;
+            const u = gpUnpackAll(raw);
+            if (!u)
+                return;
+            const canon = JSON.stringify(buildAll(u));
+            if (canon === mineWriteCacheRef.current[KEY]) {
+                hydratedRawRef.current[KEY] = canon;
+                return;
+            }
+            if (!scopePristine(KEY))
+                return;
+            if (KEY === MINE_ALL_PERSONAL_KEY) {
+                setPersonalPlays(u.plays);
+                setPersonalCustomForms(u.customForms);
+                setPersonalInstalls(u.installs);
+                setPersonalScripts(u.scripts);
+                setPersonalCoveragePresets(u.coveragePresets);
+                setPersonalBlitzPresets(u.blitzPresets);
+                setPersonalMotionPresets(u.motionPresets || {});
+                setPersonalSchemePresets(u.schemePresets);
+                setPersonalSortPrefs(u.sortPrefs || {});
+            }
+            else {
+                setSharedPlays(u.plays);
+                setSharedCustomForms(u.customForms);
+                setSharedInstalls(u.installs);
+                setSharedScripts(u.scripts);
+                setSharedCoveragePresets(u.coveragePresets);
+                setSharedBlitzPresets(u.blitzPresets);
+                setSharedMotionPresets(u.motionPresets || {});
+                setSharedSchemePresets(u.schemePresets);
+                setSharedSortPrefs(u.sortPrefs || {});
+            }
+            mineWriteCacheRef.current[KEY] = canon;
+            hydratedRawRef.current[KEY] = canon;
+        };
+        const queue = (KEY) => {
+            pending.add(KEY);
+            if (timer)
+                clearTimeout(timer);
+            timer = setTimeout(() => {
+                const run = Array.from(pending);
+                pending.clear();
+                run.forEach(K => { applyScope(K); });
+            }, 300);
+        };
+        const matchKey = (dk) => KEYS.find(K => dk === K || (typeof dk === "string" && dk.indexOf(K + "::c") === 0));
+        const onFresh = (ev) => {
+            const hit = matchKey(((ev && ev.detail) || {}).key);
+            if (hit)
+                queue(hit);
+        };
+        window.addEventListener("gp-fresh", onFresh);
+        // Sweep refreshes that completed before this listener attached (the shell
+        // records every fired key in window.__gpFreshKeys).
+        try {
+            const fired = window.__gpFreshKeys;
+            if (fired && fired.size) {
+                Array.from(fired).forEach(fk => { const hit = matchKey(fk); if (hit) {
+                    fired.delete(fk);
+                    queue(hit);
+                } });
+            }
+        }
+        catch (_) { }
+        return () => { dead = true; if (timer)
+            clearTimeout(timer); window.removeEventListener("gp-fresh", onFresh); };
+    }, [mineHydrated]);
     // Persist one consolidated key with spaced auto-retries, so a brief storage
     // hiccup is ridden out rather than surfacing as a failure. Coalescing: it
     // always writes the LATEST target for the key, abandoning a stale value if a
@@ -5341,17 +5520,20 @@ function PlaybookApp() {
             return;
         }
         // sideArg lets scout vs-looks save into the OPPOSING side's formation store;
-        // without it, save this tab's side exactly as before.
-        const side = sideArg || (tab === "defense" ? "defense" : "offense");
+        // without it, save this tab's side exactly as before. Guard the type: a bare
+        // onClick={openSaveFormation} hands us the click EVENT as the first argument,
+        // which must never be mistaken for a side.
+        const sd = (typeof sideArg === "string" && sideArg) ? sideArg : null;
+        const side = sd || (tab === "defense" ? "defense" : "offense");
         const teamPlayers = players.filter(p => p.ptype === side);
         if (teamPlayers.length === 0) {
             alert("Draw a " + side + " look on the field first, then save it.");
             return;
         }
         const existing = [...Object.keys(FORMATIONS[side] || {}), ...Object.keys(customForms[side] || {})];
-        const base = (sideArg ? vsSel[side] : formation) || `Custom ${Object.keys(customForms[side] || {}).length + 1}`;
+        const base = (sd ? vsSel[side] : formation) || `Custom ${Object.keys(customForms[side] || {}).length + 1}`;
         const suggested = uniqueVariantName(base, existing);
-        setSaveFormSide(sideArg || null);
+        setSaveFormSide(sd);
         setSaveFormName(suggested);
         setShowSaveForm(true);
     }, [tab, players, customForms, formation, vsSel]);
@@ -5679,6 +5861,7 @@ function PlaybookApp() {
                 setGestureStartPos(null);
                 setFreeDrawingGesture(false);
                 setHoverPoint(null);
+                setSnapGuide(null);
             }
             else if (e.key === "Backspace" || e.key === "Delete") {
                 e.preventDefault();
@@ -5693,6 +5876,7 @@ function PlaybookApp() {
                 setGestureStartPos(null);
                 setFreeDrawingGesture(false);
                 setHoverPoint(null);
+                setSnapGuide(null);
             }
         };
         window.addEventListener("keydown", onKey);
@@ -5886,6 +6070,52 @@ function PlaybookApp() {
         }
         return best;
     }, [routes]);
+    // X-only snap of a PRE-SNAP MOTION endpoint onto another player's alignment:
+    // left-shoulder shade, head-up, or right-shoulder shade. Depth (y) stays the
+    // dragger's own — the motion stops on his shade no matter how deep he sits.
+    // targetRouteSnap: 2-D snap onto routes the user CHOSE as targets (🧲 on the
+    // route panel). snapRoutePt combines both; chosen targets beat shades.
+    const shadeSnap = useCallback((pt, excludeOwnerId) => {
+        let best = null, bd = ROUTE_SNAP_TOL + 0.001;
+        for (const p of players) {
+            if (excludeOwnerId && p.id === excludeOwnerId)
+                continue;
+            const cands = [[p.x - SHADE_DX, "L-SHADE"], [p.x, "HEAD-UP"], [p.x + SHADE_DX, "R-SHADE"]];
+            for (const [sx, lbl] of cands) {
+                const d = Math.abs(pt.x - sx);
+                if (d < bd) {
+                    bd = d;
+                    best = { x: sx, label: lbl };
+                }
+            }
+        }
+        return best;
+    }, [players]);
+    const targetRouteSnap = useCallback((pt, excludeId) => {
+        let best = null, bd = ROUTE_SNAP_TOL + 0.001;
+        for (const r of routes) {
+            if (!r.snapTarget || r.id === excludeId || !r.points)
+                continue;
+            for (const p of r.points) {
+                const d = Math.hypot(p.x - pt.x, p.y - pt.y);
+                if (d < bd) {
+                    bd = d;
+                    best = { x: p.x, y: p.y };
+                }
+            }
+        }
+        return best;
+    }, [routes]);
+    const snapRoutePt = useCallback((pt, opts) => {
+        const o = opts || {};
+        const tr = targetRouteSnap(pt, o.excludeId);
+        const sh = (o.rtype === "preSnapMotion" && o.isEnd) ? shadeSnap(pt, o.ownerId) : null;
+        if (tr && (!sh || Math.hypot(tr.x - pt.x, tr.y - pt.y) <= Math.abs(sh.x - pt.x)))
+            return { pt: { x: tr.x, y: tr.y }, guide: { kind: "pt", x: tr.x, y: tr.y, drag: !!o.drag } };
+        if (sh)
+            return { pt: { x: sh.x, y: pt.y }, guide: { kind: "shade", x: sh.x, y: pt.y, label: sh.label, drag: !!o.drag } };
+        return { pt, guide: null };
+    }, [targetRouteSnap, shadeSnap]);
     const onSVGDown = useCallback((e) => {
         // Link mode: the user is about to click an existing route to
         // connect it to the link source. We must NOT run any tool-driven
@@ -6330,9 +6560,13 @@ function PlaybookApp() {
         }
         // Route in progress but no active gesture → track cursor for ghost preview line
         if (tool === "route" && drawingRoute) {
-            setHoverPoint(getSVGPt(e));
+            const raw = getSVGPt(e);
+            // Shift bypasses snapping, matching the player snap-to-level behavior.
+            const sn = e.shiftKey ? { pt: raw, guide: null } : snapRoutePt(raw, { rtype: routeType, isEnd: true });
+            setHoverPoint(sn.pt);
+            setSnapGuide(sn.guide);
         }
-    }, [tool, panning, panStart, zoom, fieldView, splitOffset, getFieldViewRange, draggingLOS, losY, draggingBall, ballX, dragging, selectedId, dragOffset, drawingRoute, gestureStartPos, freeDrawingGesture, coverageDraft, zoneDrag, textDrag, getSVGPt, snapToLevel, players, routes, pushUndo, linkingFromId]);
+    }, [tool, panning, panStart, zoom, fieldView, splitOffset, getFieldViewRange, draggingLOS, losY, draggingBall, ballX, dragging, selectedId, dragOffset, drawingRoute, gestureStartPos, freeDrawingGesture, coverageDraft, zoneDrag, textDrag, getSVGPt, snapToLevel, players, routes, pushUndo, linkingFromId, snapRoutePt, routeType]);
     const onSVGUp = useCallback((e) => {
         // Finish an in-progress align-mode group drag. If the cursor never moved
         // past the threshold, treat the gesture as a click and toggle the anchor
@@ -6382,6 +6616,11 @@ function PlaybookApp() {
             // relative so a blitz hits the same gap regardless of defensive
             // formation — none of that depends on draw-time snap.
             let commitPt = gestureStartPos;
+            // Route snapping: chosen 🧲 targets + shoulder shades (motion endpoints).
+            // Never the FIRST point — that one anchors on the player, and pulling it
+            // onto a nearby shade/target would break route ownership.
+            if (routePoints.length > 0 && !(e && e.shiftKey))
+                commitPt = snapRoutePt(commitPt, { rtype: routeType, isEnd: true }).pt;
             if (!freeDrawingGesture) {
                 // Quick click → add the gesture's anchor point (which snaps to player center if started on a player)
                 const last = newPoints[newPoints.length - 1];
@@ -6395,6 +6634,11 @@ function PlaybookApp() {
                 // existing route. optionDrawRef is set in onSVGDown/onPlayerDown when
                 // the first click snaps to a route point.
                 const opt = optionDrawRef.current;
+                if (newPoints.length >= 2 && !(e && e.shiftKey)) {
+                    const lp = newPoints[newPoints.length - 1];
+                    const ls = snapRoutePt(lp, { rtype: routeType, isEnd: true });
+                    if (ls.guide) newPoints = [...newPoints.slice(0, -1), ls.pt];
+                }
                 const newRoute = { id: uid(), points: newPoints, rtype: routeType };
                 if (opt.optionOf) {
                     newRoute.optionOf = opt.optionOf;
@@ -6410,6 +6654,7 @@ function PlaybookApp() {
                 setDrawingRoute(false);
                 setRoutePoints([]);
                 setHoverPoint(null);
+                setSnapGuide(null);
                 lastClickRef.current = { time: 0, x: 0, y: 0 };
             }
             else {
@@ -6428,7 +6673,7 @@ function PlaybookApp() {
         ballDragRef.current = null;
         setPanning(false);
         setPanStart(null);
-    }, [coverageDraft, zoneShape, drawingRoute, routePoints, gestureStartPos, freeDrawingGesture, routeType, players, routes, pushUndo, getSVGPt]);
+    }, [coverageDraft, zoneShape, drawingRoute, routePoints, gestureStartPos, freeDrawingGesture, routeType, players, routes, pushUndo, getSVGPt, snapRoutePt]);
     // Window-level release listeners: end any field drag if the user lets go anywhere,
     // including outside the SVG. (We used to use onMouseLeave on the SVG for this, but
     // that fired spuriously when overlays like the player-properties panel appeared under
@@ -6841,11 +7086,21 @@ function PlaybookApp() {
         pushUndo(players, routes);
         const startPt = getSVGPt(e);
         const orig = { x: route.points[idx].x, y: route.points[idx].y };
+        const isEnd = idx === route.points.length - 1;
         const onMove = (ev) => {
             if (ev.cancelable) ev.preventDefault();
             const pt = getSVGPt(ev);
-            const nx = Math.max(0, Math.min(FW, orig.x + (pt.x - startPt.x)));
-            const ny = Math.max(0, Math.min(FH, orig.y + (pt.y - startPt.y)));
+            let nx = Math.max(0, Math.min(FW, orig.x + (pt.x - startPt.x)));
+            let ny = Math.max(0, Math.min(FH, orig.y + (pt.y - startPt.y)));
+            // Snap the dragged point: 🧲 target routes anywhere on the route, shade
+            // alignment when this is a motion's endpoint. Shift bypasses, matching
+            // the player snap-to-level behavior.
+            if (!ev.shiftKey) {
+                const sn = snapRoutePt({ x: nx, y: ny }, { rtype: route.rtype, isEnd, excludeId: rid, ownerId: route.ownerId, drag: true });
+                nx = sn.pt.x;
+                ny = sn.pt.y;
+                setSnapGuide(sn.guide);
+            } else setSnapGuide(null);
             setRoutes(rs => rs.map(r => {
                 if (r.id !== rid) return r;
                 const pts = r.points.slice();
@@ -6854,6 +7109,7 @@ function PlaybookApp() {
             }));
         };
         const onUp = () => {
+            setSnapGuide(null);
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
             window.removeEventListener("touchmove", onMove);
@@ -6863,7 +7119,7 @@ function PlaybookApp() {
         window.addEventListener("mouseup", onUp);
         window.addEventListener("touchmove", onMove, { passive: false });
         window.addEventListener("touchend", onUp);
-    }, [routes, players, getSVGPt, pushUndo]);
+    }, [routes, players, getSVGPt, pushUndo, snapRoutePt]);
     // ───────── Coverage AUTO-ASSIGN ─────────
     // Attach every zone to the nearest defender who is NOT blitzing, using the
     // formation's real alignment. Blitzers (rushers) are removed from the pool,
@@ -12784,7 +13040,7 @@ function PlaybookApp() {
                         React.createElement("button", { className: "sbtn dim", onClick: () => cyclePlay(1), disabled: filteredPlays.length < 2, title: "Load the next saved play in this list", style: { padding: "7px 9px", fontSize: 15, lineHeight: 1, opacity: filteredPlays.length < 2 ? 0.35 : 1, cursor: filteredPlays.length < 2 ? "default" : "pointer" } }, "\u203A"),
                         React.createElement(SearchSelect, { value: formation, width: 140, placeholder: tab === "defense" ? "Front" : "Formation", title: tab === "defense" ? "Front — type to search built-in or custom fronts" : "Formation — type to search built-in or custom", options: [...formNames.filter(f => { var _a; return !((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[f]); }).map(f => ({ value: f, label: f })), ...orderedNames(Object.keys(customForms[tab] || {}), catSortPref("formations")).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (!f)
                                 return; pushUndo(); setTexts(prev => prev.filter(t => !["blitz", "coverage", "formation"].includes(t.owner))); setSelectedTextId(null); setEditingTextId(null); setFormation(f); loadFormation(f, undefined, undefined, true); } }),
-                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: openSaveFormation, title: "Save current layout as custom formation", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
+                        !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => openSaveFormation(), title: "Save current layout as custom formation", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
                         !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => setIsScout(v => !v), title: "Scout look — files this play under 🕵️ SCOUT at the bottom of the library and keeps it out of COUNTER picks and the All-plays quiz.", style: { padding: "7px 10px", color: isScout ? "#c4b5fd" : undefined, borderColor: isScout ? "rgba(196,181,253,0.6)" : undefined, background: isScout ? "rgba(196,181,253,0.12)" : undefined } }, "🕵️", isScout ? " SCOUT ✓" : " SCOUT")),
                         React.createElement("div", { style: { position: "relative" } },
                             React.createElement("input", { className: "inp", style: { width: 128 }, placeholder: "Personnel", value: personnelOpen ? personnelQuery : personnel, onFocus: () => { setPersonnelOpen(true); setPersonnelQuery(""); }, onChange: e => { setPersonnelQuery(e.target.value); setPersonnelOpen(true); }, onBlur: () => { setTimeout(() => setPersonnelOpen(false), 130); }, title: "Personnel \u2014 pick one to stamp its saved numbers/letters/colors onto the field (positions stay put). Type a new name, then hit \uD83D\uDCBE to save the current look. The package tag is saved with the play." }),
@@ -13168,11 +13424,13 @@ function PlaybookApp() {
                                             var _a, _b, _c, _d;
                                             const skipArrow = motionsWithFollowUp.has(route.id);
                                             return (React.createElement("g", { key: route.id },
-                                                React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff", strokeWidth: (((_b = ROUTE_CFG[route.rtype]) === null || _b === void 0 ? void 0 : _b.width) || 2.5) * 1.0 * (selectedId === route.id ? 1.4 : 1), strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: ((_c = ROUTE_CFG[route.rtype]) === null || _c === void 0 ? void 0 : _c.dash) || "none", markerEnd: skipArrow ? "none" : `url(#arr-${route.rtype})`, style: { cursor: "pointer", filter: selectedId === route.id ? "drop-shadow(0 0 3px rgba(251,191,36,0.6))" : "none" }, onClick: () => onRouteClick(route.id) }),
+                                                React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff", strokeWidth: (((_b = ROUTE_CFG[route.rtype]) === null || _b === void 0 ? void 0 : _b.width) || 2.5) * 1.0 * (selectedId === route.id ? 1.4 : 1), strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: ((_c = ROUTE_CFG[route.rtype]) === null || _c === void 0 ? void 0 : _c.dash) || "none", markerEnd: skipArrow ? "none" : `url(#arr-${route.rtype})`, style: { pointerEvents: "none", filter: selectedId === route.id ? "drop-shadow(0 0 3px rgba(251,191,36,0.6))" : "none" } }),
+                                                React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: "transparent", strokeWidth: Math.max(((((_d = ROUTE_CFG[route.rtype]) === null || _d === void 0 ? void 0 : _d.width) || 2.5) * 1.0 * (selectedId === route.id ? 1.4 : 1)), COARSE_POINTER ? 20 : 0), strokeLinecap: "round", strokeLinejoin: "round", style: { cursor: "pointer", touchAction: "none" }, onClick: () => onRouteClick(route.id), onTouchEnd: (e) => { if (tool === "select" || tool === "erase" || linkingFromId) { e.stopPropagation(); if (e.cancelable) e.preventDefault(); onRouteClick(route.id); } } }),
                   selectedId === route.id && tool !== "erase" && (route.points || []).map((pt, pi) => (pi === 0 ? (React.createElement("circle", { key: route.id + "-anchor", cx: pt.x, cy: pt.y, r: 4.5, fill: "none", stroke: (ROUTE_CFG[route.rtype] ? ROUTE_CFG[route.rtype].color : null) || "#fbbf24", strokeWidth: 1.6, style: { pointerEvents: "none" } })) : (React.createElement("g", { key: route.id + "-h" + pi },
                     React.createElement("circle", { cx: pt.x, cy: pt.y, r: 12, fill: "transparent", onMouseDown: (e) => startRoutePointDrag(e, route.id, pi), onTouchStart: (e) => startRoutePointDrag(e, route.id, pi), style: { cursor: "move", touchAction: "none" } }),
                     React.createElement("circle", { cx: pt.x, cy: pt.y, r: 5, fill: "#fbbf24", stroke: "#0a0a14", strokeWidth: 1.5, style: { pointerEvents: "none" } }))))),
                                                 route.optionOf && route.points && route.points[0] && (React.createElement("circle", { cx: route.points[0].x, cy: route.points[0].y, r: 3.8, fill: ((_d = ROUTE_CFG.option) === null || _d === void 0 ? void 0 : _d.color) || "#14b8a6", stroke: "#fff", strokeWidth: 1.2, style: { pointerEvents: "none" } })),
+                                                route.snapTarget && route.points && route.points.length > 0 && (React.createElement("text", { x: route.points[route.points.length - 1].x + 7, y: route.points[route.points.length - 1].y - 7, fontSize: "10", style: { pointerEvents: "none", userSelect: "none" } }, "\uD83E\uDDF2")),
                                                 route.order != null && route.points && route.points[0] && (() => {
                                                     var _a;
                                                     const start = route.points[0];
@@ -13302,6 +13560,9 @@ function PlaybookApp() {
                                             React.createElement("line", { x1: pusher.x, y1: pusher.y, x2: pp.x, y2: pp.y, stroke: "#f87171", strokeWidth: 1.4, strokeDasharray: "3 3", opacity: 0.65 }),
                                             React.createElement("polygon", { points: `${tipX},${tipY} ${bx + nx},${by + ny} ${bx - nx},${by - ny}`, fill: "#f87171", opacity: 0.85 })));
                                     }),
+                                    snapGuide && (drawingRoute || snapGuide.drag) && (snapGuide.kind === "shade" ? (React.createElement("g", { style: { pointerEvents: "none" } },
+                                        React.createElement("line", { x1: snapGuide.x, y1: snapGuide.y - 70, x2: snapGuide.x, y2: snapGuide.y + 70, stroke: "#f472b6", strokeWidth: 1.4, strokeDasharray: "5,4", opacity: 0.9 }),
+                                        React.createElement("text", { x: snapGuide.x + 5, y: snapGuide.y - 58, fill: "#f9a8d4", fontSize: "9.5", style: { fontFamily: "'JetBrains Mono',monospace" } }, snapGuide.label))) : (React.createElement("circle", { cx: snapGuide.x, cy: snapGuide.y, r: 8, fill: "none", stroke: "#f472b6", strokeWidth: 2, strokeDasharray: "3,2", opacity: 0.95, style: { pointerEvents: "none" } }))),
                                     players.map(player => {
                                         const isOff = player.ptype === "offense";
                                         const isSel = selectedId === player.id;
@@ -13685,7 +13946,8 @@ function PlaybookApp() {
                                             (p.label || p.role || "P").toString(),
                                             p.id === sel.ownerId ? "  ·  current" : "")));
                                     })()),
-                                    React.createElement("button", { onClick: () => flipRouteLR(sel.id), title: "Mirror this route left \u2194 right about its start point", style: { padding: "5px 10px", cursor: "pointer", border: "1px solid rgba(125,211,252,0.4)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.06em", borderRadius: 4, whiteSpace: "nowrap" } }, "\u21C6 FLIP")),
+                                    React.createElement("button", { onClick: () => flipRouteLR(sel.id), title: "Mirror this route left \u2194 right about its start point", style: { padding: "5px 10px", cursor: "pointer", border: "1px solid rgba(125,211,252,0.4)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.06em", borderRadius: 4, whiteSpace: "nowrap" } }, "\u21C6 FLIP"),
+                                    React.createElement("button", { onClick: () => upd({ snapTarget: !sel.snapTarget }), title: "Snap target: while drawing or reshaping OTHER routes, their points pull onto this route's points. Hold SHIFT while dragging to bypass.", style: { padding: "5px 10px", cursor: "pointer", border: `1px solid ${sel.snapTarget ? "#f472b6" : "rgba(244,114,182,0.35)"}`, background: sel.snapTarget ? "rgba(244,114,182,0.22)" : "rgba(244,114,182,0.07)", color: "#f9a8d4", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.06em", borderRadius: 4, whiteSpace: "nowrap" } }, "\uD83E\uDDF2 ", sel.snapTarget ? "TARGET \u2713" : "SNAP TARGET")),
                                 React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em", marginBottom: 4 } }, "BLITZ ORDER"),
                                 React.createElement("div", { style: { display: "flex", gap: 4, marginBottom: 6, flexWrap: "wrap" } },
                                     [1, 2, 3, 4, 5, 6, 7, 8].map(n => {
@@ -14103,8 +14365,9 @@ function PlaybookApp() {
                                     setGestureStartPos(null);
                                     setFreeDrawingGesture(false);
                                     setHoverPoint(null);
+                                    setSnapGuide(null);
                                 }, style: { padding: "3px 10px", borderRadius: 4, border: `1px solid ${(_f = ROUTE_CFG[routeType]) === null || _f === void 0 ? void 0 : _f.color}`, background: `${(_g = ROUTE_CFG[routeType]) === null || _g === void 0 ? void 0 : _g.color}22`, color: (_h = ROUTE_CFG[routeType]) === null || _h === void 0 ? void 0 : _h.color, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.1em" } }, "FINISH"),
-                            React.createElement("button", { onClick: () => { setDrawingRoute(false); setRoutePoints([]); setGestureStartPos(null); setFreeDrawingGesture(false); setHoverPoint(null); }, style: { padding: "3px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "ESC"))),
+                            React.createElement("button", { onClick: () => { setDrawingRoute(false); setRoutePoints([]); setGestureStartPos(null); setFreeDrawingGesture(false); setHoverPoint(null); setSnapGuide(null); }, style: { padding: "3px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" } }, "ESC"))),
                         React.createElement(DraggablePanel, { style: { position: "absolute", bottom: 18, right: 22, display: "flex", flexDirection: "column", gap: 5, background: "rgba(10,10,18,0.85)", border: "1px solid rgba(255,255,255,0.08)", padding: 6, borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 5 } },
                             React.createElement("button", { onClick: () => setZoom(z => Math.min(4, z * 1.25)), title: "Zoom in", style: { width: 30, height: 28, borderRadius: 5, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#fbbf24", cursor: "pointer", fontSize: 16, fontWeight: 600, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" } }, "+"),
                             React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.5)", textAlign: "center", letterSpacing: "0.04em", padding: "1px 0" } },
@@ -14459,7 +14722,7 @@ function PlaybookApp() {
                                     borderRadius: 11, overflow: "hidden", display: "flex", flexDirection: "column",
                                     cursor: multiSelect ? "pointer" : "default" } },
                                 React.createElement("div", { style: { position: "relative" } },
-                                    React.createElement(PlayThumbnail, { play: play, w: 232, h: 150 }),
+                                    React.createElement(LazyThumb, { play: play, w: 232, h: 150 }),
                                     multiSelect && (React.createElement("span", { style: { position: "absolute", top: 7, left: 7, width: 24, height: 24, borderRadius: 6,
                                             background: isSel ? "#4ade80" : "rgba(8,8,20,0.7)",
                                             border: `2px solid ${isSel ? "#86efac" : "rgba(255,255,255,0.6)"}`,
@@ -18052,13 +18315,19 @@ if (typeof window !== "undefined")
 <body>
 <div id="root"></div>
 
-<!-- Shell source. Deliberately NOT type="text/babel" (so Babel's auto-
-     transformer, whose default JSX runtime varies by CDN version, never touches
-     it) and NOT a runnable script. The loader at the very bottom transforms this
-     with an EXPLICIT classic JSX runtime and injects the result. -->
-<script type="text/plain" id="gp-shell-src">
+<script id="gp-shell">
+/* Auth/team shell — PRECOMPILED to React.createElement (TypeScript, target
+   ES2019: identical device support to the editor script above). Babel and the
+   on-device compile step are gone — the shell now parses like any plain script.
+   Editable source + recompile procedure: playbook-shell.jsx (kept beside
+   playbook-app.jsx). The DOMContentLoaded gate below guarantees the deferred
+   Supabase client has already executed; the try/catch surfaces any startup
+   failure through the boot watchdog instead of a silent black page. */
+(function () {
+  function boot() {
+    try {
+"use strict";
 const { useState, useEffect, useCallback } = React;
-
 // You do NOT need to edit this file. The site asks for your Supabase keys on
 // screen the first time and remembers them on your device. (If you'd rather
 // hard-code them you still can — paste between the quotes below — it's optional.)
@@ -18068,31 +18337,27 @@ const SUPABASE_ANON_KEY = "sb_publishable_YtvHZhxD38kzIS-5kqp0sw_xfRGP4bv";
 // "Change backend" UI so players/coaches never see it. It only shows in a
 // build where keys are entered at runtime (the escape hatch matters there).
 const KEYS_BAKED = !SUPABASE_URL.includes("PASTE") && !SUPABASE_ANON_KEY.includes("PASTE");
-
 function storedKeys() {
-  const hardUrl = SUPABASE_URL.includes("PASTE") ? "" : SUPABASE_URL.trim();
-  const hardKey = SUPABASE_ANON_KEY.includes("PASTE") ? "" : SUPABASE_ANON_KEY.trim();
-  return {
-    url: (localStorage.getItem("gp_sb_url") || hardUrl || "").replace(/\/+$/, ""),
-    key: localStorage.getItem("gp_sb_key") || hardKey || "",
-  };
+    const hardUrl = SUPABASE_URL.includes("PASTE") ? "" : SUPABASE_URL.trim();
+    const hardKey = SUPABASE_ANON_KEY.includes("PASTE") ? "" : SUPABASE_ANON_KEY.trim();
+    return {
+        url: (localStorage.getItem("gp_sb_url") || hardUrl || "").replace(/\/+$/, ""),
+        key: localStorage.getItem("gp_sb_key") || hardKey || "",
+    };
 }
 let db = null; // the Supabase client — created once we have keys
-
-const ROLE_LABEL = { admin:"Admin", coadmin:"Co-Admin", coach:"Coach", coacht:"Coach(T)", player:"Player" };
+const ROLE_LABEL = { admin: "Admin", coadmin: "Co-Admin", coach: "Coach", coacht: "Coach(T)", player: "Player" };
 // Who can EDIT the playbook (write to team storage). Players and Coach(T) are
 // view-only; Coach and up can edit. Member-management rules are enforced in the
 // Roster component below.
 const CAN_EDIT_ROLES = ["admin", "coadmin", "coach"];
 const roleCanEdit = (r) => CAN_EDIT_ROLES.includes(r);
-
 function friendlyError(e) {
-  const m = (e && e.message) || String(e || "");
-  if (/failed to fetch|networkerror|load failed|fetch/i.test(m))
-    return "Can't reach your Supabase project. Tap \u201cChange backend\u201d on this screen and re-check the Project URL (Settings \u2192 API), and make sure the project isn't paused.";
-  return m;
+    const m = (e && e.message) || String(e || "");
+    if (/failed to fetch|networkerror|load failed|fetch/i.test(m))
+        return "Can't reach your Supabase project. Tap \u201cChange backend\u201d on this screen and re-check the Project URL (Settings \u2192 API), and make sure the project isn't paused.";
+    return m;
 }
-
 // ── Team-scoped cloud storage ───────────────────────────────────────────────
 // A drop-in for the editor's window.storage API — get(key,shared)->{value}|null
 // and set(key,value,shared) — backed by the team_data table. shared=true is the
@@ -18104,837 +18369,989 @@ function friendlyError(e) {
 // and setItem fails SILENTLY in our guarded helpers. IndexedDB holds hundreds
 // of MB, so the whole team playbook (chunks and all) fits comfortably.
 const gpIDB = (() => {
-  let p = null;
-  const open = () => p || (p = new Promise((res, rej) => {
-    try {
-      const r = indexedDB.open("gp_offline", 1);
-      r.onupgradeneeded = () => { r.result.createObjectStore("kv"); };
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-    } catch (e) { rej(e); }
-  }));
-  const op = (mode, fn) => open().then(db => new Promise((res, rej) => {
-    const tx = db.transaction("kv", mode);
-    const rq = fn(tx.objectStore("kv"));
-    tx.oncomplete = () => res(rq && ("result" in rq) ? rq.result : undefined);
-    tx.onerror = () => rej(tx.error);
-    tx.onabort = () => rej(tx.error);
-  }));
-  return {
-    get: (k) => op("readonly", st => st.get(k)),
-    set: (k, v) => op("readwrite", st => st.put(v, k)),
-    keys: () => op("readonly", st => st.getAllKeys()),
-  };
-})();
-
-function makeTeamStorage(teamId, userId, readOnly) {
-  const tk = (key, shared) => (shared ? "s:" : "p:" + userId + ":") + key;
-  // ── Offline layer: reads mirror to this device and fall back to the mirror
-  // when the network is gone; writes land locally first and queue in an outbox
-  // that flushes itself when you're back online (last write per key wins).
-  const CK = "gp_offc::" + teamId + "::";
-  const OB = "gp_outbox_v1::" + teamId;
-  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
-  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
-  const SENT = "\u0000null";
-  // Mirror writes go to IndexedDB (roomy); reads check IndexedDB first and fall
-  // back to any old localStorage entries from earlier builds, promoting them.
-  const cachePut = async (k, value) => {
-    const v = value == null ? SENT : value;
-    try { await gpIDB.set(CK + k, v); return true; }
-    catch (e) { try { localStorage.setItem(CK + k, v); return true; } catch (e2) { return false; } }
-  };
-  const cacheGet = async (k) => {
-    try {
-      let r = await gpIDB.get(CK + k);
-      if (r === undefined) {
-        const ls = lsGet(CK + k);
-        if (ls != null) { r = ls; gpIDB.set(CK + k, ls).catch(() => {}); }
-      }
-      if (r === undefined) return undefined;
-      return r === SENT ? null : r;
-    } catch (e) {
-      const ls = lsGet(CK + k);
-      return ls == null ? undefined : (ls === SENT ? null : ls);
-    }
-  };
-  // Lets the editor VERIFY a mirror entry actually persisted (no silent-quota
-  // false positives): resolves true only if the namespaced key is stored here.
-  window.__gpOffHas = async (nk) => { try { return (await cacheGet(nk)) !== undefined; } catch (e) { return false; } };
-  const obRead = () => { try { return JSON.parse(lsGet(OB) || "[]"); } catch (e) { return []; } };
-  const obWrite = (q) => { lsSet(OB, JSON.stringify(q)); window.__gpPendingSync = q.length; };
-  const netErr = (e) => !navigator.onLine || /fetch|network|load failed|timeout|connection/i.test(String((e && e.message) || e));
-  window.__gpPendingSync = obRead().length;
-  const raw = {
-    get: async (k) => { const { data, error } = await db.from("team_data").select("value").eq("team_id", teamId).eq("key", k).maybeSingle(); if (error) throw error; return data ? data.value : null; },
-    set: async (k, value) => { const { error } = await db.from("team_data").upsert({ team_id: teamId, key: k, value, updated_by: userId, updated_at: new Date().toISOString() }, { onConflict: "team_id,key" }); if (error) throw error; },
-    del: async (k) => { const { error } = await db.from("team_data").delete().eq("team_id", teamId).eq("key", k); if (error) throw error; },
-  };
-  let flushing = false;
-  const flush = async () => {
-    if (flushing || readOnly) return;
-    flushing = true;
-    try {
-      let q = obRead();
-      while (q.length) {
-        const it = q[0];
-        try { if (it.op === "del") await raw.del(it.k); else await raw.set(it.k, it.value); }
-        catch (e) {
-          if (netErr(e)) break; // still offline — try again later
-          console.warn("Gridiron offline sync: dropping unsyncable item", it.k, e);
+    let p = null;
+    const open = () => p || (p = new Promise((res, rej) => {
+        try {
+            const r = indexedDB.open("gp_offline", 1);
+            r.onupgradeneeded = () => { r.result.createObjectStore("kv"); };
+            r.onsuccess = () => res(r.result);
+            r.onerror = () => rej(r.error);
         }
-        q = q.slice(1); obWrite(q);
-      }
-      if (!obRead().length && navigator.onLine) window.__gpOfflineMode = false;
-    } finally { flushing = false; }
-  };
-  window.__gpFlushOutbox = flush;
-  try { window.addEventListener("online", () => { flush(); }); } catch (e) {}
-  if (obRead().length) setTimeout(flush, 2500);
-  return {
-    async get(key, shared) {
-      const k = tk(key, shared);
-      try {
-        const value = await raw.get(k);
-        await cachePut(k, value);
-        if (navigator.onLine) window.__gpOfflineMode = false;
-        return value == null ? null : { key, value, shared: !!shared };
-      } catch (e) {
-        if (!netErr(e)) throw e;
-        window.__gpOfflineMode = true;
-        const hit = await cacheGet(k);
-        if (hit === undefined) throw e;
-        return hit == null ? null : { key, value: hit, shared: !!shared };
-      }
-    },
-    async set(key, value, shared) {
-      if (readOnly) return { key, value, shared: !!shared }; // view-only: never writes
-      const k = tk(key, shared);
-      await cachePut(k, value);
-      try { await raw.set(k, value); if (window.__gpPendingSync) flush(); }
-      catch (e) {
-        if (!netErr(e)) throw e;
-        window.__gpOfflineMode = true;
-        const q = obRead().filter(it => it.k !== k);
-        q.push({ op: "set", k, value, ts: Date.now() });
-        obWrite(q);
-      }
-      return { key, value, shared: !!shared };
-    },
-    async delete(key, shared) {
-      if (readOnly) return { key, deleted: false, shared: !!shared };
-      const k = tk(key, shared);
-      await cachePut(k, null);
-      try { await raw.del(k); }
-      catch (e) {
-        if (!netErr(e)) throw e;
-        window.__gpOfflineMode = true;
-        const q = obRead().filter(it => it.k !== k);
-        q.push({ op: "del", k, ts: Date.now() });
-        obWrite(q);
-      }
-      return { key, deleted: true, shared: !!shared };
-    },
-    async list(prefix, shared) {
-      const base = (shared ? "s:" : "p:" + userId + ":");
-      try {
-        const { data, error } = await db.from("team_data").select("key").eq("team_id", teamId).like("key", base + (prefix || "") + "%");
-        if (error) throw error;
-        return { keys: (data || []).map(r => r.key.slice(base.length)) };
-      } catch (e) {
-        if (!netErr(e)) throw e;
-        window.__gpOfflineMode = true;
-        const keys = [];
-        const want = CK + base + (prefix || "");
+        catch (e) {
+            rej(e);
+        }
+    }));
+    const op = (mode, fn) => open().then(db => new Promise((res, rej) => {
+        const tx = db.transaction("kv", mode);
+        const rq = fn(tx.objectStore("kv"));
+        tx.oncomplete = () => res(rq && ("result" in rq) ? rq.result : undefined);
+        tx.onerror = () => rej(tx.error);
+        tx.onabort = () => rej(tx.error);
+    }));
+    return {
+        get: (k) => op("readonly", st => st.get(k)),
+        set: (k, v) => op("readwrite", st => st.put(v, k)),
+        keys: () => op("readonly", st => st.getAllKeys()),
+    };
+})();
+function makeTeamStorage(teamId, userId, readOnly) {
+    const tk = (key, shared) => (shared ? "s:" : "p:" + userId + ":") + key;
+    // ── Offline layer: reads mirror to this device and fall back to the mirror
+    // when the network is gone; writes land locally first and queue in an outbox
+    // that flushes itself when you're back online (last write per key wins).
+    const CK = "gp_offc::" + teamId + "::";
+    const OB = "gp_outbox_v1::" + teamId;
+    const lsGet = (k) => { try {
+        return localStorage.getItem(k);
+    }
+    catch (e) {
+        return null;
+    } };
+    const lsSet = (k, v) => { try {
+        localStorage.setItem(k, v);
+    }
+    catch (e) { } };
+    const SENT = "\u0000null";
+    // Mirror writes go to IndexedDB (roomy); reads check IndexedDB first and fall
+    // back to any old localStorage entries from earlier builds, promoting them.
+    const cachePut = async (k, value) => {
+        const v = value == null ? SENT : value;
         try {
-          const all = await gpIDB.keys();
-          for (const lk of (all || [])) {
-            if (typeof lk === "string" && lk.indexOf(want) === 0) keys.push(lk.slice((CK + base).length));
-          }
-        } catch (e2) {}
+            await gpIDB.set(CK + k, v);
+            return true;
+        }
+        catch (e) {
+            try {
+                localStorage.setItem(CK + k, v);
+                return true;
+            }
+            catch (e2) {
+                return false;
+            }
+        }
+    };
+    const cacheGet = async (k) => {
         try {
-          for (let i = 0; i < localStorage.length; i++) {
-            const lk = localStorage.key(i);
-            if (lk && lk.indexOf(want) === 0 && lsGet(lk) !== "\u0000null") { const short = lk.slice((CK + base).length); if (keys.indexOf(short) === -1) keys.push(short); }
-          }
-        } catch (e3) {}
-        return { keys };
-      }
-    },
-  };
+            let r = await gpIDB.get(CK + k);
+            if (r === undefined) {
+                const ls = lsGet(CK + k);
+                if (ls != null) {
+                    r = ls;
+                    gpIDB.set(CK + k, ls).catch(() => { });
+                }
+            }
+            if (r === undefined)
+                return undefined;
+            return r === SENT ? null : r;
+        }
+        catch (e) {
+            const ls = lsGet(CK + k);
+            return ls == null ? undefined : (ls === SENT ? null : ls);
+        }
+    };
+    // Lets the editor VERIFY a mirror entry actually persisted (no silent-quota
+    // false positives): resolves true only if the namespaced key is stored here.
+    window.__gpOffHas = async (nk) => { try {
+        return (await cacheGet(nk)) !== undefined;
+    }
+    catch (e) {
+        return false;
+    } };
+    const obRead = () => { try {
+        return JSON.parse(lsGet(OB) || "[]");
+    }
+    catch (e) {
+        return [];
+    } };
+    const obWrite = (q) => { lsSet(OB, JSON.stringify(q)); window.__gpPendingSync = q.length; };
+    const netErr = (e) => !navigator.onLine || /fetch|network|load failed|timeout|connection/i.test(String((e && e.message) || e));
+    window.__gpPendingSync = obRead().length;
+    const raw = {
+        get: async (k) => { const { data, error } = await db.from("team_data").select("value").eq("team_id", teamId).eq("key", k).maybeSingle(); if (error)
+            throw error; return data ? data.value : null; },
+        set: async (k, value) => { const { error } = await db.from("team_data").upsert({ team_id: teamId, key: k, value, updated_by: userId, updated_at: new Date().toISOString() }, { onConflict: "team_id,key" }); if (error)
+            throw error; },
+        del: async (k) => { const { error } = await db.from("team_data").delete().eq("team_id", teamId).eq("key", k); if (error)
+            throw error; },
+    };
+    let flushing = false;
+    // Background mirror-verify dedupe: one in-flight server read per key.
+    const inFlight = new Set();
+    const flush = async () => {
+        if (flushing || readOnly)
+            return;
+        flushing = true;
+        try {
+            let q = obRead();
+            while (q.length) {
+                const it = q[0];
+                try {
+                    if (it.op === "del")
+                        await raw.del(it.k);
+                    else
+                        await raw.set(it.k, it.value);
+                }
+                catch (e) {
+                    if (netErr(e))
+                        break; // still offline — try again later
+                    console.warn("Gridiron offline sync: dropping unsyncable item", it.k, e);
+                }
+                q = q.slice(1);
+                obWrite(q);
+            }
+            if (!obRead().length && navigator.onLine)
+                window.__gpOfflineMode = false;
+        }
+        finally {
+            flushing = false;
+        }
+    };
+    window.__gpFlushOutbox = flush;
+    try {
+        window.addEventListener("online", () => { flush(); });
+    }
+    catch (e) { }
+    if (obRead().length)
+        setTimeout(flush, 2500);
+    return {
+        async get(key, shared, opts) {
+            const k = tk(key, shared);
+            const wantFresh = !!(opts && opts.fresh);
+            if (!wantFresh) {
+                // ── Instant-then-fresh ──
+                // Serve the on-device mirror immediately so the playbook is up the
+                // moment you log in, then verify against Supabase in the background.
+                // If the server copy differs, mirror it and announce "gp-fresh" so the
+                // editor can apply it (it only will while the library is untouched).
+                // Skipped entirely while the outbox holds unsynced local writes — the
+                // mirror is AHEAD of the server then, and the flush reconciles.
+                const hit = await cacheGet(k);
+                if (hit !== undefined) {
+                    if (!obRead().length && !inFlight.has(k)) {
+                        inFlight.add(k);
+                        raw.get(k).then(async (value) => {
+                            inFlight.delete(k);
+                            if (navigator.onLine)
+                                window.__gpOfflineMode = false;
+                            // Re-check: the user may have gone offline and edited while this
+                            // read was in flight — never let a stale server copy overwrite a
+                            // mirror that is newer than the server.
+                            if (obRead().length)
+                                return;
+                            const norm = value == null ? null : value;
+                            const cur = hit == null ? null : hit;
+                            if (norm !== cur) {
+                                await cachePut(k, value);
+                                try {
+                                    window.__gpFreshKeys = window.__gpFreshKeys || new Set();
+                                    window.__gpFreshKeys.add(key);
+                                    window.dispatchEvent(new CustomEvent("gp-fresh", { detail: { key, shared: !!shared } }));
+                                }
+                                catch (e2) { }
+                            }
+                        }).catch((e) => { inFlight.delete(k); if (netErr(e))
+                            window.__gpOfflineMode = true; });
+                    }
+                    return hit == null ? null : { key, value: hit, shared: !!shared };
+                }
+            }
+            try {
+                const value = await raw.get(k);
+                await cachePut(k, value);
+                if (navigator.onLine)
+                    window.__gpOfflineMode = false;
+                return value == null ? null : { key, value, shared: !!shared };
+            }
+            catch (e) {
+                if (!netErr(e))
+                    throw e;
+                window.__gpOfflineMode = true;
+                const hit = await cacheGet(k);
+                if (hit === undefined)
+                    throw e;
+                return hit == null ? null : { key, value: hit, shared: !!shared };
+            }
+        },
+        async set(key, value, shared) {
+            if (readOnly)
+                return { key, value, shared: !!shared }; // view-only: never writes
+            const k = tk(key, shared);
+            await cachePut(k, value);
+            try {
+                await raw.set(k, value);
+                if (window.__gpPendingSync)
+                    flush();
+            }
+            catch (e) {
+                if (!netErr(e))
+                    throw e;
+                window.__gpOfflineMode = true;
+                const q = obRead().filter(it => it.k !== k);
+                q.push({ op: "set", k, value, ts: Date.now() });
+                obWrite(q);
+            }
+            return { key, value, shared: !!shared };
+        },
+        async delete(key, shared) {
+            if (readOnly)
+                return { key, deleted: false, shared: !!shared };
+            const k = tk(key, shared);
+            await cachePut(k, null);
+            try {
+                await raw.del(k);
+            }
+            catch (e) {
+                if (!netErr(e))
+                    throw e;
+                window.__gpOfflineMode = true;
+                const q = obRead().filter(it => it.k !== k);
+                q.push({ op: "del", k, ts: Date.now() });
+                obWrite(q);
+            }
+            return { key, deleted: true, shared: !!shared };
+        },
+        async list(prefix, shared) {
+            const base = (shared ? "s:" : "p:" + userId + ":");
+            try {
+                const { data, error } = await db.from("team_data").select("key").eq("team_id", teamId).like("key", base + (prefix || "") + "%");
+                if (error)
+                    throw error;
+                return { keys: (data || []).map(r => r.key.slice(base.length)) };
+            }
+            catch (e) {
+                if (!netErr(e))
+                    throw e;
+                window.__gpOfflineMode = true;
+                const keys = [];
+                const want = CK + base + (prefix || "");
+                try {
+                    const all = await gpIDB.keys();
+                    for (const lk of (all || [])) {
+                        if (typeof lk === "string" && lk.indexOf(want) === 0)
+                            keys.push(lk.slice((CK + base).length));
+                    }
+                }
+                catch (e2) { }
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const lk = localStorage.key(i);
+                        if (lk && lk.indexOf(want) === 0 && lsGet(lk) !== "\u0000null") {
+                            const short = lk.slice((CK + base).length);
+                            if (keys.indexOf(short) === -1)
+                                keys.push(short);
+                        }
+                    }
+                }
+                catch (e3) { }
+                return { keys };
+            }
+        },
+    };
 }
-
 function RolePill({ role }) {
-  return <span className={"pill " + role}>{ROLE_LABEL[role] || role}</span>;
+    return React.createElement("span", { className: "pill " + role }, ROLE_LABEL[role] || role);
 }
-
 // ── One-time backend connection — paste keys here instead of in the file ────
 function ConnectScreen({ onSaved, onCancel, initialUrl, initialKey }) {
-  const [url, setUrl] = useState(initialUrl || "");
-  const [key, setKey] = useState(initialKey || "");
-  const [err, setErr] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const save = async () => {
-    const u = url.trim().replace(/\/+$/, "");
-    const k = key.trim();
-    if (!/^https:\/\/[^ ]+\.[^ ]+/.test(u)) { setErr("Paste the Project URL from Settings → API — it looks like https://xxxxxxxx.supabase.co (not the dashboard link in your browser bar)."); return; }
-    if (k.length < 30) { setErr("That anon key looks too short — copy the whole 'anon public' key."); return; }
-    setBusy(true); setErr(null);
-    try {
-      const res = await fetch(u + "/auth/v1/settings", { headers: { apikey: k } });
-      if (res.status === 401 || res.status === 403) { setBusy(false); setErr("Reached your project, but the key was rejected. Re-copy the 'anon public' key (not the service_role key)."); return; }
-      if (!res.ok) { setBusy(false); setErr("Got an unexpected response from that URL. Double-check the Project URL, and that the project is active (not paused)."); return; }
-    } catch (_) {
-      setBusy(false);
-      setErr("Couldn't reach that URL. Make sure it's the Project URL from Settings → API (https://xxxx.supabase.co — not the dashboard link), your project isn't paused, and you're on the deployed site, not the .html file on your computer.");
-      return;
-    }
-    localStorage.setItem("gp_sb_url", u);
-    localStorage.setItem("gp_sb_key", k);
-    setBusy(false);
-    onSaved({ url: u, key: k });
-  };
-  return (
-    <div className="card">
-      <p className="sec">Connect to your backend</p>
-      <div style={{color:"var(--muted)",fontSize:13,lineHeight:1.65,marginBottom:2}}>
-        One-time setup, right here — no file editing. In Supabase, open
-        <b> Project Settings → API</b> and copy these two values in.
-      </div>
-      <label>Project URL</label>
-      <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxxxxxx.supabase.co" autoCapitalize="off" autoCorrect="off" spellCheck="false" />
-      <label>anon public key</label>
-      <input value={key} onChange={e=>setKey(e.target.value)} placeholder="eyJhbGciOi… (long key)" autoCapitalize="off" autoCorrect="off" spellCheck="false" onKeyDown={e=>e.key==="Enter"&&save()} />
-      <button className="btn" disabled={busy} onClick={save}>{busy ? "Testing connection…" : "Connect"}</button>
-      {onCancel && <button className="btn ghost" style={{marginTop:10}} disabled={busy} onClick={onCancel}>Cancel</button>}
-      {err && <div className="msg err">{err}</div>}
-      <div className="hint">Saved on this device only. Both values are safe to use here — your data is protected by the database rules, not by hiding the key.</div>
-    </div>
-  );
+    const [url, setUrl] = useState(initialUrl || "");
+    const [key, setKey] = useState(initialKey || "");
+    const [err, setErr] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const save = async () => {
+        const u = url.trim().replace(/\/+$/, "");
+        const k = key.trim();
+        if (!/^https:\/\/[^ ]+\.[^ ]+/.test(u)) {
+            setErr("Paste the Project URL from Settings → API — it looks like https://xxxxxxxx.supabase.co (not the dashboard link in your browser bar).");
+            return;
+        }
+        if (k.length < 30) {
+            setErr("That anon key looks too short — copy the whole 'anon public' key.");
+            return;
+        }
+        setBusy(true);
+        setErr(null);
+        try {
+            const res = await fetch(u + "/auth/v1/settings", { headers: { apikey: k } });
+            if (res.status === 401 || res.status === 403) {
+                setBusy(false);
+                setErr("Reached your project, but the key was rejected. Re-copy the 'anon public' key (not the service_role key).");
+                return;
+            }
+            if (!res.ok) {
+                setBusy(false);
+                setErr("Got an unexpected response from that URL. Double-check the Project URL, and that the project is active (not paused).");
+                return;
+            }
+        }
+        catch (_) {
+            setBusy(false);
+            setErr("Couldn't reach that URL. Make sure it's the Project URL from Settings → API (https://xxxx.supabase.co — not the dashboard link), your project isn't paused, and you're on the deployed site, not the .html file on your computer.");
+            return;
+        }
+        localStorage.setItem("gp_sb_url", u);
+        localStorage.setItem("gp_sb_key", k);
+        setBusy(false);
+        onSaved({ url: u, key: k });
+    };
+    return (React.createElement("div", { className: "card" },
+        React.createElement("p", { className: "sec" }, "Connect to your backend"),
+        React.createElement("div", { style: { color: "var(--muted)", fontSize: 13, lineHeight: 1.65, marginBottom: 2 } },
+            "One-time setup, right here \u2014 no file editing. In Supabase, open",
+            React.createElement("b", null, " Project Settings \u2192 API"),
+            " and copy these two values in."),
+        React.createElement("label", null, "Project URL"),
+        React.createElement("input", { value: url, onChange: e => setUrl(e.target.value), placeholder: "https://xxxxxxxx.supabase.co", autoCapitalize: "off", autoCorrect: "off", spellCheck: "false" }),
+        React.createElement("label", null, "anon public key"),
+        React.createElement("input", { value: key, onChange: e => setKey(e.target.value), placeholder: "eyJhbGciOi\u2026 (long key)", autoCapitalize: "off", autoCorrect: "off", spellCheck: "false", onKeyDown: e => e.key === "Enter" && save() }),
+        React.createElement("button", { className: "btn", disabled: busy, onClick: save }, busy ? "Testing connection…" : "Connect"),
+        onCancel && React.createElement("button", { className: "btn ghost", style: { marginTop: 10 }, disabled: busy, onClick: onCancel }, "Cancel"),
+        err && React.createElement("div", { className: "msg err" }, err),
+        React.createElement("div", { className: "hint" }, "Saved on this device only. Both values are safe to use here \u2014 your data is protected by the database rules, not by hiding the key.")));
 }
-
 // ── Sign in / sign up ──────────────────────────────────────────────────────
 function AuthScreen({ backendHost, onChangeBackend }) {
-  const [mode, setMode] = useState("login"); // 'login' | 'signup'
-  const [email, setEmail] = useState("");
-  const [pass, setPass] = useState("");
-  const [showPass, setShowPass] = useState(false);
-  const [code, setCode] = useState("");
-  const [first, setFirst] = useState("");
-  const [last, setLast] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null); // {type, text}
-
-  const submit = async () => {
-    setMsg(null);
-    if (!email || !pass) { setMsg({type:"err", text:"Enter your email and password."}); return; }
-    if (mode === "signup" && !code.trim()) { setMsg({type:"err", text:"Enter the access code your coach gave you."}); return; }
-    if (mode === "signup" && (!first.trim() || !last.trim())) { setMsg({type:"err", text:"Enter your first and last name."}); return; }
-    setBusy(true);
-    try {
-      if (mode === "signup") {
-        const { data, error } = await db.auth.signUp({ email: email.trim(), password: pass });
-        if (error) throw error;
-        // Stash the code so it still works after an email-confirmation round trip.
-        localStorage.setItem("gp_pending_code", code.trim().toUpperCase());
-        localStorage.setItem("gp_pending_first", first.trim());
-        localStorage.setItem("gp_pending_last", last.trim());
-        localStorage.setItem("gp_pending_name", (first.trim() + " " + last.trim()).trim());
-        if (data.session) {
-          // Confirmation is off → we're already in; the app will redeem the code.
-          setMsg({type:"ok", text:"Account created. Setting up your team…"});
-        } else {
-          setMsg({type:"ok", text:"Account created. Check your email to confirm, then come back and log in — your code is saved."});
+    const [mode, setMode] = useState("login"); // 'login' | 'signup'
+    const [email, setEmail] = useState("");
+    const [pass, setPass] = useState("");
+    const [showPass, setShowPass] = useState(false);
+    const [code, setCode] = useState("");
+    const [first, setFirst] = useState("");
+    const [last, setLast] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null); // {type, text}
+    const submit = async () => {
+        setMsg(null);
+        if (!email || !pass) {
+            setMsg({ type: "err", text: "Enter your email and password." });
+            return;
         }
-      } else {
-        const { error } = await db.auth.signInWithPassword({ email: email.trim(), password: pass });
-        if (error) throw error;
-      }
-    } catch (e) {
-      setMsg({type:"err", text: friendlyError(e)});
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div className="card">
-      <div className="tabs">
-        <button className={"tab" + (mode==="login"?" on":"")} onClick={()=>{setMode("login");setMsg(null);}}>Log In</button>
-        <button className={"tab" + (mode==="signup"?" on":"")} onClick={()=>{setMode("signup");setMsg(null);}}>Sign Up</button>
-      </div>
-
-      <label>Email</label>
-      <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="coach@school.edu" autoComplete="email" />
-
-      <label>Password</label>
-      <div style={{position:"relative"}}>
-        <input type={showPass?"text":"password"} value={pass} onChange={e=>setPass(e.target.value)} placeholder="••••••••" autoComplete={mode==="signup"?"new-password":"current-password"} onKeyDown={e=>e.key==="Enter"&&mode==="login"&&submit()} style={{paddingRight:44,width:"100%"}} />
-        <button type="button" onClick={()=>setShowPass(v=>!v)} aria-label={showPass?"Hide password":"Show password"} title={showPass?"Hide password":"Show password"}
-          style={{position:"absolute",right:1,top:1,bottom:1,width:40,display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",border:"none",cursor:"pointer",color:"var(--muted)",fontSize:16,padding:0}}>
-          {showPass
-            ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-            : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-7-10-7a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>}
-        </button>
-      </div>
-
-      {mode === "signup" && <>
-        <div style={{display:"flex",gap:8}}>
-          <div style={{flex:1,minWidth:0}}>
-            <label>First name</label>
-            <input value={first} onChange={e=>setFirst(e.target.value)} placeholder="First" />
-          </div>
-          <div style={{flex:1,minWidth:0}}>
-            <label>Last name</label>
-            <input value={last} onChange={e=>setLast(e.target.value)} placeholder="Last" />
-          </div>
-        </div>
-        <div style={{color:"var(--faint)",fontSize:11.5,lineHeight:1.5,margin:"3px 0 2px"}}>Players appear on the roster as &ldquo;{first.trim()?first.trim()[0].toUpperCase():"F"}. {last.trim()||"Last"}&rdquo; — spelled out in full only if a teammate already has that name.</div>
-        <label>Access code</label>
-        <input className="code-input" value={code} onChange={e=>setCode(e.target.value)} placeholder="ABCD1234" />
-      </>}
-
-      <button className="btn" disabled={busy} onClick={submit}>
-        {busy ? "Working…" : (mode === "login" ? "Log In" : "Create Account")}
-      </button>
-
-      {msg && <div className={"msg " + msg.type}>{msg.text}</div>}
-
-      <div className="hint">
-        {mode === "login"
-          ? "First time here? Switch to Sign Up — you'll need the access code your team admin sent you."
-          : "No code yet? Ask your team's admin to generate one for you. New school setting things up? Use your founder code."}
-      </div>
-
-      {!KEYS_BAKED && (
-        <div className="hint" style={{borderTop:"1px solid var(--line)",paddingTop:11,marginTop:13}}>
-          Backend: <b style={{color:"var(--muted)"}}>{backendHost || "—"}</b>. Wrong project, or seeing "failed to fetch"?{" "}
-          <a href="#" onClick={e=>{e.preventDefault();onChangeBackend();}}>Change backend</a>.
-        </div>
-      )}
-    </div>
-  );
+        if (mode === "signup" && !code.trim()) {
+            setMsg({ type: "err", text: "Enter the access code your coach gave you." });
+            return;
+        }
+        if (mode === "signup" && (!first.trim() || !last.trim())) {
+            setMsg({ type: "err", text: "Enter your first and last name." });
+            return;
+        }
+        setBusy(true);
+        try {
+            if (mode === "signup") {
+                const { data, error } = await db.auth.signUp({ email: email.trim(), password: pass });
+                if (error)
+                    throw error;
+                // Stash the code so it still works after an email-confirmation round trip.
+                localStorage.setItem("gp_pending_code", code.trim().toUpperCase());
+                localStorage.setItem("gp_pending_first", first.trim());
+                localStorage.setItem("gp_pending_last", last.trim());
+                localStorage.setItem("gp_pending_name", (first.trim() + " " + last.trim()).trim());
+                if (data.session) {
+                    // Confirmation is off → we're already in; the app will redeem the code.
+                    setMsg({ type: "ok", text: "Account created. Setting up your team…" });
+                }
+                else {
+                    setMsg({ type: "ok", text: "Account created. Check your email to confirm, then come back and log in — your code is saved." });
+                }
+            }
+            else {
+                const { error } = await db.auth.signInWithPassword({ email: email.trim(), password: pass });
+                if (error)
+                    throw error;
+            }
+        }
+        catch (e) {
+            setMsg({ type: "err", text: friendlyError(e) });
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    return (React.createElement("div", { className: "card" },
+        React.createElement("div", { className: "tabs" },
+            React.createElement("button", { className: "tab" + (mode === "login" ? " on" : ""), onClick: () => { setMode("login"); setMsg(null); } }, "Log In"),
+            React.createElement("button", { className: "tab" + (mode === "signup" ? " on" : ""), onClick: () => { setMode("signup"); setMsg(null); } }, "Sign Up")),
+        React.createElement("label", null, "Email"),
+        React.createElement("input", { type: "email", value: email, onChange: e => setEmail(e.target.value), placeholder: "coach@school.edu", autoComplete: "email" }),
+        React.createElement("label", null, "Password"),
+        React.createElement("div", { style: { position: "relative" } },
+            React.createElement("input", { type: showPass ? "text" : "password", value: pass, onChange: e => setPass(e.target.value), placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022", autoComplete: mode === "signup" ? "new-password" : "current-password", onKeyDown: e => e.key === "Enter" && mode === "login" && submit(), style: { paddingRight: 44, width: "100%" } }),
+            React.createElement("button", { type: "button", onClick: () => setShowPass(v => !v), "aria-label": showPass ? "Hide password" : "Show password", title: showPass ? "Hide password" : "Show password", style: { position: "absolute", right: 1, top: 1, bottom: 1, width: 40, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 16, padding: 0 } }, showPass
+                ? React.createElement("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" },
+                    React.createElement("path", { d: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" }),
+                    React.createElement("circle", { cx: "12", cy: "12", r: "3" }))
+                : React.createElement("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" },
+                    React.createElement("path", { d: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-7-10-7a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19" }),
+                    React.createElement("line", { x1: "1", y1: "1", x2: "23", y2: "23" })))),
+        mode === "signup" && React.createElement(React.Fragment, null,
+            React.createElement("div", { style: { display: "flex", gap: 8 } },
+                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                    React.createElement("label", null, "First name"),
+                    React.createElement("input", { value: first, onChange: e => setFirst(e.target.value), placeholder: "First" })),
+                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                    React.createElement("label", null, "Last name"),
+                    React.createElement("input", { value: last, onChange: e => setLast(e.target.value), placeholder: "Last" }))),
+            React.createElement("div", { style: { color: "var(--faint)", fontSize: 11.5, lineHeight: 1.5, margin: "3px 0 2px" } },
+                "Players appear on the roster as \u201C",
+                first.trim() ? first.trim()[0].toUpperCase() : "F",
+                ". ",
+                last.trim() || "Last",
+                "\u201D \u2014 spelled out in full only if a teammate already has that name."),
+            React.createElement("label", null, "Access code"),
+            React.createElement("input", { className: "code-input", value: code, onChange: e => setCode(e.target.value), placeholder: "ABCD1234" })),
+        React.createElement("button", { className: "btn", disabled: busy, onClick: submit }, busy ? "Working…" : (mode === "login" ? "Log In" : "Create Account")),
+        msg && React.createElement("div", { className: "msg " + msg.type }, msg.text),
+        React.createElement("div", { className: "hint" }, mode === "login"
+            ? "First time here? Switch to Sign Up — you'll need the access code your team admin sent you."
+            : "No code yet? Ask your team's admin to generate one for you. New school setting things up? Use your founder code."),
+        !KEYS_BAKED && (React.createElement("div", { className: "hint", style: { borderTop: "1px solid var(--line)", paddingTop: 11, marginTop: 13 } },
+            "Backend: ",
+            React.createElement("b", { style: { color: "var(--muted)" } }, backendHost || "—"),
+            ". Wrong project, or seeing \"failed to fetch\"?",
+            " ",
+            React.createElement("a", { href: "#", onClick: e => { e.preventDefault(); onChangeBackend(); } }, "Change backend"),
+            "."))));
 }
-
 // ── Logged in, but not on a team yet ────────────────────────────────────────
 function JoinTeam({ displayName, onJoined }) {
-  const [code, setCode] = useState("");
-  // Prefill from a name captured at sign-up (localStorage or auth metadata).
-  const seed = (localStorage.getItem("gp_pending_name") || displayName || "").trim();
-  const seedParts = seed ? seed.split(/\s+/) : [];
-  const [first, setFirst] = useState(localStorage.getItem("gp_pending_first") || (seedParts[0] || ""));
-  const [last, setLast] = useState(localStorage.getItem("gp_pending_last") || (seedParts.length > 1 ? seedParts.slice(1).join(" ") : ""));
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
-
-  const join = async () => {
-    if (!code.trim()) { setMsg({type:"err", text:"Enter your access code."}); return; }
-    if (!first.trim() || !last.trim()) { setMsg({type:"err", text:"Enter your first and last name."}); return; }
-    setBusy(true); setMsg(null);
-    try {
-      const { error } = await db.rpc("redeem_code", { p_code: code.trim().toUpperCase(), p_first: first.trim(), p_last: last.trim() });
-      if (error) throw error;
-      ["gp_pending_code","gp_pending_name","gp_pending_first","gp_pending_last"].forEach(k=>localStorage.removeItem(k));
-      onJoined();
-    } catch (e) {
-      setMsg({type:"err", text: friendlyError(e)});
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div className="card">
-      <p className="sec">Join your team</p>
-      <div style={{color:"var(--muted)",fontSize:13,lineHeight:1.6,marginBottom:6}}>
-        You're signed in. Enter your name and the access code from your team's admin to get into your playbook.
-      </div>
-      <div style={{display:"flex",gap:8}}>
-        <div style={{flex:1,minWidth:0}}>
-          <label>First name</label>
-          <input value={first} onChange={e=>setFirst(e.target.value)} placeholder="First" />
-        </div>
-        <div style={{flex:1,minWidth:0}}>
-          <label>Last name</label>
-          <input value={last} onChange={e=>setLast(e.target.value)} placeholder="Last" />
-        </div>
-      </div>
-      <div style={{color:"var(--faint)",fontSize:11.5,lineHeight:1.5,margin:"3px 0 2px"}}>Players appear as &ldquo;{first.trim()?first.trim()[0].toUpperCase():"F"}. {last.trim()||"Last"}&rdquo; — full name only if a teammate already has it.</div>
-      <label>Access code</label>
-      <input className="code-input" value={code} onChange={e=>setCode(e.target.value)} placeholder="ABCD1234" onKeyDown={e=>e.key==="Enter"&&join()} />
-      <button className="btn" disabled={busy} onClick={join}>{busy ? "Joining…" : "Join Team"}</button>
-      {msg && <div className={"msg " + msg.type}>{msg.text}</div>}
-      <button className="btn ghost" style={{marginTop:10}} onClick={()=>db.auth.signOut()}>Log out</button>
-    </div>
-  );
+    const [code, setCode] = useState("");
+    // Prefill from a name captured at sign-up (localStorage or auth metadata).
+    const seed = (localStorage.getItem("gp_pending_name") || displayName || "").trim();
+    const seedParts = seed ? seed.split(/\s+/) : [];
+    const [first, setFirst] = useState(localStorage.getItem("gp_pending_first") || (seedParts[0] || ""));
+    const [last, setLast] = useState(localStorage.getItem("gp_pending_last") || (seedParts.length > 1 ? seedParts.slice(1).join(" ") : ""));
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const join = async () => {
+        if (!code.trim()) {
+            setMsg({ type: "err", text: "Enter your access code." });
+            return;
+        }
+        if (!first.trim() || !last.trim()) {
+            setMsg({ type: "err", text: "Enter your first and last name." });
+            return;
+        }
+        setBusy(true);
+        setMsg(null);
+        try {
+            const { error } = await db.rpc("redeem_code", { p_code: code.trim().toUpperCase(), p_first: first.trim(), p_last: last.trim() });
+            if (error)
+                throw error;
+            ["gp_pending_code", "gp_pending_name", "gp_pending_first", "gp_pending_last"].forEach(k => localStorage.removeItem(k));
+            onJoined();
+        }
+        catch (e) {
+            setMsg({ type: "err", text: friendlyError(e) });
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    return (React.createElement("div", { className: "card" },
+        React.createElement("p", { className: "sec" }, "Join your team"),
+        React.createElement("div", { style: { color: "var(--muted)", fontSize: 13, lineHeight: 1.6, marginBottom: 6 } }, "You're signed in. Enter your name and the access code from your team's admin to get into your playbook."),
+        React.createElement("div", { style: { display: "flex", gap: 8 } },
+            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement("label", null, "First name"),
+                React.createElement("input", { value: first, onChange: e => setFirst(e.target.value), placeholder: "First" })),
+            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement("label", null, "Last name"),
+                React.createElement("input", { value: last, onChange: e => setLast(e.target.value), placeholder: "Last" }))),
+        React.createElement("div", { style: { color: "var(--faint)", fontSize: 11.5, lineHeight: 1.5, margin: "3px 0 2px" } },
+            "Players appear as \u201C",
+            first.trim() ? first.trim()[0].toUpperCase() : "F",
+            ". ",
+            last.trim() || "Last",
+            "\u201D \u2014 full name only if a teammate already has it."),
+        React.createElement("label", null, "Access code"),
+        React.createElement("input", { className: "code-input", value: code, onChange: e => setCode(e.target.value), placeholder: "ABCD1234", onKeyDown: e => e.key === "Enter" && join() }),
+        React.createElement("button", { className: "btn", disabled: busy, onClick: join }, busy ? "Joining…" : "Join Team"),
+        msg && React.createElement("div", { className: "msg " + msg.type }, msg.text),
+        React.createElement("button", { className: "btn ghost", style: { marginTop: 10 }, onClick: () => db.auth.signOut() }, "Log out")));
 }
-
 // ── Admin/co-admin: make invite codes ───────────────────────────────────────
 function InvitePanel({ teamId, myRole }) {
-  // What roles THIS person may hand out. Coach(T) can only bring in players;
-  // a Coach can add players, Coach(T)s and Coaches; admins/co-admins add anyone.
-  const opts = myRole === "coacht"
-    ? [["player", "Player — view only"]]
-    : myRole === "coach"
-    ? [["player", "Player — view only"], ["coacht", "Coach(T) — view, export GIFs/PDFs, invite players"], ["coach", "Coach — can edit"]]
-    : [["player", "Player — view only"], ["coacht", "Coach(T) — view, export GIFs/PDFs, invite players"], ["coach", "Coach — can edit"], ["coadmin", "Co-Admin — full control"]];
-  const [role, setRole] = useState(opts[0][0]);
-  const [busy, setBusy] = useState(false);
-  const [code, setCode] = useState(null);
-  const [err, setErr] = useState(null);
-
-  const make = async () => {
-    setBusy(true); setErr(null); setCode(null);
-    try {
-      const { data, error } = await db.rpc("generate_code", { p_team: teamId, p_role: role, p_max_uses: 1 });
-      if (error) throw error;
-      setCode(data);
-    } catch (e) { setErr(friendlyError(e)); }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <div style={{marginTop:20}}>
-      <p className="sec">Invite someone</p>
-      <div className="row">
-        <select value={role} onChange={e=>setRole(e.target.value)} style={{flex:1,minWidth:140}}>
-          {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
-        <button className="mini" style={{padding:"10px 16px"}} disabled={busy} onClick={make}>{busy?"…":"Create code"}</button>
-      </div>
-      {code && (
-        <div className="codebox">
-          <code>{code}</code>
-          <button className="mini" onClick={()=>navigator.clipboard && navigator.clipboard.writeText(code)}>Copy</button>
-          <span style={{fontSize:11,color:"var(--muted)"}}>Single use — share it with one person.</span>
-        </div>
-      )}
-      {err && <div className="msg err">{err}</div>}
-    </div>
-  );
+    // What roles THIS person may hand out. Coach(T) can only bring in players;
+    // a Coach can add players, Coach(T)s and Coaches; admins/co-admins add anyone.
+    const opts = myRole === "coacht"
+        ? [["player", "Player — view only"]]
+        : myRole === "coach"
+            ? [["player", "Player — view only"], ["coacht", "Coach(T) — view, export GIFs/PDFs, invite players"], ["coach", "Coach — can edit"]]
+            : [["player", "Player — view only"], ["coacht", "Coach(T) — view, export GIFs/PDFs, invite players"], ["coach", "Coach — can edit"], ["coadmin", "Co-Admin — full control"]];
+    const [role, setRole] = useState(opts[0][0]);
+    const [busy, setBusy] = useState(false);
+    const [code, setCode] = useState(null);
+    const [err, setErr] = useState(null);
+    const make = async () => {
+        setBusy(true);
+        setErr(null);
+        setCode(null);
+        try {
+            const { data, error } = await db.rpc("generate_code", { p_team: teamId, p_role: role, p_max_uses: 1 });
+            if (error)
+                throw error;
+            setCode(data);
+        }
+        catch (e) {
+            setErr(friendlyError(e));
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    return (React.createElement("div", { style: { marginTop: 20 } },
+        React.createElement("p", { className: "sec" }, "Invite someone"),
+        React.createElement("div", { className: "row" },
+            React.createElement("select", { value: role, onChange: e => setRole(e.target.value), style: { flex: 1, minWidth: 140 } }, opts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+            React.createElement("button", { className: "mini", style: { padding: "10px 16px" }, disabled: busy, onClick: make }, busy ? "…" : "Create code")),
+        code && (React.createElement("div", { className: "codebox" },
+            React.createElement("code", null, code),
+            React.createElement("button", { className: "mini", onClick: () => navigator.clipboard && navigator.clipboard.writeText(code) }, "Copy"),
+            React.createElement("span", { style: { fontSize: 11, color: "var(--muted)" } }, "Single use \u2014 share it with one person."))),
+        err && React.createElement("div", { className: "msg err" }, err)));
 }
-
 // ── The team roster ─────────────────────────────────────────────────────────
 function Roster({ teamId, myRole, myUserId }) {
-  const [rows, setRows] = useState(null);
-  const [err, setErr] = useState(null);
-  const canManage = myRole === "admin" || myRole === "coadmin" || myRole === "coach";
-
-  const load = useCallback(async () => {
-    const { data, error } = await db.from("memberships")
-      .select("user_id, role, display_name, created_at")
-      .eq("team_id", teamId).order("created_at");
-    if (error) setErr(error.message); else setRows(data || []);
-  }, [teamId]);
-  useEffect(() => { load(); }, [load]);
-
-  const changeRole = async (uid, newRole) => {
-    setErr(null);
-    const { error } = await db.from("memberships").update({ role: newRole }).eq("team_id", teamId).eq("user_id", uid);
-    if (error) setErr(error.message); else load();
-  };
-  const remove = async (uid) => {
-    setErr(null);
-    const { error } = await db.from("memberships").delete().eq("team_id", teamId).eq("user_id", uid);
-    if (error) setErr(error.message); else load();
-  };
-
-  if (rows === null) return <div style={{color:"var(--faint)",fontSize:13,marginTop:8}}>Loading roster…</div>;
-  return (
-    <div style={{marginTop:20}}>
-      <p className="sec">Roster — {rows.length} {rows.length===1?"person":"people"}</p>
-      {rows.map(m => {
-        const isMe = m.user_id === myUserId;
-        const targetIsAdmin = m.role === "admin";
-        const targetIsCoadmin = m.role === "coadmin";
-        // Who you may manage: admin → anyone; co-admin → anyone but the admin;
-        // coach → anyone but admins and co-admins; player / Coach(T) → no one.
-        let mayEdit = canManage && !isMe;
-        if (myRole === "coadmin") mayEdit = mayEdit && !targetIsAdmin;
-        else if (myRole === "coach") mayEdit = mayEdit && !targetIsAdmin && !targetIsCoadmin;
-        else if (myRole !== "admin") mayEdit = false;
-        // A coach can re-rank up to coach; admins/co-admins can also set co-admin.
-        const roleOpts = myRole === "coach"
-          ? [["player","Player"],["coacht","Coach(T)"],["coach","Coach"]]
-          : [["player","Player"],["coacht","Coach(T)"],["coach","Coach"],["coadmin","Co-Admin"]];
-        return (
-          <div className="member" key={m.user_id}>
-            <div>
-              <div style={{fontWeight:600}}>{m.display_name || "Unnamed"}{isMe && <span style={{color:"var(--faint)",fontWeight:400}}> · you</span>}</div>
-            </div>
-            <div className="row" style={{gap:8}}>
-              {mayEdit ? (
-                <select value={m.role} onChange={e=>changeRole(m.user_id, e.target.value)} style={{padding:"5px 8px",fontSize:12}}>
-                  {roleOpts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                </select>
-              ) : <RolePill role={m.role} />}
-              {mayEdit && <button className="mini danger" onClick={()=>remove(m.user_id)}>Remove</button>}
-            </div>
-          </div>
-        );
-      })}
-      {err && <div className="msg err">{err}</div>}
-    </div>
-  );
+    const [rows, setRows] = useState(null);
+    const [err, setErr] = useState(null);
+    const canManage = myRole === "admin" || myRole === "coadmin" || myRole === "coach";
+    const load = useCallback(async () => {
+        const { data, error } = await db.from("memberships")
+            .select("user_id, role, display_name, created_at")
+            .eq("team_id", teamId).order("created_at");
+        if (error)
+            setErr(error.message);
+        else
+            setRows(data || []);
+    }, [teamId]);
+    useEffect(() => { load(); }, [load]);
+    const changeRole = async (uid, newRole) => {
+        setErr(null);
+        const { error } = await db.from("memberships").update({ role: newRole }).eq("team_id", teamId).eq("user_id", uid);
+        if (error)
+            setErr(error.message);
+        else
+            load();
+    };
+    const remove = async (uid) => {
+        setErr(null);
+        const { error } = await db.from("memberships").delete().eq("team_id", teamId).eq("user_id", uid);
+        if (error)
+            setErr(error.message);
+        else
+            load();
+    };
+    if (rows === null)
+        return React.createElement("div", { style: { color: "var(--faint)", fontSize: 13, marginTop: 8 } }, "Loading roster\u2026");
+    return (React.createElement("div", { style: { marginTop: 20 } },
+        React.createElement("p", { className: "sec" },
+            "Roster \u2014 ",
+            rows.length,
+            " ",
+            rows.length === 1 ? "person" : "people"),
+        rows.map(m => {
+            const isMe = m.user_id === myUserId;
+            const targetIsAdmin = m.role === "admin";
+            const targetIsCoadmin = m.role === "coadmin";
+            // Who you may manage: admin → anyone; co-admin → anyone but the admin;
+            // coach → anyone but admins and co-admins; player / Coach(T) → no one.
+            let mayEdit = canManage && !isMe;
+            if (myRole === "coadmin")
+                mayEdit = mayEdit && !targetIsAdmin;
+            else if (myRole === "coach")
+                mayEdit = mayEdit && !targetIsAdmin && !targetIsCoadmin;
+            else if (myRole !== "admin")
+                mayEdit = false;
+            // A coach can re-rank up to coach; admins/co-admins can also set co-admin.
+            const roleOpts = myRole === "coach"
+                ? [["player", "Player"], ["coacht", "Coach(T)"], ["coach", "Coach"]]
+                : [["player", "Player"], ["coacht", "Coach(T)"], ["coach", "Coach"], ["coadmin", "Co-Admin"]];
+            return (React.createElement("div", { className: "member", key: m.user_id },
+                React.createElement("div", null,
+                    React.createElement("div", { style: { fontWeight: 600 } },
+                        m.display_name || "Unnamed",
+                        isMe && React.createElement("span", { style: { color: "var(--faint)", fontWeight: 400 } }, " \u00B7 you"))),
+                React.createElement("div", { className: "row", style: { gap: 8 } },
+                    mayEdit ? (React.createElement("select", { value: m.role, onChange: e => changeRole(m.user_id, e.target.value), style: { padding: "5px 8px", fontSize: 12 } }, roleOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))) : React.createElement(RolePill, { role: m.role }),
+                    mayEdit && React.createElement("button", { className: "mini danger", onClick: () => remove(m.user_id) }, "Remove"))));
+        }),
+        err && React.createElement("div", { className: "msg err" }, err)));
 }
-
 // ── Live check that team storage works (and that roles are enforced) ────────
 function TeamCloud({ teamId, role, userId, teamName }) {
-  const [status, setStatus] = useState("testing");
-  const [detail, setDetail] = useState("");
-  const canWrite = role !== "player";
-  useEffect(() => {
-    let dead = false;
-    (async () => {
-      const store = makeTeamStorage(teamId, userId);
-      try {
-        if (canWrite) {
-          await store.set("__cloudcheck", "ok", true);
-          const r = await store.get("__cloudcheck", true);
-          await store.delete("__cloudcheck", true);
-          if (dead) return;
-          if (r && r.value === "ok") setStatus("ok");
-          else { setStatus("error"); setDetail("Wrote a test value but it didn't read back the same."); }
-        } else {
-          await store.get("__cloudcheck", true); // read should succeed (even if empty)
-          let blocked = false;
-          try { await store.set("__cloudcheck_player", "x", true); } catch (_) { blocked = true; }
-          if (dead) return;
-          setStatus("readonly");
-          if (!blocked) setDetail("Heads up: a player write wasn't blocked — re-run schema.sql so the view-only rule is in place.");
-        }
-      } catch (e) { if (!dead) { setStatus("error"); setDetail(friendlyError(e)); } }
-    })();
-    return () => { dead = true; };
-  }, [teamId, userId, canWrite]);
-
-  const view = {
-    testing:  { c: "var(--faint)", t: "Checking your team's cloud storage…" },
-    ok:       { c: "var(--green)", t: "Cloud storage is working — your playbook saves here, private to your team." },
-    readonly: { c: "var(--cyan)",  t: "Connected, view-only — you can see the playbook; editing is off for players." },
-    error:    { c: "var(--red)",   t: "Cloud storage problem (details below)." },
-  }[status];
-
-  return (
-    <div className="field-note" style={{textAlign:"left"}}>
-      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,letterSpacing:"0.05em",color:"var(--chalk)",marginBottom:7}}>Team Cloud</div>
-      <div style={{display:"flex",alignItems:"center",gap:8}}>
-        <span style={{width:9,height:9,borderRadius:"50%",background:view.c,flexShrink:0,boxShadow:status==="ok"?"0 0 7px var(--green)":"none"}}/>
-        <span style={{color:view.c,fontSize:13}}>{view.t}</span>
-      </div>
-      {detail && <div style={{marginTop:7,fontSize:12,color:"var(--red)"}}>{detail}</div>}
-      <div style={{marginTop:11,fontSize:12,color:"var(--faint)",lineHeight:1.6}}>
-        Next pass: the field editor opens right here, reading & writing <b style={{color:"var(--muted)"}}>{teamName}</b>'s
-        library through this exact connection. {canWrite ? "You'll edit and export." : "You'll have view-only access (exports hidden)."}
-      </div>
-    </div>
-  );
+    const [status, setStatus] = useState("testing");
+    const [detail, setDetail] = useState("");
+    const canWrite = role !== "player";
+    useEffect(() => {
+        let dead = false;
+        (async () => {
+            const store = makeTeamStorage(teamId, userId);
+            try {
+                if (canWrite) {
+                    await store.set("__cloudcheck", "ok", true);
+                    const r = await store.get("__cloudcheck", true, { fresh: true });
+                    await store.delete("__cloudcheck", true);
+                    if (dead)
+                        return;
+                    if (r && r.value === "ok")
+                        setStatus("ok");
+                    else {
+                        setStatus("error");
+                        setDetail("Wrote a test value but it didn't read back the same.");
+                    }
+                }
+                else {
+                    await store.get("__cloudcheck", true, { fresh: true }); // read should succeed (even if empty)
+                    let blocked = false;
+                    try {
+                        await store.set("__cloudcheck_player", "x", true);
+                    }
+                    catch (_) {
+                        blocked = true;
+                    }
+                    if (dead)
+                        return;
+                    setStatus("readonly");
+                    if (!blocked)
+                        setDetail("Heads up: a player write wasn't blocked — re-run schema.sql so the view-only rule is in place.");
+                }
+            }
+            catch (e) {
+                if (!dead) {
+                    setStatus("error");
+                    setDetail(friendlyError(e));
+                }
+            }
+        })();
+        return () => { dead = true; };
+    }, [teamId, userId, canWrite]);
+    const view = {
+        testing: { c: "var(--faint)", t: "Checking your team's cloud storage…" },
+        ok: { c: "var(--green)", t: "Cloud storage is working — your playbook saves here, private to your team." },
+        readonly: { c: "var(--cyan)", t: "Connected, view-only — you can see the playbook; editing is off for players." },
+        error: { c: "var(--red)", t: "Cloud storage problem (details below)." },
+    }[status];
+    return (React.createElement("div", { className: "field-note", style: { textAlign: "left" } },
+        React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: "0.05em", color: "var(--chalk)", marginBottom: 7 } }, "Team Cloud"),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            React.createElement("span", { style: { width: 9, height: 9, borderRadius: "50%", background: view.c, flexShrink: 0, boxShadow: status === "ok" ? "0 0 7px var(--green)" : "none" } }),
+            React.createElement("span", { style: { color: view.c, fontSize: 13 } }, view.t)),
+        detail && React.createElement("div", { style: { marginTop: 7, fontSize: 12, color: "var(--red)" } }, detail),
+        React.createElement("div", { style: { marginTop: 11, fontSize: 12, color: "var(--faint)", lineHeight: 1.6 } },
+            "Next pass: the field editor opens right here, reading & writing ",
+            React.createElement("b", { style: { color: "var(--muted)" } }, teamName),
+            "'s library through this exact connection. ",
+            canWrite ? "You'll edit and export." : "You'll have view-only access (exports hidden).")));
 }
-
 // ── Signed in + on a team ────────────────────────────────────────────────────
 function Dashboard({ session, memberships, active, setActive, previewRole, setPreviewRole, reload, onOpenEditor, loadingEditor, editorErr }) {
-  const m = memberships[active];
-  const canManage = m.role === "admin" || m.role === "coadmin";
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
-  const [savingName, setSavingName] = useState(false);
-  const [nameErr, setNameErr] = useState("");
-  const saveName = async () => {
-    const nm = nameDraft.trim();
-    if (!nm) { setNameErr("Enter a name."); return; }
-    if (nm === (m.teams?.name || "")) { setEditingName(false); setNameErr(""); return; }
-    setSavingName(true); setNameErr("");
-    try {
-      // .select() back so we can tell an RLS-blocked update (0 rows, no error)
-      // apart from a real one.
-      const { data, error } = await db.from("teams").update({ name: nm }).eq("id", m.team_id).select();
-      if (error) throw error;
-      if (!data || data.length === 0) {
-        setNameErr("Couldn't save — your account may not have permission, or the database is missing the latest schema. Re-run schema.sql in Supabase (it adds the team-rename rule), then try again.");
-        return;
-      }
-      setEditingName(false);
-      await reload();
-    } catch (e) {
-      setNameErr(friendlyError(e));
-    } finally {
-      setSavingName(false);
-    }
-  };
-  return (
-    <div className="card">
-      <div className="row" style={{justifyContent:"space-between",alignItems:"flex-start"}}>
-        <div>
-          {editingName ? (
-            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-              <input value={nameDraft} onChange={e=>setNameDraft(e.target.value)} autoFocus maxLength={60}
-                onKeyDown={e=>{ if(e.key==="Enter") saveName(); if(e.key==="Escape"){ setEditingName(false); setNameErr(""); } }}
-                placeholder="School / team name"
-                style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,letterSpacing:"0.03em",padding:"4px 10px",minWidth:180}} />
-              <button className="mini" disabled={savingName} onClick={saveName}>{savingName ? "Saving…" : "Save"}</button>
-              <button className="mini" disabled={savingName} onClick={()=>{ setEditingName(false); setNameErr(""); }}>Cancel</button>
-            </div>
-          ) : (
-            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,letterSpacing:"0.04em",lineHeight:1}}>{m.teams?.name || "My Team"}</div>
-              {canManage && <button className="mini" title="Edit your school / team name" onClick={()=>{ setNameDraft(m.teams?.name || ""); setNameErr(""); setEditingName(true); }}>✎ Rename</button>}
-            </div>
-          )}
-          {nameErr && <div className="msg err" style={{marginTop:6}}>{nameErr}</div>}
-          <div className="row" style={{gap:8,marginTop:7}}>
-            <RolePill role={m.role} />
-            <span style={{fontSize:12,color:"var(--faint)"}}>{session.user.email}</span>
-          </div>
-        </div>
-        <button className="mini" onClick={()=>db.auth.signOut()}>Log out</button>
-      </div>
-
-      {(memberships.length > 1 || canManage) && (
-        <div style={{marginTop:14}}>
-          <label>Team{canManage ? " · open playbook as role" : ""}</label>
-          <select value={previewRole ? ("r:" + previewRole) : ("t:" + active)}
-            onChange={e=>{ const v = e.target.value; if (v.slice(0,2) === "r:") { setPreviewRole(v.slice(2)); } else { setActive(Number(v.slice(2))); setPreviewRole(null); } }}>
-            {memberships.map((mm, i) => <option key={"t:" + mm.team_id} value={"t:" + i}>{mm.teams?.name} — {ROLE_LABEL[mm.role]}</option>)}
-            {canManage && Object.keys(ROLE_LABEL).filter(r => r !== m.role).map(r => (
-              <option key={"r:" + r} value={"r:" + r}>{(m.teams?.name || "Team")} — View as {ROLE_LABEL[r]}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <button className="btn" style={{marginTop:16}} disabled={loadingEditor} onClick={onOpenEditor}>
-        {loadingEditor ? "Loading editor…" : "Open Playbook"}
-      </button>
-      {editorErr && <div className="msg err">{editorErr}</div>}
-      <div style={{marginTop:7,fontSize:12,color:"var(--faint)",lineHeight:1.55,textAlign:"center"}}>
-        {(canManage && previewRole)
-          ? ("Previewing as " + ROLE_LABEL[previewRole] + (roleCanEdit(previewRole) ? " — edits save to the cloud." : " — view-only preview."))
-          : (!roleCanEdit(m.role)
-            ? "Opens this team's playbook, view-only."
-            : "Opens this team's playbook — edits save straight to the cloud.")}
-      </div>
-
-      {m.role !== "player" && <InvitePanel teamId={m.team_id} myRole={m.role} />}
-      <Roster teamId={m.team_id} myRole={m.role} myUserId={session.user.id} />
-
-      <TeamCloud teamId={m.team_id} role={m.role} userId={session.user.id} teamName={m.teams?.name} />
-    </div>
-  );
+    var _a, _b;
+    const m = memberships[active];
+    const canManage = m.role === "admin" || m.role === "coadmin";
+    const [editingName, setEditingName] = useState(false);
+    const [nameDraft, setNameDraft] = useState("");
+    const [savingName, setSavingName] = useState(false);
+    const [nameErr, setNameErr] = useState("");
+    const saveName = async () => {
+        var _a;
+        const nm = nameDraft.trim();
+        if (!nm) {
+            setNameErr("Enter a name.");
+            return;
+        }
+        if (nm === (((_a = m.teams) === null || _a === void 0 ? void 0 : _a.name) || "")) {
+            setEditingName(false);
+            setNameErr("");
+            return;
+        }
+        setSavingName(true);
+        setNameErr("");
+        try {
+            // .select() back so we can tell an RLS-blocked update (0 rows, no error)
+            // apart from a real one.
+            const { data, error } = await db.from("teams").update({ name: nm }).eq("id", m.team_id).select();
+            if (error)
+                throw error;
+            if (!data || data.length === 0) {
+                setNameErr("Couldn't save — your account may not have permission, or the database is missing the latest schema. Re-run schema.sql in Supabase (it adds the team-rename rule), then try again.");
+                return;
+            }
+            setEditingName(false);
+            await reload();
+        }
+        catch (e) {
+            setNameErr(friendlyError(e));
+        }
+        finally {
+            setSavingName(false);
+        }
+    };
+    return (React.createElement("div", { className: "card" },
+        React.createElement("div", { className: "row", style: { justifyContent: "space-between", alignItems: "flex-start" } },
+            React.createElement("div", null,
+                editingName ? (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+                    React.createElement("input", { value: nameDraft, onChange: e => setNameDraft(e.target.value), autoFocus: true, maxLength: 60, onKeyDown: e => { if (e.key === "Enter")
+                            saveName(); if (e.key === "Escape") {
+                            setEditingName(false);
+                            setNameErr("");
+                        } }, placeholder: "School / team name", style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 22, letterSpacing: "0.03em", padding: "4px 10px", minWidth: 180 } }),
+                    React.createElement("button", { className: "mini", disabled: savingName, onClick: saveName }, savingName ? "Saving…" : "Save"),
+                    React.createElement("button", { className: "mini", disabled: savingName, onClick: () => { setEditingName(false); setNameErr(""); } }, "Cancel"))) : (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+                    React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 26, letterSpacing: "0.04em", lineHeight: 1 } }, ((_a = m.teams) === null || _a === void 0 ? void 0 : _a.name) || "My Team"),
+                    canManage && React.createElement("button", { className: "mini", title: "Edit your school / team name", onClick: () => { var _a; setNameDraft(((_a = m.teams) === null || _a === void 0 ? void 0 : _a.name) || ""); setNameErr(""); setEditingName(true); } }, "\u270E Rename"))),
+                nameErr && React.createElement("div", { className: "msg err", style: { marginTop: 6 } }, nameErr),
+                React.createElement("div", { className: "row", style: { gap: 8, marginTop: 7 } },
+                    React.createElement(RolePill, { role: m.role }),
+                    React.createElement("span", { style: { fontSize: 12, color: "var(--faint)" } }, session.user.email))),
+            React.createElement("button", { className: "mini", onClick: () => db.auth.signOut() }, "Log out")),
+        (memberships.length > 1 || canManage) && (React.createElement("div", { style: { marginTop: 14 } },
+            React.createElement("label", null,
+                "Team",
+                canManage ? " · open playbook as role" : ""),
+            React.createElement("select", { value: previewRole ? ("r:" + previewRole) : ("t:" + active), onChange: e => { const v = e.target.value; if (v.slice(0, 2) === "r:") {
+                    setPreviewRole(v.slice(2));
+                }
+                else {
+                    setActive(Number(v.slice(2)));
+                    setPreviewRole(null);
+                } } },
+                memberships.map((mm, i) => { var _a; return React.createElement("option", { key: "t:" + mm.team_id, value: "t:" + i }, (_a = mm.teams) === null || _a === void 0 ? void 0 :
+                    _a.name,
+                    " \u2014 ",
+                    ROLE_LABEL[mm.role]); }),
+                canManage && Object.keys(ROLE_LABEL).filter(r => r !== m.role).map(r => {
+                    var _a;
+                    return (React.createElement("option", { key: "r:" + r, value: "r:" + r },
+                        (((_a = m.teams) === null || _a === void 0 ? void 0 : _a.name) || "Team"),
+                        " \u2014 View as ",
+                        ROLE_LABEL[r]));
+                })))),
+        React.createElement("button", { className: "btn", style: { marginTop: 16 }, disabled: loadingEditor, onClick: onOpenEditor }, loadingEditor ? "Loading editor…" : "Open Playbook"),
+        editorErr && React.createElement("div", { className: "msg err" }, editorErr),
+        React.createElement("div", { style: { marginTop: 7, fontSize: 12, color: "var(--faint)", lineHeight: 1.55, textAlign: "center" } }, (canManage && previewRole)
+            ? ("Previewing as " + ROLE_LABEL[previewRole] + (roleCanEdit(previewRole) ? " — edits save to the cloud." : " — view-only preview."))
+            : (!roleCanEdit(m.role)
+                ? "Opens this team's playbook, view-only."
+                : "Opens this team's playbook — edits save straight to the cloud.")),
+        m.role !== "player" && React.createElement(InvitePanel, { teamId: m.team_id, myRole: m.role }),
+        React.createElement(Roster, { teamId: m.team_id, myRole: m.role, myUserId: session.user.id }),
+        React.createElement(TeamCloud, { teamId: m.team_id, role: m.role, userId: session.user.id, teamName: (_b = m.teams) === null || _b === void 0 ? void 0 : _b.name })));
 }
-
 // ── Root ──────────────────────────────────────────────────────────────────
 function App() {
-  const [keys, setKeys] = useState(storedKeys);
-  const configured = !!(keys.url && keys.key);
-  const [showConnect, setShowConnect] = useState(false);
-  const backendHost = (() => { try { return new URL(keys.url).host; } catch (_) { return keys.url || ""; } })();
-  const [session, setSession] = useState(undefined);   // undefined = checking
-  const [memberships, setMemberships] = useState(undefined);
-  const [active, setActive] = useState(0);
-  // Admin / co-admin can open the playbook AS any role to see what that role sees.
-  // null = open as your real role. Chosen in the Dashboard team selector.
-  const [previewRole, setPreviewRole] = useState(null);
-
-  const loadMemberships = useCallback(async (sess) => {
-    // Offline / failed-fetch boot: fall back to the identity this device saved
-    // on its last online open. supabase-js reports failures via r.error — it
-    // does NOT throw — so the error must be checked explicitly.
-    const readOffCache = () => { try { return JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null"); } catch (e) { return null; } };
-    const offlineMemberships = () => {
-      const cached = readOffCache();
-      if (!cached || !cached.teamId || !cached.userId) return null;
-      window.__gpOfflineMode = true;
-      // A synthesized membership renders the normal team card; the card sees
-      // the __offlineAuto flag and opens the editor immediately.
-      return [{ team_id: cached.teamId, role: cached.role || "player", display_name: cached.name || "", teams: { name: cached.teamName || "Your Team" }, __offlineAuto: true }];
-    };
-    if (!sess) {
-      const off = offlineMemberships();
-      if (off && !navigator.onLine) { setMemberships(off); return; }
-      setMemberships(undefined); return;
+    var _a;
+    const [keys, setKeys] = useState(storedKeys);
+    const configured = !!(keys.url && keys.key);
+    const [showConnect, setShowConnect] = useState(false);
+    const backendHost = (() => { try {
+        return new URL(keys.url).host;
     }
-    const runQuery = () => db.from("memberships")
-      .select("team_id, role, display_name, teams(name)")
-      .eq("user_id", sess.user.id)
-      .order("created_at");
-    let r = await runQuery();
-    if (r.error && navigator.onLine) {
-      // Transient failure while online (e.g. a token mid-refresh): retry once.
-      await new Promise(res => setTimeout(res, 1200));
-      r = await runQuery();
-    }
-    if (r.error) {
-      const off = offlineMemberships();
-      if (off) { setMemberships(off); return; }
-      setMemberships([]);
-      return;
-    }
-    const data = r.data;
-    let list = data || [];
-    // Auto-redeem a code saved during sign-up (covers the email-confirm gap).
-    if (list.length === 0) {
-      const pending = localStorage.getItem("gp_pending_code");
-      if (pending) {
+    catch (_) {
+        return keys.url || "";
+    } })();
+    const [session, setSession] = useState(undefined); // undefined = checking
+    const [memberships, setMemberships] = useState(undefined);
+    const [active, setActive] = useState(0);
+    // Admin / co-admin can open the playbook AS any role to see what that role sees.
+    // null = open as your real role. Chosen in the Dashboard team selector.
+    const [previewRole, setPreviewRole] = useState(null);
+    const loadMemberships = useCallback(async (sess) => {
+        // Offline / failed-fetch boot: fall back to the identity this device saved
+        // on its last online open. supabase-js reports failures via r.error — it
+        // does NOT throw — so the error must be checked explicitly.
+        const readOffCache = () => { try {
+            return JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null");
+        }
+        catch (e) {
+            return null;
+        } };
+        const offlineMemberships = () => {
+            const cached = readOffCache();
+            if (!cached || !cached.teamId || !cached.userId)
+                return null;
+            window.__gpOfflineMode = true;
+            // A synthesized membership renders the normal team card; the card sees
+            // the __offlineAuto flag and opens the editor immediately.
+            return [{ team_id: cached.teamId, role: cached.role || "player", display_name: cached.name || "", teams: { name: cached.teamName || "Your Team" }, __offlineAuto: true }];
+        };
+        if (!sess) {
+            const off = offlineMemberships();
+            if (off && !navigator.onLine) {
+                setMemberships(off);
+                return;
+            }
+            setMemberships(undefined);
+            return;
+        }
+        const runQuery = () => db.from("memberships")
+            .select("team_id, role, display_name, teams(name)")
+            .eq("user_id", sess.user.id)
+            .order("created_at");
+        let r = await runQuery();
+        if (r.error && navigator.onLine) {
+            // Transient failure while online (e.g. a token mid-refresh): retry once.
+            await new Promise(res => setTimeout(res, 1200));
+            r = await runQuery();
+        }
+        if (r.error) {
+            const off = offlineMemberships();
+            if (off) {
+                setMemberships(off);
+                return;
+            }
+            setMemberships([]);
+            return;
+        }
+        const data = r.data;
+        let list = data || [];
+        // Auto-redeem a code saved during sign-up (covers the email-confirm gap).
+        if (list.length === 0) {
+            const pending = localStorage.getItem("gp_pending_code");
+            if (pending) {
+                try {
+                    await db.rpc("redeem_code", { p_code: pending, p_first: localStorage.getItem("gp_pending_first") || null, p_last: localStorage.getItem("gp_pending_last") || null, p_display: localStorage.getItem("gp_pending_name") || null });
+                    ["gp_pending_code", "gp_pending_name", "gp_pending_first", "gp_pending_last"].forEach(k => localStorage.removeItem(k));
+                    const re = await db.from("memberships").select("team_id, role, display_name, teams(name)").eq("user_id", sess.user.id).order("created_at");
+                    list = re.data || [];
+                }
+                catch (_) { /* bad/used code → JoinTeam screen handles it */ }
+            }
+        }
+        setMemberships(list);
+        setActive(0);
+    }, []);
+    useEffect(() => {
+        if (!configured) {
+            setSession(null);
+            setMemberships(undefined);
+            return;
+        }
         try {
-          await db.rpc("redeem_code", { p_code: pending, p_first: localStorage.getItem("gp_pending_first") || null, p_last: localStorage.getItem("gp_pending_last") || null, p_display: localStorage.getItem("gp_pending_name") || null });
-          ["gp_pending_code","gp_pending_name","gp_pending_first","gp_pending_last"].forEach(k=>localStorage.removeItem(k));
-          const re = await db.from("memberships").select("team_id, role, display_name, teams(name)").eq("user_id", sess.user.id).order("created_at");
-          list = re.data || [];
-        } catch (_) { /* bad/used code → JoinTeam screen handles it */ }
-      }
+            db = supabase.createClient(keys.url, keys.key);
+        }
+        catch (_) {
+            setSession(null);
+            return;
+        }
+        db.auth.getSession().then(({ data }) => { setSession(data.session); loadMemberships(data.session); });
+        const { data: sub } = db.auth.onAuthStateChange((_e, sess) => { setSession(sess); loadMemberships(sess); });
+        return () => sub.subscription.unsubscribe();
+    }, [configured, keys, loadMemberships]);
+    // ── Editor: lazy-load three.js + the compiled editor, point window.storage
+    //    at this team (view-only for players), then mount full-screen.
+    const [showEditor, setShowEditor] = useState(false);
+    const [loadingEditor, setLoadingEditor] = useState(false);
+    const [editorErr, setEditorErr] = useState(null);
+    const m = (memberships && memberships[active]) || null;
+    const openEditor = useCallback(async () => {
+        // Identity that survives a null session (offline boot): prefer the live
+        // session, fall back to what this device cached on its last online open.
+        const offc = (() => { try {
+            return JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null") || {};
+        }
+        catch (e) {
+            return {};
+        } })();
+        const uid = ((session || {}).user || {}).id || offc.userId || "offline";
+        const uemail = ((session || {}).user || {}).email || offc.email || "";
+        if (!m)
+            return;
+        setEditorErr(null);
+        setLoadingEditor(true);
+        const load = (src) => new Promise((res, rej) => {
+            const s = document.createElement("script");
+            s.src = src;
+            s.async = true;
+            s.onload = () => res();
+            s.onerror = () => rej(new Error("Couldn't load " + src));
+            document.head.appendChild(s);
+        });
+        try {
+            try {
+                if (!window.THREE)
+                    await load("https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js");
+            }
+            catch (_) { /* 3D is optional; editor still opens */ }
+            if (!window.GridironApp) {
+                setLoadingEditor(false);
+                setEditorErr("The editor didn't load. Do a full refresh of the page (pull down to refresh on mobile) and try again.");
+                return;
+            }
+            // Admin / co-admin may open the playbook as any role to preview it; that
+            // role drives both the editor's caps and whether storage is writable.
+            const canPrev = m.role === "admin" || m.role === "coadmin";
+            const openRole = (canPrev && previewRole && ROLE_LABEL[previewRole]) ? previewRole : m.role;
+            window.storage = makeTeamStorage(m.team_id, uid, !roleCanEdit(openRole));
+            window.__gridironRole = openRole;
+            window.GP_EMAIL = uemail || "";
+            // Direct backend handle + identity so the editor can read/write the
+            // per-player install-progress and play-questions tables (which the
+            // key-value team storage can't model, and which players must write to).
+            window.GP_DB = db;
+            window.GP_TEAM_ID = m.team_id;
+            window.GP_USER_ID = uid;
+            window.GP_NAME = m.display_name || uemail || "";
+            // Remember who/where for offline boots (see the loadMemberships fallback).
+            try {
+                localStorage.setItem("gp_off_shell_v1", JSON.stringify({ teamId: m.team_id, userId: uid, email: uemail || "", teamName: (m.teams && m.teams.name) || "", name: window.GP_NAME || "", role: openRole, ts: Date.now() }));
+            }
+            catch (e) { }
+            setLoadingEditor(false);
+            setShowEditor(true);
+        }
+        catch (e) {
+            setLoadingEditor(false);
+            setEditorErr(friendlyError(e));
+        }
+    }, [m, session, previewRole]);
+    // Offline boot: a synthesized membership opens its editor immediately.
+    useEffect(() => { if (m && m.__offlineAuto && window.GridironApp)
+        openEditor(); }, []);
+    if (showEditor && window.GridironApp) {
+        // Expose a return-to-dashboard hook so the in-editor presentation (install /
+        // practice script) can show its own top-left Dashboard button instead of
+        // this shell button overlapping the PREV/NEXT nav.
+        window.__gridironReturnToDash = () => setShowEditor(false);
+        return (React.createElement("div", { style: { position: "fixed", inset: 0, overflow: "auto", WebkitOverflowScrolling: "touch", background: "#090912", zIndex: 2000 } },
+            React.createElement(window.GridironApp),
+            React.createElement("button", { id: "gp-dash-btn", onClick: () => setShowEditor(false), title: "Back to team dashboard", style: { position: "fixed", left: 10, bottom: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2190 Dashboard")));
     }
-    setMemberships(list);
-    setActive(0);
-  }, []);
-
-  useEffect(() => {
-    if (!configured) { setSession(null); setMemberships(undefined); return; }
-    try { db = supabase.createClient(keys.url, keys.key); } catch (_) { setSession(null); return; }
-    db.auth.getSession().then(({ data }) => { setSession(data.session); loadMemberships(data.session); });
-    const { data: sub } = db.auth.onAuthStateChange((_e, sess) => { setSession(sess); loadMemberships(sess); });
-    return () => sub.subscription.unsubscribe();
-  }, [configured, keys, loadMemberships]);
-
-  // ── Editor: lazy-load three.js + the compiled editor, point window.storage
-  //    at this team (view-only for players), then mount full-screen.
-  const [showEditor, setShowEditor] = useState(false);
-  const [loadingEditor, setLoadingEditor] = useState(false);
-  const [editorErr, setEditorErr] = useState(null);
-  const m = (memberships && memberships[active]) || null;
-
-  const openEditor = useCallback(async () => {
-      // Identity that survives a null session (offline boot): prefer the live
-      // session, fall back to what this device cached on its last online open.
-      const offc = (() => { try { return JSON.parse(localStorage.getItem("gp_off_shell_v1") || "null") || {}; } catch (e) { return {}; } })();
-      const uid = ((session || {}).user || {}).id || offc.userId || "offline";
-      const uemail = ((session || {}).user || {}).email || offc.email || "";
-    if (!m) return;
-    setEditorErr(null); setLoadingEditor(true);
-    const load = (src) => new Promise((res, rej) => {
-      const s = document.createElement("script"); s.src = src; s.async = true;
-      s.onload = () => res(); s.onerror = () => rej(new Error("Couldn't load " + src));
-      document.head.appendChild(s);
-    });
-    try {
-      try { if (!window.THREE) await load("https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"); } catch (_) { /* 3D is optional; editor still opens */ }
-      if (!window.GridironApp) { setLoadingEditor(false); setEditorErr("The editor didn't load. Do a full refresh of the page (pull down to refresh on mobile) and try again."); return; }
-      // Admin / co-admin may open the playbook as any role to preview it; that
-      // role drives both the editor's caps and whether storage is writable.
-      const canPrev = m.role === "admin" || m.role === "coadmin";
-      const openRole = (canPrev && previewRole && ROLE_LABEL[previewRole]) ? previewRole : m.role;
-      window.storage = makeTeamStorage(m.team_id, uid, !roleCanEdit(openRole));
-      window.__gridironRole = openRole;
-      window.GP_EMAIL = uemail || "";
-      // Direct backend handle + identity so the editor can read/write the
-      // per-player install-progress and play-questions tables (which the
-      // key-value team storage can't model, and which players must write to).
-      window.GP_DB = db;
-      window.GP_TEAM_ID = m.team_id;
-      window.GP_USER_ID = uid;
-      window.GP_NAME = m.display_name || uemail || "";
-      // Remember who/where for offline boots (see the loadMemberships fallback).
-      try { localStorage.setItem("gp_off_shell_v1", JSON.stringify({ teamId: m.team_id, userId: uid, email: uemail || "", teamName: (m.teams && m.teams.name) || "", name: window.GP_NAME || "", role: openRole, ts: Date.now() })); } catch (e) {}
-      setLoadingEditor(false);
-      setShowEditor(true);
-    } catch (e) { setLoadingEditor(false); setEditorErr(friendlyError(e)); }
-  }, [m, session, previewRole]);
-  // Offline boot: a synthesized membership opens its editor immediately.
-  useEffect(() => { if (m && m.__offlineAuto && window.GridironApp) openEditor(); }, []);
-
-  if (showEditor && window.GridironApp) {
-    // Expose a return-to-dashboard hook so the in-editor presentation (install /
-    // practice script) can show its own top-left Dashboard button instead of
-    // this shell button overlapping the PREV/NEXT nav.
-    window.__gridironReturnToDash = () => setShowEditor(false);
-    return (
-      <div style={{position:"fixed",inset:0,overflow:"auto",WebkitOverflowScrolling:"touch",background:"#090912",zIndex:2000}}>
-        {React.createElement(window.GridironApp)}
-        <button id="gp-dash-btn" onClick={()=>setShowEditor(false)} title="Back to team dashboard"
-          style={{position:"fixed",left:10,bottom:10,zIndex:2147483600,display:"flex",alignItems:"center",gap:6,padding:"7px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.28)",background:"rgba(10,10,18,0.9)",color:"#fff",fontFamily:"'Bebas Neue',sans-serif",fontSize:14,letterSpacing:"0.07em",cursor:"pointer",backdropFilter:"blur(5px)",boxShadow:"0 3px 14px rgba(0,0,0,0.5)"}}>← Dashboard</button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="wrap">
-      <div className="brand">
-        <h1>GRIDIRON</h1>
-        <span className="sub">Pro · Cloud</span>
-      </div>
-
-      {(!configured || showConnect) ? (
-        <ConnectScreen
-          initialUrl={keys.url} initialKey={keys.key}
-          onSaved={(k)=>{ setShowConnect(false); setSession(undefined); setMemberships(undefined); setKeys(k); }}
-          onCancel={configured ? ()=>setShowConnect(false) : null}
-        />
-      ) : session === undefined || (session && memberships === undefined) ? (
-        <div className="card"><div style={{color:"var(--faint)",fontSize:13}}>Loading…</div></div>
-      ) : !session ? (
-        <AuthScreen backendHost={backendHost} onChangeBackend={()=>setShowConnect(true)} />
-      ) : memberships.length === 0 ? (
-        <JoinTeam displayName={session.user.user_metadata?.name} onJoined={()=>loadMemberships(session)} />
-      ) : (
-        <Dashboard session={session} memberships={memberships} active={active} setActive={setActive} previewRole={previewRole} setPreviewRole={setPreviewRole} reload={()=>loadMemberships(session)} onOpenEditor={openEditor} loadingEditor={loadingEditor} editorErr={editorErr} />
-      )}
-
-      <div style={{textAlign:"center",marginTop:18,fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:"var(--faint)",letterSpacing:"0.08em"}}>
-        Your team's data is private to your team.
-        {configured && !showConnect && !KEYS_BAKED && <> · <a href="#" style={{color:"var(--faint)"}} onClick={e=>{e.preventDefault(); setShowConnect(true);}}>backend settings</a></>}
-      </div>
-    </div>
-  );
+    return (React.createElement("div", { className: "wrap" },
+        React.createElement("div", { className: "brand" },
+            React.createElement("h1", null, "GRIDIRON"),
+            React.createElement("span", { className: "sub" }, "Pro \u00B7 Cloud")),
+        (!configured || showConnect) ? (React.createElement(ConnectScreen, { initialUrl: keys.url, initialKey: keys.key, onSaved: (k) => { setShowConnect(false); setSession(undefined); setMemberships(undefined); setKeys(k); }, onCancel: configured ? () => setShowConnect(false) : null })) : session === undefined || (session && memberships === undefined) ? (React.createElement("div", { className: "card" },
+            React.createElement("div", { style: { color: "var(--faint)", fontSize: 13 } }, "Loading\u2026"))) : !session ? (React.createElement(AuthScreen, { backendHost: backendHost, onChangeBackend: () => setShowConnect(true) })) : memberships.length === 0 ? (React.createElement(JoinTeam, { displayName: (_a = session.user.user_metadata) === null || _a === void 0 ? void 0 : _a.name, onJoined: () => loadMemberships(session) })) : (React.createElement(Dashboard, { session: session, memberships: memberships, active: active, setActive: setActive, previewRole: previewRole, setPreviewRole: setPreviewRole, reload: () => loadMemberships(session), onOpenEditor: openEditor, loadingEditor: loadingEditor, editorErr: editorErr })),
+        React.createElement("div", { style: { textAlign: "center", marginTop: 18, fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "var(--faint)", letterSpacing: "0.08em" } },
+            "Your team's data is private to your team.",
+            configured && !showConnect && !KEYS_BAKED && React.createElement(React.Fragment, null,
+                " \u00B7 ",
+                React.createElement("a", { href: "#", style: { color: "var(--faint)" }, onClick: e => { e.preventDefault(); setShowConnect(true); } }, "backend settings")))));
 }
-
 // Top-level boundary for the SHELL (auth + dashboard). PlaybookApp has its own
 // boundary; this one catches anything in the dashboard/auth tree so a crash
 // shows a readable error instead of a silent black screen.
 class ShellErrorBoundary extends React.Component {
-  constructor(p){ super(p); this.state = { err: null }; }
-  static getDerivedStateFromError(err){ return { err }; }
-  render(){
-    if (this.state.err) {
-      const e = this.state.err;
-      return (
-        <div style={{minHeight:"100vh",background:"#0a0a14",color:"#fca5a5",fontFamily:"monospace",padding:24,overflow:"auto"}}>
-          <h2 style={{color:"#f87171",marginBottom:12,fontFamily:"monospace"}}>Dashboard hit an error</h2>
-          <pre style={{whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.6}}>{String((e && e.stack) || (e && e.message) || e)}</pre>
-          <button onClick={()=>location.reload()}
-            style={{marginTop:16,padding:"8px 16px",borderRadius:8,border:"1px solid #f87171",background:"transparent",color:"#fca5a5",cursor:"pointer",fontFamily:"monospace"}}>Reload</button>
-        </div>
-      );
+    constructor(p) { super(p); this.state = { err: null }; }
+    static getDerivedStateFromError(err) { return { err }; }
+    render() {
+        if (this.state.err) {
+            const e = this.state.err;
+            return (React.createElement("div", { style: { minHeight: "100vh", background: "#0a0a14", color: "#fca5a5", fontFamily: "monospace", padding: 24, overflow: "auto" } },
+                React.createElement("h2", { style: { color: "#f87171", marginBottom: 12, fontFamily: "monospace" } }, "Dashboard hit an error"),
+                React.createElement("pre", { style: { whiteSpace: "pre-wrap", fontSize: 12, lineHeight: 1.6 } }, String((e && e.stack) || (e && e.message) || e)),
+                React.createElement("button", { onClick: () => location.reload(), style: { marginTop: 16, padding: "8px 16px", borderRadius: 8, border: "1px solid #f87171", background: "transparent", color: "#fca5a5", cursor: "pointer", fontFamily: "monospace" } }, "Reload")));
+        }
+        return this.props.children;
     }
-    return this.props.children;
-  }
 }
-
-ReactDOM.createRoot(document.getElementById("root")).render(<ShellErrorBoundary><App /></ShellErrorBoundary>);
-</script>
-<script>
-  /* Transform the shell source above with an EXPLICIT classic JSX runtime
-     (React.createElement), so Babel never injects `import {jsx} from
-     "react/jsx-runtime"` — that import is illegal in a classic <script> and was
-     leaving the page blank. The string preset "react" with {runtime:"classic"}
-     is version-independent (doesn't depend on Babel's default runtime or on
-     registering custom presets). Any failure is surfaced through the boot
-     watchdog instead of failing silently. */
-  (function () {
-    function boot() {
-      try {
-        if (!window.Babel || !Babel.transform) throw new Error("Babel did not load from the CDN (check your connection).");
-        var srcEl = document.getElementById("gp-shell-src");
-        if (!srcEl || !srcEl.textContent.trim()) throw new Error("Shell source is missing.");
-        var out = Babel.transform(srcEl.textContent, {
-          presets: [["react", { runtime: "classic" }], "env"],
-          sourceType: "script",
-          filename: "shell.jsx"
-        }).code;
-        var s = document.createElement("script");
-        s.textContent = out;
-        document.body.appendChild(s);
-      } catch (e) {
-        window.dispatchEvent(new ErrorEvent("error", { error: e, message: "Shell failed to start: " + ((e && e.message) || e) }));
-      }
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ShellErrorBoundary, null,
+    React.createElement(App, null)));
+    } catch (e) {
+      window.dispatchEvent(new ErrorEvent("error", { error: e, message: "Shell failed to start: " + ((e && e.message) || e) }));
     }
-    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
-    else boot();
-  })();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})();
 </script>
 </body>
 </html>
