@@ -17029,7 +17029,7 @@ function PlaybookApp() {
                                             React.createElement("span", { style: { position: "absolute", top: 4, left: 6, fontSize: 10, color: "rgba(255,255,255,0.55)", fontFamily: "'JetBrains Mono',monospace", background: "rgba(0,0,0,0.5)", padding: "1px 5px", borderRadius: 3, zIndex: 1 } },
                                                 "#",
                                                 idx + 1),
-                                            React.createElement(PlayThumbnail, { play: p, w: 230, h: 155 })),
+                                            React.createElement(LazyThumb, { play: p, w: 230, h: 155 })),
                                         React.createElement("div", { style: { padding: "7px 10px" } },
                                             React.createElement("div", { style: { fontWeight: 700, fontSize: 12.5, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
                                             React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.45)", marginTop: 2 } },
@@ -17241,7 +17241,7 @@ function PlaybookApp() {
                                         playsInInstall.length),
                                     playsInInstall.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontStyle: "italic" } }, "No plays to show \u2014 switch to EDIT and add some.")) : (React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(420px,1fr))", gap: 14 } }, playsInInstall.map((p, i) => (React.createElement("div", { key: p.id, onClick: () => { setRunStepIdx(i); setRunningInstallId(openInst.id); }, title: "Click to open this play full-screen with PLAY IN ACTION", style: { background: "#0d1f12", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 9, overflow: "hidden", display: "flex", flexDirection: "column", cursor: "pointer", transition: "transform 0.12s, border-color 0.12s" }, onMouseEnter: e => { e.currentTarget.style.borderColor = "rgba(168,85,247,0.55)"; e.currentTarget.style.transform = "translateY(-2px)"; }, onMouseLeave: e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; e.currentTarget.style.transform = "translateY(0)"; } },
                                         React.createElement("div", { style: { background: "#0a1a0e", display: "flex", justifyContent: "center" } },
-                                            React.createElement(PlayThumbnail, { play: p, w: 420, h: 300 })),
+                                            React.createElement(LazyThumb, { play: p, w: 420, h: 300 })),
                                         React.createElement("div", { style: { padding: "10px 13px" } },
                                             React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
                                             React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.5)", marginTop: 4 } },
@@ -17479,12 +17479,34 @@ function Walkthrough3D({ data, onClose }) {
     const mountRef = useRef(null);
     const stateRef = useRef({ t: 0, playing: true, speed: 1, autoRotate: false, perf: (() => { try { return localStorage.getItem("gp_3dPerf") === "1"; } catch (e) { return false; } })(), mode: "aerial", mode3d: (data && data.sync && data.sync.frames && data.sync.frames.length) ? "sync" : "real", povIdx: -1, theta: Math.PI * 0.5, phi: 0.85, radius: 140, groundDist: 22, dragging: false, lastX: 0, lastY: 0 });
     const [, force] = useState(0);
+    // Re-arms the build effect if it had to wait for three.js (fetched in the
+    // background by the shell — the field never blocks on it).
+    const [threeTick, setThreeTick] = useState(0);
     const ui = stateRef.current;
     const rendererRef = useRef(null);
     useEffect(() => {
         const mount = mountRef.current;
         if (!mount)
             return;
+        // three.js loads in the background from the moment the editor opens. If
+        // the coach beats it here, show a small note and re-run once it lands —
+        // never a crash, never a permanent-looking failure while it's in flight.
+        if (!window.THREE) {
+            const note = document.createElement("div");
+            note.style.cssText = "color:#a7f3d0;padding:24px;font:13px sans-serif;text-align:center";
+            note.textContent = "Loading 3D engine…";
+            mount.appendChild(note);
+            let waiting = true;
+            const p = window.__gpThreeReady;
+            if (p && p.then) {
+                p.then(() => { if (waiting) setThreeTick(t => t + 1); })
+                    .catch(() => { if (waiting && note.parentNode) note.textContent = "3D engine couldn't load — check your connection, close, and reopen 3D."; });
+            }
+            else {
+                note.textContent = "3D engine couldn't load — check your connection, close, and reopen 3D.";
+            }
+            return () => { waiting = false; if (note.parentNode) note.parentNode.removeChild(note); };
+        }
         let raf = 0, renderer = null, disposed = false;
         const disposers = [];
         try {
@@ -18191,7 +18213,7 @@ function Walkthrough3D({ data, onClose }) {
             }
             return () => { };
         }
-    }, []); // build once on open
+    }, [threeTick]); // build once on open (re-armed only if it waited for three.js)
     // Performance mode: drop to 1x pixel ratio for older phones. Live + remembered.
     useEffect(() => {
         const r = rendererRef.current, m = mountRef.current;
@@ -18313,7 +18335,13 @@ if (typeof window !== "undefined")
 </style>
 </head>
 <body>
-<div id="root"></div>
+<style>@keyframes gpSplashSlide{0%{transform:translateX(-30%)}100%{transform:translateX(260%)}}</style>
+<div id="root"><!-- Static splash: paints during script parse, before React exists.
+     ReactDOM.createRoot(...).render() replaces #root's children on the shell's
+     first render, so this needs no removal code at all. --><div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a14;gap:16px">
+<div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:46px;letter-spacing:0.16em;color:#e8fff1">GRIDIRON</div>
+<div style="width:130px;height:3px;background:rgba(255,255,255,0.12);border-radius:2px;overflow:hidden"><div style="width:38%;height:100%;background:#34d399;border-radius:2px;animation:gpSplashSlide 1.05s ease-in-out infinite"></div></div>
+</div></div>
 
 <script id="gp-shell">
 /* Auth/team shell — PRECOMPILED to React.createElement (TypeScript, target
@@ -19181,6 +19209,19 @@ function App() {
             setMemberships(undefined);
             return;
         }
+        // ── Instant-then-fresh dashboard ──
+        // Paint the team list from this device's last-known copy immediately, then
+        // verify with the server below; the fresh result replaces it (and re-caches).
+        const MS_CK = "gp_ms_cache::" + sess.user.id;
+        let servedFromCache = false;
+        try {
+            const c = JSON.parse(localStorage.getItem(MS_CK) || "null");
+            if (Array.isArray(c) && c.length) {
+                setMemberships(c);
+                servedFromCache = true;
+            }
+        }
+        catch (e) { }
         const runQuery = () => db.from("memberships")
             .select("team_id, role, display_name, teams(name)")
             .eq("user_id", sess.user.id)
@@ -19192,6 +19233,8 @@ function App() {
             r = await runQuery();
         }
         if (r.error) {
+            if (servedFromCache)
+                return; // keep the instantly-served copy; RELOAD retries
             const off = offlineMemberships();
             if (off) {
                 setMemberships(off);
@@ -19215,6 +19258,10 @@ function App() {
                 catch (_) { /* bad/used code → JoinTeam screen handles it */ }
             }
         }
+        try {
+            localStorage.setItem(MS_CK, JSON.stringify(list));
+        }
+        catch (e) { }
         setMemberships(list);
         setActive(0);
     }, []);
@@ -19265,11 +19312,13 @@ function App() {
             document.head.appendChild(s);
         });
         try {
-            try {
-                if (!window.THREE)
-                    await load("https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js");
+            // 3D is optional: start fetching three.js in the background but never
+            // hold the field on it. Walkthrough3D awaits window.__gpThreeReady if
+            // the coach opens 3D before it lands, so nothing can crash on a miss.
+            if (!window.THREE && !window.__gpThreeReady) {
+                window.__gpThreeReady = load("https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js");
+                window.__gpThreeReady.catch(() => { window.__gpThreeReady = null; });
             }
-            catch (_) { /* 3D is optional; editor still opens */ }
             if (!window.GridironApp) {
                 setLoadingEditor(false);
                 setEditorErr("The editor didn't load. Do a full refresh of the page (pull down to refresh on mobile) and try again.");
