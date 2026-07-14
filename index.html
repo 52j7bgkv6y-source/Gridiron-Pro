@@ -231,6 +231,44 @@ const blitzStaggerMap = (rts, holdMs) => {
 // trailing number in the base itself — "Cover 3" must not become "Cover 4",
 // which would change the call's meaning — so a duplicate of "Cover 3" is
 // "Cover 3 copy", which the user then edits to whatever similar name they want.
+// The RUNNER of a route: who actually travels it. For a FOLLOW-UP
+// (attachedToMotion) or an OPTION branch, the runner is the TOP parent's
+// owner — a follow-up's own first point sits at the parent's ENDPOINT,
+// usually right on top of whoever is being pushed/blocked there, so
+// resolving it by proximity names the WRONG man (often the pushed player
+// himself, which then silently self-refuses a push attach). Walks up the
+// chain (bounded), trusts an explicit ownerId only if that player still
+// exists, else falls back to the nearest player to the TOP route's start.
+const routeRunnerId = (route, routesArr, playersArr) => {
+    if (!route)
+        return null;
+    const byId = new Map();
+    (routesArr || []).forEach(r => { if (r)
+        byId.set(r.id, r); });
+    let top = route, guard = 0;
+    while (guard++ < 8) {
+        if (top.attachedToMotion && byId.has(top.attachedToMotion)) {
+            top = byId.get(top.attachedToMotion);
+            continue;
+        }
+        if (top.optionOf && byId.has(top.optionOf)) {
+            top = byId.get(top.optionOf);
+            continue;
+        }
+        break;
+    }
+    if (top.ownerId != null && (playersArr || []).some(p => p && p.id === top.ownerId))
+        return top.ownerId;
+    if (!top.points || !top.points[0])
+        return null;
+    const sp = top.points[0];
+    let best = null, bestD = Infinity;
+    (playersArr || []).forEach(pl => { const dx = pl.x - sp.x, dy = pl.y - sp.y; const d = dx * dx + dy * dy; if (d < bestD) {
+        bestD = d;
+        best = pl;
+    } });
+    return best ? best.id : null;
+};
 const uniqueVariantName = (base, existingNames) => {
     const set = new Set(existingNames || []);
     const b = (base || "").trim() || "Untitled";
@@ -1657,6 +1695,320 @@ function LazyThumb({ play, w, h }) {
         ? React.createElement(PlayThumbMemo, { play: play, w: w, h: h })
         : React.createElement("div", { style: { width: "100%", height: "100%", background: "#0f2417", borderRadius: 6 } })));
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// FILM STUDY — side-by-side video player. Fills the LEFT half of the field
+// area (its top edge is the line below the toolbar rows — the 🏈 Ball row)
+// while the field keeps the right half, so a coach can draw while film runs.
+// Clips load from the DEVICE via object URLs: they live for this session only
+// and are never uploaded anywhere.
+//
+// THE START POINT: any backward move — skip-back, a backward scrub on the
+// timeline, or coming out of a rewind — moves the clip's start point there,
+// so RESTART runs "the play" back from wherever you last rewound to. Forward
+// moves never touch it.
+//
+// KEYS (only while the panel is open, no run-mode overlay, nothing focused):
+//   Space / K  pause ⇄ play        L  fast-forward 2×   Shift+L  4×
+//   J  rewind 2×                   Shift+J  slow rewind ½× (simulated)
+//   ← / →  skip 15 s back/forward  R  restart from the start point
+//   N / P  next / previous clip
+function FilmPanel({ active }) {
+    const [clips, setClips] = useState([]); // { id, name, url }
+    const [idx, setIdx] = useState(0);
+    const [mode, setMode] = useState("pause"); // "pause" | "play" | "ff" | "rev"
+    const [rate, setRate] = useState(1);
+    const [now, setNow] = useState(0);
+    const [dur, setDur] = useState(0);
+    const [inPt, setInPt] = useState(0);
+    const vidRef = useRef(null);
+    const fileRef = useRef(null);
+    const inMapRef = useRef({}); // clip id → start point (s)
+    const revRef = useRef(null); // rAF handle while rewinding
+    const suppressSeekRef = useRef(false); // programmatic jumps don't move the start point
+    const lastTimeRef = useRef(0);
+    const modeRef = useRef("pause");
+    modeRef.current = mode;
+    const rateRef = useRef(1);
+    rateRef.current = rate;
+    const clipsRef = useRef([]);
+    clipsRef.current = clips;
+    const idxRef = useRef(0);
+    idxRef.current = idx;
+    const inPtRef = useRef(0);
+    inPtRef.current = inPt;
+    const clip = clips[idx] || null;
+    const setInPoint = (t) => {
+        const v = Math.max(0, t || 0);
+        const c = clipsRef.current[idxRef.current];
+        if (c)
+            inMapRef.current[c.id] = v;
+        setInPt(v);
+    };
+    const stopRev = (pinStart) => {
+        if (revRef.current) {
+            cancelAnimationFrame(revRef.current);
+            revRef.current = null;
+        }
+        suppressSeekRef.current = false;
+        if (pinStart && vidRef.current)
+            setInPoint(vidRef.current.currentTime);
+    };
+    const enter = (m, r) => {
+        const v = vidRef.current;
+        if (!v)
+            return;
+        if (modeRef.current === "rev" && m !== "rev")
+            stopRev(true); // leaving a rewind pins the start point
+        if (m === "pause") {
+            v.pause();
+            v.playbackRate = 1;
+            setMode("pause");
+            setRate(1);
+            return;
+        }
+        if (m === "play") {
+            v.playbackRate = 1;
+            v.play().catch(() => { });
+            setMode("play");
+            setRate(1);
+            return;
+        }
+        if (m === "ff") {
+            v.playbackRate = r;
+            v.play().catch(() => { });
+            setMode("ff");
+            setRate(r);
+            return;
+        }
+        // rev — HTML video can't play backward natively; step currentTime by rAF.
+        if (revRef.current) {
+            cancelAnimationFrame(revRef.current);
+            revRef.current = null;
+        }
+        v.pause();
+        v.playbackRate = 1;
+        setMode("rev");
+        setRate(r);
+        suppressSeekRef.current = true;
+        let last = performance.now();
+        const step = (ts) => {
+            const vv = vidRef.current;
+            if (!vv || modeRef.current !== "rev") {
+                stopRev(false);
+                return;
+            }
+            const dt = Math.min(0.2, (ts - last) / 1000);
+            last = ts;
+            const nt = vv.currentTime - dt * rateRef.current;
+            if (nt <= 0) {
+                vv.currentTime = 0;
+                suppressSeekRef.current = false;
+                setInPoint(0);
+                setMode("pause");
+                setRate(1);
+                revRef.current = null;
+                return;
+            }
+            vv.currentTime = nt;
+            revRef.current = requestAnimationFrame(step);
+        };
+        revRef.current = requestAnimationFrame(step);
+    };
+    const togglePlay = () => { enter(modeRef.current === "pause" ? "play" : "pause"); };
+    const skip = (sec) => {
+        const v = vidRef.current;
+        if (!v)
+            return;
+        if (modeRef.current === "rev")
+            enter("pause");
+        v.currentTime = Math.max(0, Math.min(v.duration || 1e9, v.currentTime + sec));
+        // a backward skip lands in onSeeked → sets the start point
+    };
+    const restart = () => {
+        const v = vidRef.current;
+        if (!v)
+            return;
+        if (modeRef.current === "rev")
+            stopRev(false);
+        suppressSeekRef.current = true; // a restart is a JUMP, not a rewind — keep the start point
+        v.currentTime = inPtRef.current;
+        setTimeout(() => { suppressSeekRef.current = false; }, 60);
+        enter("play");
+    };
+    const go = (d) => {
+        const n = clipsRef.current.length;
+        if (!n)
+            return;
+        stopRev(false);
+        setIdx(i => (i + d + n) % n);
+    };
+    const cycleRev = () => {
+        if (modeRef.current !== "rev")
+            enter("rev", 2);
+        else if (rateRef.current === 2)
+            enter("rev", 0.5);
+        else
+            enter("pause");
+    };
+    const cycleFF = () => {
+        if (modeRef.current !== "ff")
+            enter("ff", 2);
+        else if (rateRef.current === 2)
+            enter("ff", 4);
+        else
+            enter("play");
+    };
+    const onLoaded = () => {
+        const v = vidRef.current;
+        const c = clipsRef.current[idxRef.current];
+        if (!v || !c)
+            return;
+        setDur(v.duration || 0);
+        const ip = inMapRef.current[c.id] || 0;
+        setInPt(ip);
+        suppressSeekRef.current = true;
+        v.currentTime = ip;
+        setTimeout(() => { suppressSeekRef.current = false; }, 60);
+        lastTimeRef.current = ip;
+    };
+    const onTime = () => { const v = vidRef.current; if (!v)
+        return; setNow(v.currentTime); if (!suppressSeekRef.current)
+        lastTimeRef.current = v.currentTime; };
+    const onSeeked = () => {
+        const v = vidRef.current;
+        if (!v)
+            return;
+        if (suppressSeekRef.current) {
+            lastTimeRef.current = v.currentTime;
+            return;
+        }
+        if (v.currentTime < lastTimeRef.current - 0.4)
+            setInPoint(v.currentTime); // any backward jump = new start point
+        lastTimeRef.current = v.currentTime;
+    };
+    const onNativePlay = () => { if (modeRef.current === "rev")
+        stopRev(true); const v = vidRef.current; setMode(v && v.playbackRate > 1 ? "ff" : "play"); setRate(v ? v.playbackRate : 1); };
+    const onNativePause = () => { if (modeRef.current !== "rev") {
+        setMode("pause");
+        setRate(1);
+    } };
+    const onFiles = (e) => {
+        const files = Array.from((e.target && e.target.files) || []);
+        if (!files.length)
+            return;
+        clipsRef.current.forEach(c => { try {
+            URL.revokeObjectURL(c.url);
+        }
+        catch (_) { } });
+        inMapRef.current = {};
+        setClips(files.map(f => ({ id: uid(), name: f.name, url: URL.createObjectURL(f) })));
+        setIdx(0);
+        setInPt(0);
+        setMode("pause");
+        setRate(1);
+        setNow(0);
+        setDur(0);
+        if (e.target)
+            e.target.value = "";
+    };
+    useEffect(() => () => {
+        stopRev(false);
+        clipsRef.current.forEach(c => { try {
+            URL.revokeObjectURL(c.url);
+        }
+        catch (_) { } });
+    }, []);
+    useEffect(() => { setMode("pause"); setRate(1); setNow(0); }, [idx]);
+    // keyboard transport — every handler reads refs, so deps stay minimal
+    useEffect(() => {
+        if (!active)
+            return;
+        const onKey = (e) => {
+            if (e.metaKey || e.ctrlKey || e.altKey)
+                return;
+            const el = document.activeElement, tag = el && el.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el && el.isContentEditable))
+                return;
+            if (!clipsRef.current.length)
+                return;
+            const k = e.key;
+            if (k === " " || e.code === "Space" || k === "k" || k === "K") {
+                e.preventDefault();
+                togglePlay();
+            }
+            else if (k === "l") {
+                e.preventDefault();
+                enter("ff", 2);
+            }
+            else if (k === "L") {
+                e.preventDefault();
+                enter("ff", 4);
+            }
+            else if (k === "j") {
+                e.preventDefault();
+                enter("rev", 2);
+            }
+            else if (k === "J") {
+                e.preventDefault();
+                enter("rev", 0.5);
+            }
+            else if (k === "ArrowRight") {
+                e.preventDefault();
+                skip(15);
+            }
+            else if (k === "ArrowLeft") {
+                e.preventDefault();
+                skip(-15);
+            }
+            else if (k === "r" || k === "R") {
+                e.preventDefault();
+                restart();
+            }
+            else if (k === "n" || k === "N") {
+                e.preventDefault();
+                go(1);
+            }
+            else if (k === "p" || k === "P") {
+                e.preventDefault();
+                go(-1);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [active]);
+    const fmt = (t) => { t = Math.max(0, Math.floor(t || 0)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
+    const badge = mode === "pause" ? "⏸ PAUSED" : mode === "play" ? "▶ 1×" : mode === "ff" ? `▶▶ ${rate}×` : `◀◀ ${rate === 0.5 ? "½" : rate}×`;
+    const btnS = { padding: "6px 9px", cursor: "pointer", borderRadius: 5, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.85)", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, whiteSpace: "nowrap" };
+    return (React.createElement("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: "50%", display: "flex", flexDirection: "column", background: "#05070c", borderRight: "1px solid rgba(255,255,255,0.14)", zIndex: 5 } },
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid rgba(255,255,255,0.1)", flexWrap: "wrap" } },
+            React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", color: "#5eead4", fontSize: 14 } }, "\uD83C\uDFAC FILM"),
+            React.createElement("input", { ref: fileRef, type: "file", accept: "video/*", multiple: true, style: { display: "none" }, onChange: onFiles }),
+            React.createElement("button", { style: btnS, onClick: () => fileRef.current && fileRef.current.click(), title: "Load one or more video files from this device. Clips stay on the device for this session \u2014 nothing uploads." }, "\uD83C\uDF9E LOAD"),
+            clip && (React.createElement(React.Fragment, null,
+                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.75)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }, title: clip.name }, clip.name),
+                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.5)" } },
+                    idx + 1,
+                    "/",
+                    clips.length),
+                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#a7f3d0" } },
+                    fmt(now),
+                    " / ",
+                    fmt(dur)),
+                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#fcd34d" }, title: "The start point \u2014 RESTART (R) plays from here. Any backward move (skip, scrub back, or a rewind) moves it." },
+                    "IN ",
+                    fmt(inPt)),
+                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#93c5fd" } }, badge)))),
+        React.createElement("div", { style: { flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#000" } }, clip ? (React.createElement("video", { key: clip.id, ref: vidRef, src: clip.url, controls: true, playsInline: true, style: { width: "100%", height: "100%", objectFit: "contain" }, onLoadedMetadata: onLoaded, onTimeUpdate: onTime, onSeeked: onSeeked, onPlay: onNativePlay, onPause: onNativePause })) : (React.createElement("button", { style: { ...btnS, padding: "16px 22px", fontSize: 13 }, onClick: () => fileRef.current && fileRef.current.click() }, "\uD83C\uDF9E LOAD FILM (video files)"))),
+        clip && (React.createElement("div", { style: { display: "flex", gap: 5, padding: "6px 8px", borderTop: "1px solid rgba(255,255,255,0.1)", flexWrap: "wrap", justifyContent: "center" } },
+            React.createElement("button", { style: btnS, onClick: () => go(-1), title: "Previous clip (P)" }, "\u23EE"),
+            React.createElement("button", { style: btnS, onClick: () => skip(-15), title: "Back 15 s (\u2190) \u2014 also moves the start point here" }, "\u221215s"),
+            React.createElement("button", { style: btnS, onClick: cycleRev, title: "Rewind \u2014 tap: 2\u00D7 back (J), tap again: slow \u00BD\u00D7 (Shift+J), again: stop" }, "\u25C0\u25C0 REW"),
+            React.createElement("button", { style: { ...btnS, minWidth: 44 }, onClick: togglePlay, title: "Pause / play (Space or K)" }, mode === "pause" ? "▶" : "⏸"),
+            React.createElement("button", { style: btnS, onClick: cycleFF, title: "Fast-forward \u2014 tap: 2\u00D7 (L), tap again: 4\u00D7 (Shift+L), again: 1\u00D7" }, "FF \u25B6\u25B6"),
+            React.createElement("button", { style: btnS, onClick: () => skip(15), title: "Forward 15 s (\u2192)" }, "+15s"),
+            React.createElement("button", { style: btnS, onClick: () => go(1), title: "Next clip (N)" }, "\u23ED"),
+            React.createElement("button", { style: { ...btnS, color: "#fcd34d", borderColor: "rgba(245,158,11,0.45)" }, onClick: restart, title: "Restart from the start point (R) \u2014 the point moves whenever you rewind" }, "\u21BA START")))));
+}
 class ErrorBoundary extends React.Component {
     constructor(props) { super(props); this.state = { err: null }; }
     static getDerivedStateFromError(err) { return { err }; }
@@ -2432,8 +2784,10 @@ function PlaybookApp() {
     // Scope picker ("what do you want to drill?") and tap-to-enlarge play viewer.
     const [quizPick, setQuizPick] = useState(false);
     const [quizExpand, setQuizExpand] = useState(null);
+    const [studyScope, setStudyScope] = useState(null);
     const [quizSel, setQuizSel] = useState(() => new Set());
     const [quizZoom, setQuizZoom] = useState(null);
+    const [quizZoomAll, setQuizZoomAll] = useState(null);
     const [quizBoard, setQuizBoard] = useState(null); // null | {loading, rows, err}
     const [counterRec, setCounterRec] = useState(null); // 🧠 COUNTER result — declared early: the Escape effect below lists it in deps
     const quizAdvRef = useRef(null);
@@ -2483,8 +2837,8 @@ function PlaybookApp() {
     useEffect(() => {
         if (!quiz || quiz.done || quiz.picked == null)
             return;
-        if (quizZoom)
-            return; // don't advance under the enlarged play
+        if (quizZoom || quizZoomAll)
+            return; // don't advance under an enlarged view
         if (quiz.picked !== quiz.qs[quiz.i].play.id)
             return;
         quizAdvRef.current = setTimeout(() => { quizAdvRef.current = null; nextQuizQ(); }, 900);
@@ -2526,13 +2880,15 @@ function PlaybookApp() {
     }, [quiz]);
     // Escape closes the topmost quiz layer: enlarged play → leaderboard → quiz → scope picker.
     useEffect(() => {
-        if (!quiz && !quizPick && !quizZoom && !quizBoard && !counterRec)
+        if (!quiz && !quizPick && !quizZoom && !quizZoomAll && !quizBoard && !counterRec)
             return;
         const onKey = (e) => {
             if (e.key !== "Escape")
                 return;
             e.preventDefault();
-            if (quizZoom)
+            if (quizZoomAll)
+                setQuizZoomAll(null);
+            else if (quizZoom)
                 setQuizZoom(null);
             else if (counterRec)
                 setCounterRec(null);
@@ -2545,7 +2901,7 @@ function PlaybookApp() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [quiz, quizPick, quizZoom, quizBoard, counterRec]);
+    }, [quiz, quizPick, quizZoom, quizZoomAll, quizBoard, counterRec]);
     // ── "Who's studying" leaderboard (staff-only view). Last 60 days of quiz_results.
     const openQuizBoard = useCallback(async () => {
         const db = (typeof window !== "undefined" && window.GP_DB) || null;
@@ -2790,6 +3146,7 @@ function PlaybookApp() {
     // maps a receiver id to its 1–5 spot in the passing progression.
     const [ballPlan, setBallPlan] = useState({ snapTo: null, steps: [], reads: {} });
     const [showBallPanel, setShowBallPanel] = useState(false);
+    const [filmOn, setFilmOn] = useState(false); // 🎬 FILM STUDY: side-by-side video + editor
     // Ball-plan helpers
     // Snap targets are offensive ball-handlers (QB or skill). If a formation has
     // none (e.g. a defense/special-teams look, or an O-line-only set), there's
@@ -6710,16 +7067,10 @@ function PlaybookApp() {
             const route = routes.find(r => r.id === pushLinkRouteId);
             setPushLinkRouteId(null);
             if (route) {
-                let ownerId = route.ownerId;
-                if (ownerId == null && route.points && route.points[0]) {
-                    const sp = route.points[0];
-                    let best = null, bestD = Infinity;
-                    players.forEach(pl => { const dx = pl.x - sp.x, dy = pl.y - sp.y; const d = dx * dx + dy * dy; if (d < bestD) {
-                        bestD = d;
-                        best = pl;
-                    } });
-                    ownerId = best ? best.id : null;
-                }
+                // Resolve the RUNNER through the follow-up/option chain. Resolving a
+                // continuation by its own start point picks the pushed man himself
+                // (he stands at the junction) and the attach silently self-refuses.
+                const ownerId = routeRunnerId(route, routes, players);
                 if (ownerId && ownerId !== pid) {
                     pushUndo(players, routes);
                     setPlayers(prev => prev.map(p => p.id === pid ? { ...p, pushedBy: ownerId } : p));
@@ -7120,6 +7471,99 @@ function PlaybookApp() {
         window.addEventListener("touchmove", onMove, { passive: false });
         window.addEventListener("touchend", onUp);
     }, [routes, players, getSVGPt, pushUndo, snapRoutePt]);
+    // ── Copy / paste for routes, zones, and text (Ctrl/Cmd+C, Ctrl/Cmd+V) ──
+    // Priority on copy: the selected ROUTE, else the selected ZONE, else the
+    // selected TEXT. A pasted copy stands alone — chain links (option/follow-up),
+    // the sequence slot, ownership, and the 🧲 flag are stripped so it can't
+    // silently reference the original. Repeated pastes cascade +16 each. Fully
+    // undoable: pushUndo() snapshots players/routes/coverages/texts together.
+    const copyBufRef = useRef(null); // { kind: "route" | "zone" | "text", data }
+    const pasteSeqRef = useRef(0);
+    useEffect(() => {
+        const onKey = (e) => {
+            if (!(e.ctrlKey || e.metaKey) || e.altKey)
+                return;
+            const k = (e.key || "").toLowerCase();
+            if (k !== "c" && k !== "v")
+                return;
+            const el = document.activeElement, tag = el && el.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el && el.isContentEditable))
+                return;
+            const st = playStateRef.current;
+            if (k === "c") {
+                const r = selectedId ? (st.routes || []).find(x => x.id === selectedId) : null;
+                if (r) {
+                    copyBufRef.current = { kind: "route", data: JSON.parse(JSON.stringify(r)) };
+                    pasteSeqRef.current = 0;
+                    e.preventDefault();
+                    return;
+                }
+                const z = selectedZoneId ? (st.coverages || []).find(x => x.id === selectedZoneId) : null;
+                if (z) {
+                    copyBufRef.current = { kind: "zone", data: JSON.parse(JSON.stringify(z)) };
+                    pasteSeqRef.current = 0;
+                    e.preventDefault();
+                    return;
+                }
+                const t = selectedTextId ? (st.texts || []).find(x => x.id === selectedTextId) : null;
+                if (t) {
+                    copyBufRef.current = { kind: "text", data: JSON.parse(JSON.stringify(t)) };
+                    pasteSeqRef.current = 0;
+                    e.preventDefault();
+                    return;
+                }
+                return; // nothing of ours selected — leave the browser's copy alone
+            }
+            const buf = copyBufRef.current;
+            if (!buf)
+                return;
+            if (readOnly)
+                return;
+            e.preventDefault();
+            pasteSeqRef.current += 1;
+            const off = 16 * pasteSeqRef.current;
+            pushUndo();
+            if (buf.kind === "route") {
+                const nr = JSON.parse(JSON.stringify(buf.data));
+                nr.id = uid();
+                nr.points = (nr.points || []).map(p => ({ ...p, x: Math.min(FW, p.x + off), y: Math.min(FH, p.y + off) }));
+                delete nr.optionOf;
+                delete nr.attachedToMotion;
+                delete nr.order;
+                delete nr.orderOffX;
+                delete nr.orderOffY;
+                delete nr.ownerId;
+                delete nr.snapTarget;
+                setRoutes(prev => [...prev, nr]);
+                setSelectedId(nr.id);
+                setSelectedZoneId(null);
+                setSelectedTextId(null);
+            }
+            else if (buf.kind === "zone") {
+                const nz = JSON.parse(JSON.stringify(buf.data));
+                nz.id = uid();
+                nz.x = Math.min(FW - 20, (nz.x || 0) + off);
+                nz.y = Math.min(FH - 20, (nz.y || 0) + off);
+                delete nz.attachedTo;
+                setCoverages(prev => [...prev, nz]);
+                setSelectedZoneId(nz.id);
+                setSelectedId(null);
+                setSelectedTextId(null);
+            }
+            else {
+                const nt = JSON.parse(JSON.stringify(buf.data));
+                nt.id = uid();
+                nt.x = Math.min(FW - 10, (nt.x || 0) + off);
+                nt.y = Math.min(FH - 10, (nt.y || 0) + off);
+                setTexts(prev => [...prev, nt]);
+                setSelectedTextId(nt.id);
+                setSelectedId(null);
+                setSelectedZoneId(null);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [selectedId, selectedZoneId, selectedTextId, readOnly]);
     // ───────── Coverage AUTO-ASSIGN ─────────
     // Attach every zone to the nearest defender who is NOT blitzing, using the
     // formation's real alignment. Blitzers (rushers) are removed from the pool,
@@ -8286,6 +8730,13 @@ function PlaybookApp() {
             if (!owner || bestD > 40)
                 return;
             const rtype = r.rtype || r.type || undefined;
+            // PUSH links: every player this route's OWNER is pushing (pushedBy lives
+            // on the PUSHED player) plus his release-at-follow-up flag. Label-keyed
+            // (role fallback) like everything else in a preset, so a saved blitz
+            // restores the push — and where it stops — on every re-apply.
+            const pushes = players
+                .filter(pp => pp.pushedBy != null && (pp.pushedBy === owner.id || (r.ownerId != null && pp.pushedBy === r.ownerId)))
+                .map(pp => ({ label: pp.label || "", role: pp.role || "", pushRelease: !!pp.pushRelease }));
             if (owner.ptype === "defense") {
                 const last = r.points[r.points.length - 1];
                 // NEW format: pointOffsets — each point as a (dx, dy) from the
@@ -8313,6 +8764,7 @@ function PlaybookApp() {
                     order: (r.order == null ? null : r.order),
                     orderOffX: r.orderOffX || 0,
                     orderOffY: r.orderOffY || 0,
+                    ...(pushes.length ? { pushes } : {}),
                 });
                 idToSlot.set(r.id, { kind: "blitzer", index: blitzers.length - 1 });
             }
@@ -8329,6 +8781,7 @@ function PlaybookApp() {
                     order: (r.order == null ? null : r.order),
                     orderOffX: r.orderOffX || 0,
                     orderOffY: r.orderOffY || 0,
+                    ...(pushes.length ? { pushes } : {}),
                 });
                 idToSlot.set(r.id, { kind: "offensive", index: offensiveRoutes.length - 1 });
             }
@@ -8409,6 +8862,7 @@ function PlaybookApp() {
         const center = offenseCenterX(players);
         const newRoutes = [];
         const consumedOwnerIds = new Set();
+        const pushOps = []; // { ownerId, pushes } — relinked onto players after the route swap
         const fieldGaps = offensiveGaps(players); // gap X's (incl. outside edges) from the OL on the field
         // Gap-aware blitz path: snap the saved gap target to the nearest ACTUAL gap
         // between the linemen on the field, then route the rusher to that gap's mouth
@@ -8604,6 +9058,8 @@ function PlaybookApp() {
             newRoutes.push(blitzRoute);
             buildOptions(newId, points, b.options);
             buildFollowUp(newId, points, b.followUp, owner.id, "showBlitz");
+            if (Array.isArray(b.pushes) && b.pushes.length)
+                pushOps.push({ ownerId: owner.id, pushes: b.pushes });
         });
         // 2) Apply offensive routes — match by label first, then by role.
         // Points are reconstructed from the owner's current position plus saved
@@ -8633,6 +9089,8 @@ function PlaybookApp() {
             newRoutes.push(offRoute);
             buildOptions(newId, points, or.options);
             buildFollowUp(newId, points, or.followUp, owner.id, "pass");
+            if (Array.isArray(or.pushes) && or.pushes.length)
+                pushOps.push({ ownerId: owner.id, pushes: or.pushes });
         });
         // Clear all blitz-tagged routes (clean swap from any previous selection)
         // plus any other routes whose owners are about to be claimed by the
@@ -8692,6 +9150,29 @@ function PlaybookApp() {
                 return true;
             });
             return [...filtered, ...newRoutes];
+        });
+        // Rebuild PUSH links. pushedBy + the release-at-follow-up flag live on the
+        // PUSHED player, so swapping routes alone can't restore them. First drop
+        // any push whose PUSHER's routes were just swapped out (a stale link would
+        // ride the new route), then re-link this preset's saved pushes by label
+        // (role fallback), preferring a target on the other side of the ball.
+        setPlayers(prev => {
+            let next = prev.map(p => (p.pushedBy && consumedOwnerIds.has(p.pushedBy)) ? { ...p, pushedBy: undefined, pushRelease: undefined } : p);
+            pushOps.forEach(op => {
+                const owner = next.find(p => p.id === op.ownerId);
+                op.pushes.forEach(sp => {
+                    const cands = next.filter(p => p.id !== op.ownerId && p.pushedBy !== op.ownerId);
+                    let target = null;
+                    if (sp.label)
+                        target = cands.find(p => p.label === sp.label && (!owner || p.ptype !== owner.ptype)) || cands.find(p => p.label === sp.label);
+                    if (!target && sp.role)
+                        target = cands.find(p => p.role === sp.role && (!owner || p.ptype !== owner.ptype)) || cands.find(p => p.role === sp.role);
+                    if (!target)
+                        return;
+                    next = next.map(p => p.id === target.id ? { ...p, pushedBy: op.ownerId, pushRelease: sp.pushRelease ? true : undefined } : p);
+                });
+            });
+            return next;
         });
         swapOwnedTexts("blitz", presetTextsToField(preset.texts, "blitz"));
         setSelectedBlitz(name);
@@ -9247,6 +9728,29 @@ function PlaybookApp() {
             return { ...i, playIds: without };
         }));
     }, [setInstalls]);
+        const secBefore = (sec) => (sec.beforePlayId != null ? sec.beforePlayId : sec.afterPlayId);
+        const addInstallSection = useCallback((installId, beforePlayId, name) => {
+            if (!capsRef.current.edit) {
+                alert("View-only: your role can browse and run the playbook, but can't change it.");
+                return;
+            }
+            const nm = (name == null ? "New Section" : String(name)).trim() || "New Section";
+            setInstalls(prev => prev.map(i => i.id !== installId ? i
+                : { ...i, sections: [...(i.sections || []).filter(sec => (sec.beforePlayId != null ? sec.beforePlayId : sec.afterPlayId) !== beforePlayId), { id: uid(), name: nm, beforePlayId }] }));
+        }, [setInstalls]);
+        const renameInstallSection = useCallback((installId, sectionId, name) => {
+            if (!capsRef.current.edit)
+                return;
+            const nm = (name || "").trim();
+            setInstalls(prev => prev.map(i => i.id !== installId ? i
+                : { ...i, sections: (i.sections || []).map(sec => sec.id !== sectionId ? sec : { ...sec, name: nm || sec.name }) }));
+        }, [setInstalls]);
+        const deleteInstallSection = useCallback((installId, sectionId) => {
+            if (!capsRef.current.edit)
+                return;
+            setInstalls(prev => prev.map(i => i.id !== installId ? i
+                : { ...i, sections: (i.sections || []).filter(sec => sec.id !== sectionId) }));
+        }, [setInstalls]);
     // Start a touch/mouse drag of an install play; track the row under the pointer
     // via elementFromPoint and move the play there on release.
     const beginInstallPlayDrag = useCallback((e, installId, playId) => {
@@ -12794,6 +13298,7 @@ function PlaybookApp() {
       .sbtn{padding:9px 11px!important;font-size:13px!important;}
       .field-col{overflow-y:auto!important;-webkit-overflow-scrolling:touch;padding-bottom:62px!important;}
       .field-wrap{flex:none!important;overflow:visible!important;padding:8px!important;}
+      .field-wrap.film-on{padding:8px 8px 8px calc(50% + 10px)!important;}
       .field-svg{max-height:74vh!important;}
       .mob-toolbar{position:fixed!important;bottom:0;left:0;right:0;z-index:60;padding-bottom:max(8px,env(safe-area-inset-bottom))!important;}
       button{min-height:34px;}
@@ -13292,6 +13797,7 @@ function PlaybookApp() {
                                 } }),
                             React.createElement("button", { onClick: () => setShowBallPanel(v => !v), title: "Ball mechanics \u2014 set the snap, handoffs/pitches/passes, fakes, a precise pass spot, and 1\u20135 reads", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
                                     border: `1px solid ${showBallPanel ? "#daa520" : "rgba(255,255,255,0.12)"}`, background: showBallPanel ? "rgba(218,165,32,0.16)" : "transparent", color: showBallPanel ? "#fde68a" : "rgba(255,255,255,0.6)" } }, "\uD83C\uDFC8 Ball"),
+                            React.createElement("button", { onClick: () => setFilmOn(v => !v), title: "FILM STUDY \u2014 split the screen: film on the left, this editor on the right, so you can draw while the tape runs. Space/K play-pause \u00b7 J/L rewind/FF (Shift = \u00bd\u00d7/4\u00d7) \u00b7 \u2190/\u2192 \u00b115s \u00b7 R restart from the start point \u00b7 N/P clips", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em", border: `1px solid ${filmOn ? "#5eead4" : "rgba(255,255,255,0.12)"}`, background: filmOn ? "rgba(94,234,212,0.14)" : "transparent", color: filmOn ? "#99f6e4" : "rgba(255,255,255,0.6)" } }, "\uD83C\uDFAC Film"),
                             React.createElement("button", { onClick: open3D, title: "3D walkthrough \u2014 watch this play run in 3D with the same player numbers", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
                                     border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.6)" } }, "\uD83C\uDFAC 3D"),
                             React.createElement("button", { onClick: openCounterSmart, title: "COUNTER \u2014 reads whichever side you're drawing and answers it: draw offense, get the defensive call; draw defense, get the pass/run answer and your best saved plays", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em",
@@ -13308,7 +13814,8 @@ function PlaybookApp() {
                                     color: (customFieldImg || endzoneText || endzoneBgOverride || endzoneTextColor) ? "#38bdf8" : "rgba(255,255,255,0.6)" } },
                                 "\u2913 ",
                                 (customFieldImg || endzoneText || endzoneBgOverride || endzoneTextColor) ? "Field Customized" : "Customize Field"))),
-                    React.createElement("div", { className: "field-wrap", style: { flex: 1, minHeight: 0, overflow: "hidden", padding: "6px", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" } },
+                    React.createElement("div", { className: "field-wrap" + (filmOn ? " film-on" : ""), style: { flex: 1, minHeight: 0, overflow: "hidden", padding: filmOn ? "6px 6px 6px calc(50% + 10px)" : "6px", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" } },
+                        filmOn && React.createElement(FilmPanel, { active: filmOn && !runningScriptId && !runningInstallId }),
                         filmSrc && (React.createElement(DraggablePanel, { style: { position: "absolute", top: 16, left: 16, zIndex: 30, display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 9, background: "rgba(10,10,20,0.82)", border: "1px solid rgba(244,114,182,0.4)", backdropFilter: "blur(4px)", flexWrap: "wrap", maxWidth: "calc(100% - 32px)" } },
                             React.createElement("span", { style: { fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#f9a8d4", letterSpacing: "0.05em" } }, "FILM"),
                             React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "rgba(255,255,255,0.6)" }, title: "Film opacity" },
@@ -14028,16 +14535,10 @@ function PlaybookApp() {
                                                 color: "#93c5fd", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, borderRadius: 4 } }, "\uD83D\uDD17 ATTACH FOLLOW-UP ROUTE"))));
                                 })(),
                                 (() => {
-                                    let ownerId = sel.ownerId;
-                                    if (ownerId == null && sel.points && sel.points[0]) {
-                                        const sp = sel.points[0];
-                                        let best = null, bestD = Infinity;
-                                        players.forEach(pl => { const dx = pl.x - sp.x, dy = pl.y - sp.y; const d = dx * dx + dy * dy; if (d < bestD) {
-                                            bestD = d;
-                                            best = pl;
-                                        } });
-                                        ownerId = best ? best.id : null;
-                                    }
+                                    // Same runner resolution as the attach: walk the chain to
+                                    // the top parent, so selecting the CONTINUATION shows (and
+                                    // edits) the same push list as the blitz itself.
+                                    const ownerId = routeRunnerId(sel, routes, players);
                                     const pushed = ownerId ? players.filter(p => p.pushedBy === ownerId) : [];
                                     const linking = pushLinkRouteId === sel.id;
                                     const hasFollowUp = !!routes.find(r => r.attachedToMotion === sel.id);
@@ -14962,11 +15463,26 @@ function PlaybookApp() {
                 catch (e) { }
                 const bestBadge = (key) => { const b = (bests[key] && bests[key].bestPct) || 0; return b > 0 ? (React.createElement("span", { style: { marginLeft: 8, fontSize: 11, fontFamily: "'JetBrains Mono',monospace", flexShrink: 0, color: b >= 100 ? "#4ade80" : "#fbbf24" } }, b >= 100 ? "\u2713 100%" : "best " + b + "%")) : null; };
                 const toggleSel = (pid) => setQuizSel(prev => { const nx = new Set(prev); nx.has(pid) ? nx.delete(pid) : nx.add(pid); return nx; });
-                const renderSet = (key, icon, title, list) => {
+                const renderSet = (key, icon, title, list, groups) => {
                     const named = list.filter(p => p && (p.name || "").trim());
                     const n = named.length;
                     const expanded = quizExpand === key;
                     const selCount = expanded ? named.filter(p => quizSel.has(p.id)).length : 0;
+                    const namedIds = new Set(named.map(p => p.id));
+                    const grpList = (groups || [])
+                        .map(g => ({ name: g.name, ids: (g.ids || []).filter(id => namedIds.has(id)) }))
+                        .filter(g => g.ids.length > 0);
+                    const grpAllOn = (g) => g.ids.every(id => quizSel.has(id));
+                    const toggleGroup = (g) => {
+                        setQuizSel(prev => {
+                            const nx = new Set(prev);
+                            if (g.ids.every(id => nx.has(id)))
+                                g.ids.forEach(id => nx.delete(id));
+                            else
+                                g.ids.forEach(id => nx.add(id));
+                            return nx;
+                        });
+                    };
                     return (React.createElement("div", { key: key, style: { marginBottom: 8 } },
                         React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "stretch" } },
                             React.createElement("button", { onClick: () => launch(list, title, key), disabled: n < 2, style: { ...rowBtn(n >= 2), marginBottom: 0, flex: 1, minWidth: 0 } },
@@ -14975,6 +15491,16 @@ function PlaybookApp() {
                                 React.createElement("span", { style: badge }, n, " play", n === 1 ? "" : "s"), bestBadge(key)),
                             React.createElement("button", { onClick: () => { if (expanded) { setQuizExpand(null); } else { setQuizExpand(key); setQuizSel(new Set(named.map(p => p.id))); } }, disabled: n < 2, title: "Pick certain plays to study", style: { width: 48, flexShrink: 0, borderRadius: 12, border: "1px solid " + (expanded ? "rgba(245,158,11,0.5)" : "rgba(255,255,255,0.16)"), background: expanded ? "rgba(245,158,11,0.16)" : "rgba(255,255,255,0.06)", color: n < 2 ? "rgba(255,255,255,0.3)" : (expanded ? "#fcd34d" : "#cbd5e1"), cursor: n < 2 ? "not-allowed" : "pointer", fontSize: 16, touchAction: "manipulation" } }, expanded ? "▾" : "⚙")),
                         expanded && (React.createElement("div", { style: { margin: "2px 0 10px", padding: 8, borderRadius: 12, border: "1px solid rgba(245,158,11,0.25)", background: "rgba(245,158,11,0.04)" } },
+                            grpList.length > 0 && (React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8, padding: "0 4px" } },
+    React.createElement("span", { style: { fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.4)", alignSelf: "center", width: "100%" } }, "Tap a section to add/remove it:"),
+    grpList.map((g, gi) => {
+        const on = grpAllOn(g);
+        return (React.createElement("button", { key: gi, onClick: () => toggleGroup(g), style: { padding: "6px 10px", minHeight: 34, borderRadius: 8, border: "1px solid " + (on ? "rgba(96,165,250,0.6)" : "rgba(255,255,255,0.16)"), background: on ? "rgba(96,165,250,0.18)" : "rgba(255,255,255,0.05)", color: on ? "#bfdbfe" : "#cbd5e1", cursor: "pointer", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.04em", touchAction: "manipulation" } },
+            on ? "▸ " : "",
+            g.name,
+            " ",
+            React.createElement("span", { style: { opacity: 0.6, fontSize: 10 } }, g.ids.length)));
+    }))),
                             React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6, padding: "0 4px" } },
                                 React.createElement("span", { style: { fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.5)" } }, selCount, " of ", n, " selected"),
                                 React.createElement("div", { style: { flex: 1 } }),
@@ -15004,11 +15530,28 @@ function PlaybookApp() {
                                 React.createElement("span", { style: badge }, allN, " play", allN === 1 ? "" : "s"), bestBadge("all")),
                             installs.length > 0 && (React.createElement(React.Fragment, null,
                                 React.createElement("div", { style: secHd }, "INSTALLS"),
-                                installs.map(inst => renderSet("inst_" + inst.id, "📋", inst.name || "Install", (inst.playIds || []).map(pid => plays.find(p => p.id === pid)).filter(Boolean)))
+                                installs.map(inst => {
+                                    const setList = (inst.playIds || []).map(pid => plays.find(p => p.id === pid)).filter(Boolean);
+                                    const secs = inst.sections || [];
+                                    const before = (aid) => secs.find(x => (x.beforePlayId != null ? x.beforePlayId : x.afterPlayId) === aid);
+                                    let groups = [], cur = null;
+                                    const startHdr = before("__start__");
+                                    if (startHdr) { cur = { name: startHdr.name, ids: [] }; groups.push(cur); }
+                                    (inst.playIds || []).forEach(pid => {
+                                        const hh = before(pid);
+                                        if (hh) { cur = { name: hh.name, ids: [] }; groups.push(cur); }
+                                        if (cur) cur.ids.push(pid);
+                                    });
+                                    return renderSet("inst_" + inst.id, "📋", inst.name || "Install", setList, groups);
+                                })
                                 )),
                             scripts.length > 0 && (React.createElement(React.Fragment, null,
                                 React.createElement("div", { style: secHd }, "PRACTICE SCRIPTS"),
-                                scripts.map(sc => renderSet("script_" + sc.id, "📝", sc.name || "Script", [...new Set((sc.periods || []).flatMap(per => per.playIds || []))].map(pid => plays.find(p => p.id === pid)).filter(Boolean)))
+                                scripts.map(sc => {
+                                    const setList = [...new Set((sc.periods || []).flatMap(per => per.playIds || []))].map(pid => plays.find(p => p.id === pid)).filter(Boolean);
+                                    const groups = (sc.periods || []).map(per => ({ name: per.name || "Period", ids: [...(per.playIds || [])] }));
+                                    return renderSet("script_" + sc.id, "📝", sc.name || "Script", setList, groups);
+                                })
                                 )),
                             installs.length === 0 && scripts.length === 0 && (React.createElement("div", { style: { fontSize: 12, color: "rgba(255,255,255,0.4)", textAlign: "center", marginTop: 16, lineHeight: 1.6 } }, "Installs and practice scripts you build will show up here as study sets.")),
                             React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.3)", textAlign: "center", marginTop: 14 } }, "Sets need at least 2 named plays.")))));
@@ -15073,15 +15616,89 @@ function PlaybookApp() {
                                     o.name,
                                     answered && o.id === correctId ? "  \u2713" : answered && o.id === picked ? "  \u2717" : ""))))) : (React.createElement(React.Fragment, null,
                                 React.createElement("div", { style: { fontSize: 13, color: "rgba(255,255,255,0.5)", textAlign: "center", marginBottom: 6, letterSpacing: "0.04em" } }, "Which one is\u2026"),
-                                React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, color: "#fff", textAlign: "center", marginBottom: 14, lineHeight: 1.15 } }, "\u201C", cur.play.name, "\u201D"),
-                                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, cur.opts.map(o => (React.createElement("button", { key: o.id, onClick: () => { if (answered) setQuizZoom(o.play); else answerQuiz(o.id); }, style: thumbBtn(o) },
+                                React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, color: "#fff", textAlign: "center", marginBottom: 10, lineHeight: 1.15 } }, "\u201C", cur.play.name, "\u201D"),
+                                React.createElement("button", { onClick: () => setQuizZoomAll({ opts: cur.opts, canAnswer: !answered }), title: "See all four diagrams full-screen so you can read them", style: { display: "block", margin: "0 auto 12px", padding: "7px 14px", borderRadius: 8, border: "1px solid rgba(125,211,252,0.4)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc", cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.06em", touchAction: "manipulation" } }, "\u2922 ENLARGE ALL"),
+                                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, cur.opts.map(o => (React.createElement("button", { key: o.id, onClick: () => { if (answered) setQuizZoom(o.play); else answerQuiz(o.id); }, style: { ...thumbBtn(o), position: "relative" } },
                                     React.createElement("div", { className: "gp-quiz-thumb" },
-                                        React.createElement(PlayThumbnail, { play: o.play, w: 240, h: 210 })))))))),
+                                        React.createElement(PlayThumbnail, { play: o.play, w: 240, h: 210 })),
+                                    React.createElement("span", { onClick: e => { e.stopPropagation(); setQuizZoom(o.play); }, title: "Enlarge just this one", style: { position: "absolute", right: 6, top: 6, width: 28, height: 28, borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 13, border: "1px solid rgba(255,255,255,0.2)", cursor: "zoom-in", touchAction: "manipulation" } }, "\u2922"))))))),
                             answered && !quiz.done && (React.createElement("div", { style: { marginTop: 14 } },
                                 React.createElement("div", { style: { textAlign: "center", fontSize: 15, fontWeight: 700, marginBottom: 10, color: wasRight ? "#86efac" : "#fca5a5" } }, wasRight ? "\u2713 Correct!" : `\u2717 It's \u201C${cur.play.name}\u201D`),
                                 cur.mode === "pickDiagram" && React.createElement("div", { style: { textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 10 } }, "Tap any diagram to enlarge it."),
                                 React.createElement("button", { onClick: nextQuizQ, style: { ...bigBtn(wasRight ? "green" : "amber"), maxWidth: 340, margin: "0 auto", marginBottom: 0 } }, quiz.i + 1 >= quiz.qs.length ? "SEE MY SCORE \u2192" : "NEXT \u2192")))))));
             })(),
+            studyScope && (() => {
+    const isInst = studyScope.kind === "inst";
+    const set = isInst ? installs.find(i => i.id === studyScope.id) : scripts.find(sc => sc.id === studyScope.id);
+    if (!set)
+        return null;
+    const named = (id) => { const p = plays.find(pp => pp.id === id); return p && (p.name || "").trim() ? p : null; };
+    // Full ordered play list + the named groups (subsections or periods).
+    let full = [], groups = [];
+    if (isInst) {
+        full = (set.playIds || []).map(named).filter(Boolean);
+        const secs = set.sections || [];
+        const before = (aid) => secs.find(x => (x.beforePlayId != null ? x.beforePlayId : x.afterPlayId) === aid);
+        let cur = null;
+        const startHdr = before("__start__");
+        if (startHdr) {
+            cur = { name: startHdr.name, plays: [] };
+            groups.push(cur);
+        }
+        (set.playIds || []).forEach(pid => {
+            const h = before(pid);
+            if (h) {
+                cur = { name: h.name, plays: [] };
+                groups.push(cur);
+            }
+            const p = named(pid);
+            if (cur && p)
+                cur.plays.push(p);
+        });
+    }
+    else {
+        full = [...new Set((set.periods || []).flatMap(per => per.playIds || []))].map(named).filter(Boolean);
+        groups = (set.periods || []).map(per => ({ name: per.name || "Period", plays: (per.playIds || []).map(named).filter(Boolean) }));
+    }
+    groups = groups.filter(g => g.plays.length >= 2);
+    const scopeKey = (isInst ? "inst_" : "script_") + set.id;
+    const setName = set.name || (isInst ? "Install" : "Script");
+    const go = (qPlays, title, key) => { if (startQuiz(qPlays, plays, title, key))
+        setStudyScope(null); };
+    const btn = (accent) => ({ width: "100%", minHeight: 48, marginBottom: 8, borderRadius: 10, border: "1px solid " + accent.bd, background: accent.bg, color: accent.c, cursor: "pointer", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, letterSpacing: "0.06em", display: "flex", alignItems: "center", gap: 10, padding: "0 14px", touchAction: "manipulation" });
+    const gold = { bd: "rgba(245,158,11,0.6)", bg: "rgba(245,158,11,0.18)", c: "#fcd34d" };
+    const slate = { bd: "rgba(255,255,255,0.16)", bg: "rgba(255,255,255,0.05)", c: "#cbd5e1" };
+    return (React.createElement("div", { onClick: () => setStudyScope(null), style: { position: "fixed", inset: 0, zIndex: 7160, background: "rgba(5,5,12,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, WebkitTapHighlightColor: "transparent" } },
+        React.createElement("div", { onClick: e => e.stopPropagation(), style: { width: "100%", maxWidth: 420, maxHeight: "84vh", overflowY: "auto", WebkitOverflowScrolling: "touch", background: "#0d0d16", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, padding: "16px 16px 18px" } },
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12 } },
+                React.createElement("span", { style: { fontSize: 20 } }, "\uD83C\uDF93"),
+                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                    React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 17, letterSpacing: "0.06em", color: "#fcd34d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                        "STUDY \u00B7 ",
+                        setName),
+                    React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.45)" } },
+                        "Study everything, or just one ",
+                        isInst ? "subsection" : "period",
+                        ".")),
+                React.createElement("button", { onClick: () => setStudyScope(null), style: { width: 34, height: 34, flexShrink: 0, borderRadius: 9, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#cbd5e1", cursor: "pointer", fontSize: 15, touchAction: "manipulation" } }, "\u2715")),
+            React.createElement("button", { onClick: () => go(full, setName, scopeKey), disabled: full.length < 2, style: { ...btn(gold), opacity: full.length < 2 ? 0.5 : 1, cursor: full.length < 2 ? "not-allowed" : "pointer" } },
+                React.createElement("span", { style: { fontSize: 18 } }, "\uD83D\uDCDA"),
+                React.createElement("span", { style: { flex: 1, textAlign: "left" } }, "ALL PLAYS"),
+                React.createElement("span", { style: { fontSize: 11, fontFamily: "'JetBrains Mono',monospace", opacity: 0.7 } }, full.length)),
+            groups.length > 0 && (React.createElement("div", { style: { fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.4)", margin: "4px 2px 6px", letterSpacing: "0.06em" } }, isInst ? "SUBSECTIONS" : "PERIODS")),
+            groups.map((g, gi) => (React.createElement("button", { key: gi, onClick: () => go(g.plays, setName + " · " + g.name, scopeKey + "_g" + gi), style: btn(slate) },
+                React.createElement("span", { style: { fontSize: 15 } }, "\u25B8"),
+                React.createElement("span", { style: { flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, g.name),
+                React.createElement("span", { style: { fontSize: 11, fontFamily: "'JetBrains Mono',monospace", opacity: 0.7 } }, g.plays.length)))),
+            groups.length === 0 && (React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,0.35)", textAlign: "center", marginTop: 6, lineHeight: 1.5 } },
+                "No ",
+                isInst ? "subsections" : "periods",
+                " with 2+ plays yet \u2014 add ",
+                isInst ? "a subsection (+\u00a7)" : "plays to a period",
+                " to study part of this ",
+                isInst ? "install" : "script",
+                ".")))));
+})(),
             quizZoom && (() => {
                 const vw = typeof window !== "undefined" ? window.innerWidth : 800;
                 const vh = typeof window !== "undefined" ? window.innerHeight : 600;
@@ -15093,6 +15710,41 @@ function PlaybookApp() {
                     React.createElement("button", { onClick: () => setQuizZoom(null), style: { position: "absolute", top: "max(10px, env(safe-area-inset-top))", right: 10, width: 42, height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)", color: "#fff", cursor: "pointer", fontSize: 17, touchAction: "manipulation" } }, "\u2715"),
                     React.createElement("span", { style: { position: "absolute", bottom: "max(10px, env(safe-area-inset-bottom))", left: 0, right: 0, textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.45)", pointerEvents: "none" } }, "tap anywhere to close")));
             })(),
+            quizZoomAll && (() => {
+    const opts = quizZoomAll.opts || [];
+    const n = opts.length || 1;
+    const vw = typeof window !== "undefined" ? window.innerWidth : 800;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 600;
+    // Two columns; rows scroll if they overflow. Size each tile to the wider
+    // of the two so a single row (n<=2) goes really big.
+    const cols = n <= 1 ? 1 : 2;
+    const rows = Math.ceil(n / cols);
+    const gap = 10;
+    const availW = Math.max(240, vw - 24 - gap * (cols - 1));
+    const tileW = Math.floor(availW / cols);
+    const headH = 78;
+    const availH = Math.max(220, vh - headH - 24 - gap * (rows - 1));
+    const tileH = Math.min(Math.floor(availH / rows), Math.round(tileW * 1.28));
+    const canAnswer = !!quizZoomAll.canAnswer;
+    const pick = (o) => {
+        if (canAnswer) {
+            setQuizZoomAll(null);
+            answerQuiz(o.id);
+        }
+        else {
+            setQuizZoomAll(null);
+            setQuizZoom(o.play);
+        }
+    };
+    return (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 7320, background: "rgba(4,5,10,0.98)", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent" } },
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", paddingTop: "max(12px, env(safe-area-inset-top))", flexShrink: 0 } },
+            React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 16, letterSpacing: "0.08em", color: "#7dd3fc" } }, "ALL OPTIONS"),
+            React.createElement("span", { style: { fontSize: 12, color: "rgba(255,255,255,0.5)" } }, canAnswer ? "Tap the one that matches to answer." : "Tap any to enlarge it fully."),
+            React.createElement("div", { style: { flex: 1 } }),
+            React.createElement("button", { onClick: () => setQuizZoomAll(null), style: { width: 42, height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)", color: "#fff", cursor: "pointer", fontSize: 17, touchAction: "manipulation" } }, "\u2715")),
+        React.createElement("div", { style: { flex: 1, minHeight: 0, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "0 12px 14px", display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap, alignContent: "start" } }, opts.map(o => (React.createElement("button", { key: o.id, onClick: () => pick(o), style: { padding: 0, border: "1px solid rgba(255,255,255,0.14)", borderRadius: 10, overflow: "hidden", background: "#0a1a0e", cursor: canAnswer ? "pointer" : "zoom-in", touchAction: "manipulation" } },
+            React.createElement(PlayThumbnail, { play: o.play, w: tileW, h: tileH })))))));
+})(),
             showGuide && (() => {
                 const gSteps = GUIDE_STEPS.filter(s => (!s.need || caps[s.need]) && (!s.viewOnly || !caps.edit));
                 if (!gSteps.length)
@@ -16996,7 +17648,8 @@ function PlaybookApp() {
                                         border: `1px solid ${scriptViewMode === "cards" ? "rgba(34,211,238,0.6)" : "rgba(255,255,255,0.12)"}`,
                                         background: scriptViewMode === "cards" ? "rgba(34,211,238,0.18)" : "transparent",
                                         color: scriptViewMode === "cards" ? "#67e8f9" : "rgba(255,255,255,0.5)" } }, "CARDS"),
-                                React.createElement("button", { onClick: () => { setRunStepIdx(0); setRunningScriptId(openScript.id); }, disabled: playCount === 0, title: playCount === 0 ? "Add at least one play to run the script" : "Walk through the script one play at a time", style: { padding: "5px 12px", borderRadius: 5, cursor: playCount === 0 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
+                                React.createElement("button", { onClick: () => setStudyScope({ kind: "script", id: openScript.id }), disabled: playCount < 2, title: "Study this script — all plays, or just one period.", style: { padding: "5px 12px", borderRadius: 5, cursor: playCount < 2 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", border: `1px solid ${playCount < 2 ? "rgba(245,158,11,0.2)" : "rgba(245,158,11,0.5)"}`, background: playCount < 2 ? "rgba(245,158,11,0.05)" : "rgba(245,158,11,0.18)", color: playCount < 2 ? "rgba(245,158,11,0.4)" : "#fcd34d", opacity: playCount < 2 ? 0.6 : 1 } }, "\uD83C\uDF93 STUDY"),
+                            React.createElement("button", { onClick: () => { setRunStepIdx(0); setRunningScriptId(openScript.id); }, disabled: playCount === 0, title: playCount === 0 ? "Add at least one play to run the script" : "Walk through the script one play at a time", style: { padding: "5px 12px", borderRadius: 5, cursor: playCount === 0 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
                                         border: `1px solid ${playCount === 0 ? "rgba(255,255,255,0.1)" : "rgba(74,222,128,0.55)"}`,
                                         background: playCount === 0 ? "transparent" : "rgba(74,222,128,0.16)",
                                         color: playCount === 0 ? "rgba(255,255,255,0.3)" : "#86efac",
@@ -17171,6 +17824,15 @@ function PlaybookApp() {
                         .map(pid => plays.find(p => p.id === pid))
                         .filter(Boolean);
                     const playsNotInInstall = plays.filter(p => !openInst.playIds.includes(p.id));
+          const renderInstHeader = (aid) => {
+              const sec = (openInst.sections || []).find(x => secBefore(x) === aid);
+              if (!sec)
+                  return null;
+              return (React.createElement("div", { key: "sec-" + sec.id, style: { display: "flex", alignItems: "center", gap: 6, marginTop: aid === "__start__" ? 0 : 8, marginBottom: 2, padding: "3px 6px", background: "rgba(250,204,21,0.09)", borderLeft: "3px solid #facc15", borderRadius: 4 } },
+                  React.createElement("span", { style: { fontSize: 11 } }, "\u25B8"),
+                  readOnly ? (React.createElement("span", { style: { flex: 1, fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", color: "#fde68a" } }, sec.name)) : (React.createElement("input", { value: sec.name, onChange: e => renameInstallSection(openInst.id, sec.id, e.target.value), style: { flex: 1, background: "transparent", border: "none", borderBottom: "1px solid rgba(250,204,21,0.3)", color: "#fde68a", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", padding: "1px 2px", outline: "none" } })),
+                  !readOnly && (React.createElement("button", { onClick: () => deleteInstallSection(openInst.id, sec.id), title: "Remove this subsection header", style: { padding: "0 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7"))));
+          };
                     const allFormationNames = ["offense", "defense", "special"].flatMap(cat => [
                         ...Object.keys(FORMATIONS[cat] || {}).map(f => ({ cat, name: f, custom: false })),
                         ...Object.keys(customForms[cat] || {}).filter(f => !(FORMATIONS[cat] && FORMATIONS[cat][f])).map(f => ({ cat, name: f, custom: true })),
@@ -17214,7 +17876,7 @@ function PlaybookApp() {
                                         background: openInst.playIds.length === 0 ? "rgba(168,85,247,0.05)" : "rgba(168,85,247,0.2)",
                                         color: openInst.playIds.length === 0 ? "rgba(168,85,247,0.4)" : "#e9d5ff",
                                         opacity: openInst.playIds.length === 0 ? 0.5 : 1 } }, "\u25B6 RUN"),
-                                React.createElement("button", { onClick: () => { const list = openInst.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean); startQuiz(list, plays, openInst.name || "Install", "inst_" + openInst.id); }, disabled: openInst.playIds.length < 2, title: "Quiz yourself on this install — see a play, name it. Phone-friendly, and you can re-drill the ones you miss.", style: { padding: "5px 12px", borderRadius: 5, cursor: openInst.playIds.length < 2 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
+                                React.createElement("button", { onClick: () => setStudyScope({ kind: "inst", id: openInst.id }), disabled: openInst.playIds.length < 2, title: "Study this install — all plays, or just one subsection.", style: { padding: "5px 12px", borderRadius: 5, cursor: openInst.playIds.length < 2 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
                                         border: "1px solid rgba(245,158,11,0.5)",
                                         background: openInst.playIds.length < 2 ? "rgba(245,158,11,0.05)" : "rgba(245,158,11,0.18)",
                                         color: openInst.playIds.length < 2 ? "rgba(245,158,11,0.4)" : "#fcd34d",
@@ -17251,7 +17913,8 @@ function PlaybookApp() {
                                     React.createElement("div", { className: "hd", style: { fontSize: 12, color: "#fcd34d", letterSpacing: "0.1em", marginBottom: 6 } },
                                         "PLAYS \u00B7 ",
                                         playsInInstall.length),
-                                    playsInInstall.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontStyle: "italic", marginBottom: 10 } }, "No plays in this install yet.")) : (React.createElement("div", { "data-inst-list": "1", "data-inst-count": playsInInstall.length, style: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 } }, playsInInstall.map((p, pIdx) => (React.createElement(React.Fragment, { key: p.id }, instDrag && instDrag.idx === pIdx && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })), React.createElement("div", { "data-inst-row": pIdx, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.18)", borderRadius: 5, opacity: (instDrag && instDrag.playId === p.id) ? 0.4 : 1 } }, !readOnly && (React.createElement("span", { onMouseDown: e => beginInstallPlayDrag(e, openInst.id, p.id), onTouchStart: e => beginInstallPlayDrag(e, openInst.id, p.id), title: "Drag to reorder", style: { cursor: "grab", color: "rgba(255,255,255,0.4)", fontSize: 14, lineHeight: 1, padding: "0 2px", touchAction: "none", userSelect: "none" } }, "\u2261")), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", minWidth: 18, textAlign: "right" } }, pIdx + 1, "."), React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name), React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.4)", fontFamily: "'JetBrains Mono',monospace" } }, playFormations(p)[0] || ""), !readOnly && (React.createElement(React.Fragment, null, React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, -1), disabled: pIdx === 0, title: "Move up", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === 0 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === 0 ? 0.3 : 1, fontSize: 10 } }, "\u2191"), React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, 1), disabled: pIdx === playsInInstall.length - 1, title: "Move down", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === playsInInstall.length - 1 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === playsInInstall.length - 1 ? 0.3 : 1, fontSize: 10 } }, "\u2193"), React.createElement("button", { onClick: () => toggleInstallPlay(openInst.id, p.id), title: "Remove from install", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7"))))))), instDrag && instDrag.idx === playsInInstall.length && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })))),
+                                    playsInInstall.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontStyle: "italic", marginBottom: 10 } }, "No plays in this install yet.")) : (React.createElement("div", { "data-inst-list": "1", "data-inst-count": playsInInstall.length, style: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 } }, renderInstHeader("__start__"), playsInInstall.map((p, pIdx) => (React.createElement(React.Fragment, { key: p.id }, renderInstHeader(p.id), instDrag && instDrag.idx === pIdx && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })), React.createElement("div", { "data-inst-row": pIdx, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.18)", borderRadius: 5, opacity: (instDrag && instDrag.playId === p.id) ? 0.4 : 1 } }, !readOnly && (React.createElement("span", { onMouseDown: e => beginInstallPlayDrag(e, openInst.id, p.id), onTouchStart: e => beginInstallPlayDrag(e, openInst.id, p.id), title: "Drag to reorder", style: { cursor: "grab", color: "rgba(255,255,255,0.4)", fontSize: 14, lineHeight: 1, padding: "0 2px", touchAction: "none", userSelect: "none" } }, "\u2261")), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", minWidth: 18, textAlign: "right" } }, pIdx + 1, "."), React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name), React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.4)", fontFamily: "'JetBrains Mono',monospace" } }, playFormations(p)[0] || ""), !readOnly && (React.createElement(React.Fragment, null, React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, -1), disabled: pIdx === 0, title: "Move up", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === 0 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === 0 ? 0.3 : 1, fontSize: 10 } }, "\u2191"), React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, 1), disabled: pIdx === playsInInstall.length - 1, title: "Move down", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === playsInInstall.length - 1 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === playsInInstall.length - 1 ? 0.3 : 1, fontSize: 10 } }, "\u2193"), React.createElement("button", { onClick: () => addInstallSection(openInst.id, p.id, "New Section"), title: "Add a subsection header above this play (optional grouping)", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(250,204,21,0.3)", background: "transparent", color: "rgba(250,204,21,0.75)", fontSize: 11 } }, "+\u00a7"),
+                                                    React.createElement("button", { onClick: () => toggleInstallPlay(openInst.id, p.id), title: "Remove from install", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7"))))))), instDrag && instDrag.idx === playsInInstall.length && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })))),
                                     playsNotInInstall.length > 0 && (React.createElement("div", { style: { marginBottom: 14 } },
                                         React.createElement(AddPlayPicker, { available: playsNotInInstall, onAdd: (pid) => toggleInstallPlay(openInst.id, pid), summaryLabel: "+ ADD PLAYS", secondary: (p) => `${p.category} · ${playFormations(p)[0] || "—"}` }))),
                                     React.createElement("div", { className: "hd", style: { fontSize: 12, color: "#67e8f9", letterSpacing: "0.1em", marginBottom: 6, marginTop: 6 } },
