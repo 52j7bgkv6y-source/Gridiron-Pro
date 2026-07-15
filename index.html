@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-14a";
+window.__gpBuild = "2026-07-15a";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -2184,7 +2184,7 @@ function AddPlayPicker({ available, onAdd, summaryLabel, secondary }) {
 //    standalone editor, where there is no team backend. The panel mounts when an
 //    install is opened and unmounts when it's closed, so its lifecycle doubles
 //    as the per-player study-time clock.
-function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActive }) {
+function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActive, focusQ, onFocusDone }) {
     const installId = install.id;
     const [myRow, setMyRow] = useState(null);
     const [rows, setRows] = useState(null);
@@ -2308,6 +2308,19 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActi
         }
         catch (e) { /* ignore */ }
     }, [db, loadCoach]);
+    // Deep-link from the notification bell: once the questions land, scroll the
+    // target question into view; onFocusDone clears the highlight after a beat.
+    useEffect(() => {
+        if (!focusQ || !isCoach || questions === null)
+            return;
+        const el = document.querySelector('[data-gpq="' + focusQ + '"]');
+        if (el && el.scrollIntoView)
+            el.scrollIntoView({ block: "center", behavior: "smooth" });
+        const t = setTimeout(() => { if (onFocusDone)
+            onFocusDone(); }, 2600);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [focusQ, isCoach, questions === null]);
     if (!db || !teamId)
         return null; // standalone editor: no team backend
     const card = { background: "rgba(10,10,18,0.5)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "12px 14px", marginTop: 12 };
@@ -2387,7 +2400,120 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActi
                 questions ? "  ·  " + questions.filter(q => !q.resolved).length + " open" : ""),
             questions === null ? React.createElement("div", { style: { fontSize: 12, color: "#94a3b8" } }, "Loading\u2026")
                 : questions.length === 0 ? React.createElement("div", { style: { fontSize: 12, color: "#94a3b8" } }, "No questions yet.")
-                    : questions.map(q => (React.createElement("div", { key: q.id, style: { padding: "8px 0", borderTop: "1px solid rgba(255,255,255,0.06)", opacity: q.resolved ? 0.55 : 1 } },
+                    : questions.map(q => (React.createElement("div", { key: q.id, "data-gpq": q.id, style: { padding: "8px 0", borderTop: "1px solid rgba(255,255,255,0.06)", opacity: q.resolved ? 0.55 : 1, background: q.id === focusQ ? "rgba(251,191,36,0.12)" : "transparent", transition: "background .6s", borderRadius: 6 } },
+                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+                            React.createElement("span", { style: { fontSize: 11, color: "#c4b5fd", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em" } },
+                                q.play_name || "General",
+                                " ",
+                                React.createElement("span", { style: { color: "#64748b" } },
+                                    "\u00B7 ",
+                                    q.asker_name || "Player")),
+                            React.createElement("button", { onClick: () => resolveQ(q.id, !q.resolved), style: { border: "none", background: "transparent", color: q.resolved ? "#64748b" : "#4ade80", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" } }, q.resolved ? "↺ reopen" : "✓ resolve")),
+                        React.createElement("div", { style: { fontSize: 13, color: "#e2e8f0", marginTop: 3, whiteSpace: "pre-wrap" } }, q.body),
+                        React.createElement("div", { style: { fontSize: 10, color: "#64748b", marginTop: 2 } }, when(q.created_at))))),
+            err && React.createElement("div", { style: { fontSize: 12, color: "#fca5a5", marginTop: 6 } }, err)))));
+}
+// Script-scoped twin of InstallTeamPanel's question cards: players ask a coach
+// about a play in this practice script; coaches see and resolve the questions.
+// No progress tracking — that concept is install-only.
+function ScriptTeamPanel({ db, teamId, userId, script, plays, isCoach, focusQ, onFocusDone }) {
+    const scriptId = script.id;
+    const [questions, setQuestions] = useState(null);
+    const [err, setErr] = useState("");
+    const [askPlay, setAskPlay] = useState((plays[0] && plays[0].id) || "");
+    const [askBody, setAskBody] = useState("");
+    const [sending, setSending] = useState(false);
+    const [sent, setSent] = useState(false);
+    const when = (t) => { try {
+        return t ? new Date(t).toLocaleString() : "";
+    }
+    catch (_) {
+        return "";
+    } };
+    const loadQ = useCallback(async () => {
+        if (!db || !teamId || !isCoach)
+            return;
+        setErr("");
+        try {
+            const qq = await db.from("play_questions").select("*")
+                .eq("team_id", teamId).eq("script_id", scriptId).order("created_at", { ascending: false });
+            setQuestions(qq.data || []);
+        }
+        catch (e) {
+            setErr("Couldn't load questions — check your connection.");
+        }
+    }, [db, teamId, scriptId, isCoach]);
+    useEffect(() => {
+        loadQ();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [scriptId]);
+    const send = useCallback(async () => {
+        if (!db || !teamId || !askBody.trim())
+            return;
+        setSending(true);
+        setSent(false);
+        setErr("");
+        const pl = plays.find(p => p.id === askPlay);
+        try {
+            await db.rpc("ask_play_question", {
+                p_team: teamId, p_install: null, p_script: scriptId,
+                p_play: askPlay || null, p_play_name: (pl && pl.name) || null, p_body: askBody.trim()
+            });
+            setAskBody("");
+            setSent(true);
+            if (isCoach)
+                await loadQ();
+        }
+        catch (e) {
+            setErr("Couldn't send your question — try again.");
+        }
+        setSending(false);
+    }, [db, teamId, scriptId, askPlay, askBody, plays, isCoach, loadQ]);
+    const resolveQ = useCallback(async (id, val) => {
+        if (!db)
+            return;
+        try {
+            await db.from("play_questions").update({ resolved: val }).eq("id", id);
+            await loadQ();
+        }
+        catch (e) { /* ignore */ }
+    }, [db, loadQ]);
+    // Deep-link from the notification bell (same contract as InstallTeamPanel).
+    useEffect(() => {
+        if (!focusQ || !isCoach || questions === null)
+            return;
+        const el = document.querySelector('[data-gpq="' + focusQ + '"]');
+        if (el && el.scrollIntoView)
+            el.scrollIntoView({ block: "center", behavior: "smooth" });
+        const t = setTimeout(() => { if (onFocusDone)
+            onFocusDone(); }, 2600);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [focusQ, isCoach, questions === null]);
+    if (!db || !teamId)
+        return null; // standalone editor: no team backend
+    const card = { background: "rgba(10,10,18,0.5)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 };
+    const head = { fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, letterSpacing: "0.08em", color: "#e2e8f0", marginBottom: 8 };
+    return (React.createElement("div", { style: { marginBottom: 2 } },
+        React.createElement("div", { style: card },
+            React.createElement("div", { style: head }, "ASK A COACH ABOUT A PLAY"),
+            React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" } },
+                React.createElement("select", { value: askPlay, onChange: e => { setAskPlay(e.target.value); setSent(false); }, style: { padding: "7px 9px", borderRadius: 7, background: "#15151f", color: "#fff", border: "1px solid rgba(255,255,255,0.18)", fontSize: 12, minWidth: 150 } },
+                    React.createElement("option", { value: "" }, "General (no specific play)"),
+                    plays.map(p => React.createElement("option", { key: p.id, value: p.id }, p.name || "Untitled"))),
+                React.createElement("textarea", { value: askBody, onChange: e => { setAskBody(e.target.value); setSent(false); }, placeholder: "What's your question about this play?", rows: 2, style: { flex: 1, minWidth: 200, padding: "7px 10px", borderRadius: 7, background: "#15151f", color: "#fff", border: "1px solid rgba(255,255,255,0.18)", fontSize: 13, resize: "vertical", fontFamily: "inherit" } }),
+                React.createElement("button", { onClick: send, disabled: sending || !askBody.trim(), style: { padding: "7px 14px", borderRadius: 8, cursor: (sending || !askBody.trim()) ? "default" : "pointer",
+                        border: "1px solid rgba(167,139,250,0.5)", background: "rgba(167,139,250,0.16)", color: "#c4b5fd",
+                        fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.06em", opacity: (sending || !askBody.trim()) ? 0.5 : 1 } }, sending ? "SENDING…" : "SEND")),
+            sent && React.createElement("div", { style: { fontSize: 12, color: "#86efac", marginTop: 6 } }, "\u2713 Sent to your coaches."),
+            err && !isCoach && React.createElement("div", { style: { fontSize: 12, color: "#fca5a5", marginTop: 6 } }, err)),
+        isCoach && (React.createElement("div", { style: card },
+            React.createElement("div", { style: head },
+                "PLAYER QUESTIONS",
+                questions ? "  ·  " + questions.filter(q => !q.resolved).length + " open" : ""),
+            questions === null ? React.createElement("div", { style: { fontSize: 12, color: "#94a3b8" } }, "Loading\u2026")
+                : questions.length === 0 ? React.createElement("div", { style: { fontSize: 12, color: "#94a3b8" } }, "No questions yet.")
+                    : questions.map(q => (React.createElement("div", { key: q.id, "data-gpq": q.id, style: { padding: "8px 0", borderTop: "1px solid rgba(255,255,255,0.06)", opacity: q.resolved ? 0.55 : 1, background: q.id === focusQ ? "rgba(251,191,36,0.12)" : "transparent", transition: "background .6s", borderRadius: 6 } },
                         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
                             React.createElement("span", { style: { fontSize: 11, color: "#c4b5fd", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em" } },
                                 q.play_name || "General",
@@ -4086,6 +4212,144 @@ function PlaybookApp() {
     // Whenever the play changes (or a run starts/stops), drop back to the field —
     // the notes screen is always reached by advancing PAST the play.
     useEffect(() => { setRunNotesShown(false); setRunFlip(false); }, [runStepIdx, runningInstallId, runningScriptId]);
+    // ── Question notifications (bell). Only admin-picked coaches (rows in
+    // notify_recipients) get the badge; admins/co-admins always see the bell so
+    // they can reach the recipient picker. Delivery is 60s polling — matches the
+    // app's existing load-on-demand patterns, no realtime subscription.
+    const [showNotif, setShowNotif] = useState(false); // bell panel open
+    const [notifRecipient, setNotifRecipient] = useState(null); // null=unknown · false=not picked · row=picked (created_at = unread baseline)
+    const [notifItems, setNotifItems] = useState([]); // recent questions, newest first (mine excluded)
+    const [notifReads, setNotifReads] = useState({}); // question_id → true (read by me)
+    const [notifFocusQ, setNotifFocusQ] = useState(null); // question id to scroll to after a deep-link
+    const [notifPickerOpen, setNotifPickerOpen] = useState(false); // admin recipient-picker view
+    const [notifMembers, setNotifMembers] = useState(null); // coach-capable roster rows (picker)
+    const [notifRecipList, setNotifRecipList] = useState(null); // picked user_ids (picker)
+    const loadNotifs = useCallback(async () => {
+        if (!teamDB || !teamId || !myUserId)
+            return;
+        try {
+            const rr = await teamDB.from("notify_recipients").select("user_id,created_at")
+                .eq("team_id", teamId).eq("user_id", myUserId);
+            const mine = (rr.data && rr.data[0]) || null;
+            setNotifRecipient(mine || false);
+            if (!mine) {
+                setNotifItems([]);
+                setNotifReads({});
+                return;
+            }
+            // created_at of my recipient row is the baseline: questions older than my
+            // pick never count, so a newly-added coach isn't greeted by months of history.
+            const qq = await teamDB.from("play_questions").select("*")
+                .eq("team_id", teamId).gte("created_at", mine.created_at)
+                .order("created_at", { ascending: false }).limit(50);
+            const items = (qq.data || []).filter(q => q.asker_id !== myUserId);
+            setNotifItems(items);
+            if (items.length === 0) {
+                setNotifReads({});
+                return;
+            }
+            const rd = await teamDB.from("question_reads").select("question_id")
+                .eq("user_id", myUserId).in("question_id", items.map(q => q.id));
+            const m = {};
+            (rd.data || []).forEach(r => { m[r.question_id] = true; });
+            setNotifReads(m);
+        }
+        catch (e) { /* polling is best-effort */ }
+    }, [teamDB, teamId, myUserId]);
+    useEffect(() => {
+        if (!teamDB || !teamId || !myUserId)
+            return;
+        loadNotifs();
+        const iv = setInterval(loadNotifs, 60000);
+        return () => clearInterval(iv);
+    }, [loadNotifs, teamDB, teamId, myUserId]);
+    const notifUnread = notifItems.filter(q => !notifReads[q.id]).length;
+    const markQuestionRead = useCallback(async (q) => {
+        if (!teamDB || !myUserId || !q || !q.id)
+            return;
+        setNotifReads(m => (m[q.id] ? m : { ...m, [q.id]: true }));
+        try {
+            await teamDB.from("question_reads").upsert({ team_id: q.team_id, question_id: q.id, user_id: myUserId }, { onConflict: "question_id,user_id", ignoreDuplicates: true });
+        }
+        catch (e) { /* best-effort */ }
+    }, [teamDB, myUserId]);
+    const markAllQuestionsRead = useCallback(async () => {
+        if (!teamDB || !teamId)
+            return;
+        setNotifReads(m => { const n = { ...m }; notifItems.forEach(q => { n[q.id] = true; }); return n; });
+        try {
+            await teamDB.rpc("mark_all_questions_read", { p_team: teamId });
+        }
+        catch (e) {
+            loadNotifs();
+        }
+    }, [teamDB, teamId, notifItems, loadNotifs]);
+    const openQuestionSpot = useCallback((q) => {
+        if (!q)
+            return;
+        markQuestionRead(q);
+        setShowNotif(false);
+        setNotifPickerOpen(false);
+        setNotifFocusQ(q.id);
+        // Leave run/hub overlays so the destination modal is actually visible.
+        setRunningScriptId(null);
+        setRunningInstallId(null);
+        setShowHudl(false);
+        if (q.script_id) {
+            // The target may live in the other playbook scope — switch if needed.
+            if (!scripts.some(s => s.id === q.script_id)) {
+                const other = playbookScope === "personal" ? sharedScripts : personalScripts;
+                if (other.some(s => s.id === q.script_id))
+                    setPlaybookScope(playbookScope === "personal" ? "shared" : "personal");
+            }
+            setShowInstalls(false);
+            setOpenInstallId(null);
+            setShowScripts(true);
+            setOpenScriptId(q.script_id);
+        }
+        else {
+            if (!installs.some(i => i.id === q.install_id)) {
+                const other = playbookScope === "personal" ? sharedInstalls : personalInstalls;
+                if (other.some(i => i.id === q.install_id))
+                    setPlaybookScope(playbookScope === "personal" ? "shared" : "personal");
+            }
+            setShowScripts(false);
+            setOpenScriptId(null);
+            setShowInstalls(true);
+            setOpenInstallId(q.install_id);
+        }
+    }, [markQuestionRead, scripts, installs, playbookScope, sharedScripts, personalScripts, sharedInstalls, personalInstalls]);
+    const loadNotifPicker = useCallback(async () => {
+        if (!teamDB || !teamId)
+            return;
+        try {
+            const mm = await teamDB.from("memberships").select("user_id,display_name,role")
+                .eq("team_id", teamId).in("role", ["admin", "coadmin", "coach", "coacht"]);
+            setNotifMembers(mm.data || []);
+            const rr = await teamDB.from("notify_recipients").select("user_id").eq("team_id", teamId);
+            setNotifRecipList((rr.data || []).map(r => r.user_id));
+        }
+        catch (e) {
+            setNotifMembers([]);
+            setNotifRecipList([]);
+        }
+    }, [teamDB, teamId]);
+    const toggleNotifRecipient = useCallback(async (uid, on) => {
+        if (!teamDB || !teamId || !uid)
+            return;
+        setNotifRecipList(l => on ? (l || []).concat([uid]) : (l || []).filter(x => x !== uid));
+        try {
+            if (on)
+                await teamDB.from("notify_recipients").upsert({ team_id: teamId, user_id: uid, added_by: myUserId }, { onConflict: "team_id,user_id", ignoreDuplicates: true });
+            else
+                await teamDB.from("notify_recipients").delete().eq("team_id", teamId).eq("user_id", uid);
+            if (uid === myUserId)
+                loadNotifs();
+        }
+        catch (e) {
+            loadNotifPicker();
+        }
+    }, [teamDB, teamId, myUserId, loadNotifs, loadNotifPicker]);
     const [runSeen, setRunSeen] = useState([]); // play_ids the player has viewed in the running install (for auto-completion %)
     const [zoom, setZoom] = useState(1);
     const [viewCenter, setViewCenter] = useState({ x: FW / 2, y: LOS_Y });
@@ -13545,6 +13809,9 @@ function PlaybookApp() {
                 React.createElement("button", { className: "sbtn dim", onClick: () => { setHelpQuery(""); setHelpCat("start"); setShowHelp(true); }, title: "Help \u2014 an interactive guide to every control in the app", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0 } },
                     React.createElement("span", { style: { fontSize: 14, fontWeight: 800, lineHeight: 1 } }, "?"),
                     React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.06em" } }, "HELP")),
+                teamDB && teamId && (notifRecipient || effRole === "admin" || effRole === "coadmin") && (React.createElement("button", { className: "sbtn dim", onClick: () => { setNotifPickerOpen(false); setShowNotif(true); loadNotifs(); }, title: "Player questions on installs & practice scripts \u2014 tap one to jump to it", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0, position: "relative" } },
+                    React.createElement("span", { style: { fontSize: 14, lineHeight: 1 } }, "\uD83D\uDD14"),
+                    notifUnread > 0 && (React.createElement("span", { style: { position: "absolute", top: -5, right: -5, minWidth: 17, height: 17, borderRadius: 99, background: "#ef4444", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1, border: "1px solid #0c0c17" } }, notifUnread > 9 ? "9+" : notifUnread)))),
                 React.createElement("button", { className: "sbtn amb", onClick: () => setShowHudl(true), style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", flexShrink: 0 } },
                     React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round" },
                         React.createElement("path", { d: "M4 7h16M4 12h16M4 17h16" })),
@@ -17660,6 +17927,72 @@ function PlaybookApp() {
                                 React.createElement("button", { onClick: next, disabled: idx === flat.length - 1, style: { padding: "9px 22px", borderRadius: 7, cursor: idx === flat.length - 1 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", border: `1px solid ${idx === flat.length - 1 ? "rgba(74,222,128,0.25)" : "rgba(74,222,128,0.6)"}`, background: idx === flat.length - 1 ? "rgba(74,222,128,0.05)" : "rgba(74,222,128,0.18)", color: idx === flat.length - 1 ? "rgba(134,239,172,0.4)" : "#86efac", opacity: idx === flat.length - 1 ? 0.6 : 1 } }, "NEXT \u203A"))));
                     })()));
             })(),
+            showNotif && (() => {
+                const closeN = () => { setShowNotif(false); setNotifPickerOpen(false); };
+                const canPick = effRole === "admin" || effRole === "coadmin";
+                const nameOf = (q) => {
+                    if (q.script_id) {
+                        const s = sharedScripts.find(x => x.id === q.script_id) || personalScripts.find(x => x.id === q.script_id);
+                        return { icon: "📝", set: (s && s.name) || "Practice script", kind: "script" };
+                    }
+                    const i = sharedInstalls.find(x => x.id === q.install_id) || personalInstalls.find(x => x.id === q.install_id);
+                    return { icon: "📋", set: (i && i.name) || "Install", kind: "install" };
+                };
+                const whenN = (t) => { try {
+                    return t ? new Date(t).toLocaleString() : "";
+                }
+                catch (_) {
+                    return "";
+                } };
+                return (React.createElement("div", { className: "mover", style: { zIndex: 1250 }, onClick: closeN },
+                    React.createElement("div", { className: "mbox", style: { maxWidth: 520, maxHeight: "82vh", display: "flex", flexDirection: "column", padding: 0 }, onClick: e => e.stopPropagation() },
+                        React.createElement("div", { style: { padding: "14px 20px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 8 } },
+                            React.createElement("div", { className: "hd", style: { fontSize: 19, color: "#fff", letterSpacing: "0.08em" } }, "\uD83D\uDD14 QUESTIONS"),
+                            notifUnread > 0 && React.createElement("span", { className: "mono", style: { fontSize: 11, color: "#fca5a5" } },
+                                notifUnread,
+                                " unread"),
+                            React.createElement("div", { style: { flex: 1 } }),
+                            canPick && (React.createElement("button", { onClick: () => { const nx = !notifPickerOpen; setNotifPickerOpen(nx); if (nx)
+                                    loadNotifPicker(); }, title: "Pick which coaches receive question notifications", className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", borderColor: notifPickerOpen ? "rgba(251,191,36,0.55)" : undefined, color: notifPickerOpen ? "#fcd34d" : undefined } }, "\u2699 RECIPIENTS")),
+                            React.createElement("button", { onClick: closeN, style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 20, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+                        notifPickerOpen ? (React.createElement("div", { style: { padding: "12px 20px 16px", overflowY: "auto", flex: 1 } },
+                            React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.5)", marginBottom: 10 } }, "Picked coaches get the \uD83D\uDD14 with unread counts for new player questions. Coaches you don't pick never see it."),
+                            notifMembers === null || notifRecipList === null ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)" } }, "Loading\u2026")) : notifMembers.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)" } }, "No coach-level members found.")) : notifMembers.map(m => {
+                                const on = notifRecipList.indexOf(m.user_id) !== -1;
+                                return (React.createElement("div", { key: m.user_id, onClick: () => toggleNotifRecipient(m.user_id, !on), style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 4,
+                                        border: `1px solid ${on ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.08)"}`, background: on ? "rgba(74,222,128,0.08)" : "transparent" } },
+                                    React.createElement("span", { style: { width: 18, height: 18, borderRadius: 5, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12,
+                                            border: `1px solid ${on ? "rgba(74,222,128,0.7)" : "rgba(255,255,255,0.25)"}`, background: on ? "rgba(74,222,128,0.25)" : "transparent", color: "#86efac" } }, on ? "✓" : ""),
+                                    React.createElement("span", { style: { fontSize: 13, color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                                        m.display_name || "Unnamed",
+                                        m.user_id === myUserId ? " · you" : ""),
+                                    React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)" } }, ROLE_LABELS_APP[m.role] || m.role)));
+                            }))) : (React.createElement("div", { style: { padding: "10px 20px 16px", overflowY: "auto", flex: 1 } }, !notifRecipient ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", padding: "10px 0" } }, "You're not receiving question notifications yet. Use \u2699 RECIPIENTS to pick coaches \u2014 including yourself.")) : notifItems.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "12px 0", textAlign: "center" } }, "No questions yet \u2014 you're all caught up.")) : (React.createElement(React.Fragment, null,
+                            React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 6 } },
+                                React.createElement("button", { onClick: markAllQuestionsRead, disabled: notifUnread === 0, className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", opacity: notifUnread === 0 ? 0.5 : 1, cursor: notifUnread === 0 ? "default" : "pointer" } }, "\u2713 MARK ALL AS READ")),
+                            notifItems.map(q => {
+                                const nm = nameOf(q);
+                                const unread = !notifReads[q.id];
+                                return (React.createElement("div", { key: q.id, onClick: () => openQuestionSpot(q), title: "Open this " + nm.kind + " at the question", style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "9px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 4,
+                                        border: `1px solid ${unread ? "rgba(251,191,36,0.35)" : "rgba(255,255,255,0.07)"}`, background: unread ? "rgba(251,191,36,0.07)" : "transparent" } },
+                                    React.createElement("span", { style: { width: 8, height: 8, borderRadius: 99, marginTop: 5, flexShrink: 0, background: unread ? "#fbbf24" : "rgba(255,255,255,0.12)" } }),
+                                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                                        React.createElement("div", { style: { fontSize: 12, color: "#c4b5fd", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em" } },
+                                            nm.icon,
+                                            " ",
+                                            nm.set,
+                                            " ",
+                                            React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u2192"),
+                                            " ",
+                                            q.play_name || "General"),
+                                        React.createElement("div", { style: { fontSize: 13, color: "#e2e8f0", marginTop: 2, whiteSpace: "pre-wrap" } }, q.body),
+                                        React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 3 } },
+                                            q.asker_name || "Player",
+                                            " \u00B7 ",
+                                            whenN(q.created_at),
+                                            q.resolved ? " · resolved" : ""))));
+                            }))))))));
+            })(),
             showScripts && (() => {
                 const openScript = openScriptId ? scripts.find(s => s.id === openScriptId) : null;
                 const close = () => { setShowScripts(false); setOpenScriptId(null); };
@@ -17676,6 +18009,17 @@ function PlaybookApp() {
                 if (openScript) {
                     // ── Script DETAIL view ──
                     const playCount = openScript.periods.reduce((n, per) => n + per.playIds.length, 0);
+                    // Flattened, resolved, de-duped play list for the questions panel.
+                    const scriptQPlays = [];
+                    const seenQP = {};
+                    openScript.periods.forEach(per => per.playIds.forEach(pid => {
+                        if (seenQP[pid])
+                            return;
+                        seenQP[pid] = true;
+                        const p = plays.find(x => x.id === pid);
+                        if (p)
+                            scriptQPlays.push(p);
+                    }));
                     return (React.createElement("div", { className: "mover", style: { zIndex: 1180 }, onClick: close },
                         React.createElement("div", { className: "mbox", style: { maxWidth: 680, maxHeight: "88vh", display: "flex", flexDirection: "column", padding: 0 }, onClick: e => e.stopPropagation() },
                             React.createElement("div", { style: { padding: "16px 22px 14px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 } },
@@ -17718,7 +18062,7 @@ function PlaybookApp() {
                                         opacity: playCount === 0 ? 0.6 : 1 } }, "\u25B6 RUN"),
                                 React.createElement("button", { onClick: () => gpSaveOffline("This script"), title: "Save an offline copy to this device — the whole playbook comes with it, so everything works with zero internet at practice.", style: { padding: "5px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", border: "1px solid rgba(125,211,252,0.5)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc" } }, "⬇ OFFLINE"),
                                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginLeft: "auto" } }, scriptViewMode === "edit" ? "manage periods & order" : "visual show — share with players")),
-                            scriptViewMode === "cards" ? (React.createElement("div", { style: { padding: "12px 22px 16px", overflowY: "auto", flex: 1 } }, openScript.periods.length === 0 || playCount === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "20px 0", textAlign: "center" } }, "No plays to show \u2014 switch to EDIT and add some.")) : (openScript.periods.map((per) => {
+                            scriptViewMode === "cards" ? (React.createElement("div", { style: { padding: "12px 22px 16px", overflowY: "auto", flex: 1 } }, React.createElement(ScriptTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, script: openScript, plays: scriptQPlays, isCoach: effRole !== "player", focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null) }), openScript.periods.length === 0 || playCount === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "20px 0", textAlign: "center" } }, "No plays to show \u2014 switch to EDIT and add some.")) : (openScript.periods.map((per) => {
                                 const playsInPer = per.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
                                 if (playsInPer.length === 0)
                                     return null;
@@ -17751,6 +18095,7 @@ function PlaybookApp() {
                                                 playFormations(p)[0] || "—",
                                                 toTypeArr(p.type).length > 0 ? " · " + toTypeArr(p.type).join("/") : ""))))))));
                             })))) : (React.createElement("div", { style: { padding: "12px 22px 16px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 11 } },
+                                React.createElement(ScriptTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, script: openScript, plays: scriptQPlays, isCoach: effRole !== "player", focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null) }),
                                 openScript.periods.length === 0 && (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "8px 0" } }, "No periods yet \u2014 add one below.")),
                                 openScript.periods.map((per, perIdx) => {
                                     const playsInPeriod = per.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
@@ -17961,7 +18306,7 @@ function PlaybookApp() {
                                         color: playsInInstall.length === 0 ? "rgba(167,139,250,0.4)" : "#c4b5fd",
                                         opacity: playsInInstall.length === 0 ? 0.5 : 1 } }, "\uD83D\uDDA8 PDF"))),
                             React.createElement("div", { style: { padding: "14px 22px 16px", overflowY: "auto", flex: 1 } },
-                                React.createElement(InstallTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, install: openInst, plays: playsInInstall, isCoach: effRole !== "player", runActive: runningInstallId === openInst.id }),
+                                React.createElement(InstallTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, install: openInst, plays: playsInInstall, isCoach: effRole !== "player", runActive: runningInstallId === openInst.id, focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null) }),
                                 installViewMode === "cards" ? (React.createElement("div", null,
                                     formationsInInstall.length > 0 && (React.createElement("div", { style: { marginBottom: 14 } },
                                         React.createElement("div", { className: "hd", style: { fontSize: 11, color: "#67e8f9", letterSpacing: "0.1em", marginBottom: 6 } }, "FORMATIONS"),
