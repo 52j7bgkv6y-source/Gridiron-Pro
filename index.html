@@ -10,9 +10,38 @@
 <script>
 /* PWA: cache the app + libraries for fast (and offline-tolerant) opens.
    Navigations stay network-first, so every ONLINE open is the freshest deploy. */
+/* Build stamp. Bump this string on every deploy: it is shown on the boot
+   splash and exposed as window.__gpBuild, so you can confirm at a glance
+   which build a phone or tablet is actually running. */
+window.__gpBuild = "2026-07-14a";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
+  });
+  /* index.html is ~1.5MB. On a slow phone connection the service worker's
+     navigation race times out and serves the CACHED page so the app opens
+     instantly — which means a fresh deploy can arrive a beat too late and the
+     device keeps showing the previous build. When that happens the worker
+     tells us here, and we offer a one-tap reload instead of silently leaving
+     the device a version behind. */
+  navigator.serviceWorker.addEventListener("message", function (ev) {
+    if (!ev.data || ev.data.type !== "gp-update-ready") return;
+    if (document.getElementById("gp-update-bar")) return;
+    var b = document.createElement("div");
+    b.id = "gp-update-bar";
+    b.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);bottom:max(14px,env(safe-area-inset-bottom));z-index:99999;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:#0d1b2a;border:1px solid rgba(94,234,212,0.5);box-shadow:0 8px 30px rgba(0,0,0,0.6);font-family:sans-serif;font-size:13px;color:#d1fae5;max-width:94vw;";
+    var t = document.createElement("span");
+    t.textContent = "New version available";
+    var r = document.createElement("button");
+    r.textContent = "RELOAD";
+    r.style.cssText = "padding:8px 12px;min-height:38px;border-radius:8px;border:1px solid rgba(94,234,212,0.6);background:rgba(94,234,212,0.18);color:#99f6e4;font-weight:700;cursor:pointer;touch-action:manipulation;";
+    r.onclick = function () { location.reload(); };
+    var x = document.createElement("button");
+    x.textContent = "\u2715";
+    x.style.cssText = "padding:8px 10px;min-height:38px;border-radius:8px;border:1px solid rgba(255,255,255,0.18);background:transparent;color:#94a3b8;cursor:pointer;touch-action:manipulation;";
+    x.onclick = function () { b.remove(); };
+    b.appendChild(t); b.appendChild(r); b.appendChild(x);
+    document.body.appendChild(b);
   });
 }
 </script>
@@ -323,6 +352,23 @@ function flipPartsLeftRight({ players = [], routes = [], coverages = [], ballX }
 }
 // FLIP THE CALL only — mirror routes/zones/ball/labels left↔right, keep the
 // formation, then re-own each mirrored route/zone to the man now nearest it.
+// Full left↔right mirror of a SAVED play object. The run viewer draws
+// step.play at rest (not live editor state), so flipping the field for a rep
+// means flipping THIS, not the editor. Mirrors formation, call, text chips and
+// the ball path together so the whole picture flips as one.
+function flipSavedPlayLR(play) {
+    const fx = (x) => FW - x;
+    const f = flipPartsLeftRight({
+        players: play.players || [], routes: play.routes || [], coverages: play.coverages || [],
+        ballX: typeof play.ballX === "number" ? play.ballX : FW / 2,
+    });
+    return {
+        ...play,
+        players: f.players, routes: f.routes, coverages: f.coverages, ballX: f.ballX,
+        texts: (play.texts || []).map(t => (typeof t.x === "number" ? { ...t, x: fx(t.x) } : t)),
+        ballPlan: play.ballPlan ? { ...play.ballPlan, steps: (play.ballPlan.steps || []).map(st => (st.toPoint && typeof st.toPoint.x === "number") ? { ...st, toPoint: { ...st.toPoint, x: fx(st.toPoint.x) } } : st) } : play.ballPlan,
+    };
+}
 function flipPartsCall({ players = [], routes = [], coverages = [], texts = [], ballPlan, ballX }) {
     const fx = (x) => FW - x;
     const nearestOf = (x, y, pool) => {
@@ -4028,10 +4074,18 @@ function PlaybookApp() {
     const [scriptViewMode, setScriptViewMode] = useState("edit"); // "edit" | "cards"
     const [runningScriptId, setRunningScriptId] = useState(null); // null = not running
     const [runningInstallId, setRunningInstallId] = useState(null); // null = not presenting an install
-    const [runStepIdx, setRunStepIdx] = useState(0); // current play idx in flattened sequence
+    const [runStepIdx, setRunStepIdx] = useState(0);
+    // "Start here": which play ▶ RUN should begin on. { kind:"inst"|"script", setId, idx }
+    // where idx indexes the SAME flattened list the run builds (both skip missing
+    // plays, so builder order and run order line up). Keyed by setId, so a marker
+    // left on a different install/script is simply ignored.
+    const [runFrom, setRunFrom] = useState(null);
+    // Run-viewer field/boundary flip. Resets on every step because loadPlay
+    // reloads the saved play fresh — the flip is for THIS rep only, never saved.
+    const [runFlip, setRunFlip] = useState(false); // current play idx in flattened sequence
     // Whenever the play changes (or a run starts/stops), drop back to the field —
     // the notes screen is always reached by advancing PAST the play.
-    useEffect(() => { setRunNotesShown(false); }, [runStepIdx, runningInstallId, runningScriptId]);
+    useEffect(() => { setRunNotesShown(false); setRunFlip(false); }, [runStepIdx, runningInstallId, runningScriptId]);
     const [runSeen, setRunSeen] = useState([]); // play_ids the player has viewed in the running install (for auto-completion %)
     const [zoom, setZoom] = useState(1);
     const [viewCenter, setViewCenter] = useState({ x: FW / 2, y: LOS_Y });
@@ -17330,11 +17384,14 @@ function PlaybookApp() {
                 // the live editor state, because that's what startAnim mutates each
                 // frame (loadPlay has already synced it to this same play).
                 const vAnimating = playingAnim;
-                const vPlayers = vAnimating ? players : (step.play.players || []);
-                const vRoutes = vAnimating ? routes : (step.play.routes || []);
-                const vCoverages = vAnimating ? coverages : (step.play.coverages || []);
-                const vTexts = vAnimating ? texts : (step.play.texts || []);
-                const vLosY = vAnimating ? losY : (typeof step.play.losY === "number" ? step.play.losY : LOS_Y);
+                // ⇆ FLIP mirrors the play we DRAW. (The button also mirrors live state,
+                // so PLAY IN ACTION animates the same way round.)
+                const dPlay = runFlip ? flipSavedPlayLR(step.play) : step.play;
+                const vPlayers = vAnimating ? players : (dPlay.players || []);
+                const vRoutes = vAnimating ? routes : (dPlay.routes || []);
+                const vCoverages = vAnimating ? coverages : (dPlay.coverages || []);
+                const vTexts = vAnimating ? texts : (dPlay.texts || []);
+                const vLosY = vAnimating ? losY : (typeof dPlay.losY === "number" ? dPlay.losY : LOS_Y);
                 return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "#0a0a14", zIndex: 2147483646, display: "flex", flexDirection: "column" } },
                     typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", style: { position: "fixed", left: 10, top: 10, zIndex: 2147483647, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2190 Dashboard")),
                     React.createElement("div", { style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
@@ -17348,6 +17405,11 @@ function PlaybookApp() {
                                 idx + 1,
                                 " / ",
                                 flat.length),
+                            // Field/boundary fix: mirror the whole play (formation + call) for
+                            // THIS rep. Run mode shows the live field, so this reuses the same
+                            // flipLR the editor's ⇆ uses. It is not saved — stepping to another
+                            // play reloads from the playbook, which restores the original.
+                            !readOnly && (React.createElement("button", { onClick: () => { setRunFlip(f => !f); flipLR(); setTexts(ts => ts.map(t => (typeof t.x === "number" ? { ...t, x: FW - t.x } : t))); }, title: "Flip this play left ⇄ right for this rep (field/boundary). Not saved — the next play reloads clean.", className: "sbtn dim", style: { padding: "6px 12px", ...(runFlip ? { borderColor: "rgba(125,211,252,0.7)", color: "#7dd3fc" } : null) } }, "\u21C6 FLIP", runFlip ? " \u2713" : "")),
                             React.createElement("button", { onClick: exit, className: "sbtn dim", style: { padding: "6px 14px" } }, "EXIT"))),
                     React.createElement("div", { style: { flex: 1, position: "relative", overflow: "hidden", background: "#0d1f12" } },
                         React.createElement("svg", { viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, preserveAspectRatio: "xMidYMid meet", style: { width: "100%", height: "100%", display: "block" } },
@@ -17649,7 +17711,7 @@ function PlaybookApp() {
                                         background: scriptViewMode === "cards" ? "rgba(34,211,238,0.18)" : "transparent",
                                         color: scriptViewMode === "cards" ? "#67e8f9" : "rgba(255,255,255,0.5)" } }, "CARDS"),
                                 React.createElement("button", { onClick: () => setStudyScope({ kind: "script", id: openScript.id }), disabled: playCount < 2, title: "Study this script — all plays, or just one period.", style: { padding: "5px 12px", borderRadius: 5, cursor: playCount < 2 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", border: `1px solid ${playCount < 2 ? "rgba(245,158,11,0.2)" : "rgba(245,158,11,0.5)"}`, background: playCount < 2 ? "rgba(245,158,11,0.05)" : "rgba(245,158,11,0.18)", color: playCount < 2 ? "rgba(245,158,11,0.4)" : "#fcd34d", opacity: playCount < 2 ? 0.6 : 1 } }, "\uD83C\uDF93 STUDY"),
-                            React.createElement("button", { onClick: () => { setRunStepIdx(0); setRunningScriptId(openScript.id); }, disabled: playCount === 0, title: playCount === 0 ? "Add at least one play to run the script" : "Walk through the script one play at a time", style: { padding: "5px 12px", borderRadius: 5, cursor: playCount === 0 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
+                            React.createElement("button", { onClick: () => { setRunStepIdx((runFrom && runFrom.kind === "script" && runFrom.setId === openScript.id) ? runFrom.idx : 0); setRunningScriptId(openScript.id); }, disabled: playCount === 0, title: playCount === 0 ? "Add at least one play to run the script" : "Walk through the script one play at a time", style: { padding: "5px 12px", borderRadius: 5, cursor: playCount === 0 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
                                         border: `1px solid ${playCount === 0 ? "rgba(255,255,255,0.1)" : "rgba(74,222,128,0.55)"}`,
                                         background: playCount === 0 ? "transparent" : "rgba(74,222,128,0.16)",
                                         color: playCount === 0 ? "rgba(255,255,255,0.3)" : "#86efac",
@@ -17692,6 +17754,11 @@ function PlaybookApp() {
                                 openScript.periods.length === 0 && (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "8px 0" } }, "No periods yet \u2014 add one below.")),
                                 openScript.periods.map((per, perIdx) => {
                                     const playsInPeriod = per.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
+                    // Index of this period's first play in the RUN's flattened list
+                    // (the run skips missing plays exactly like .filter(Boolean) here).
+                    let perPrior = 0;
+                    for (let k = 0; k < perIdx; k++)
+                        perPrior += openScript.periods[k].playIds.map(pid => plays.find(x => x.id === pid)).filter(Boolean).length;
                                     const playsNotInPeriod = plays.filter(p => !per.playIds.includes(p.id));
                                     return (React.createElement("div", { key: per.id, style: { background: "#161623", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 9, padding: "10px 12px" } },
                                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 8 } },
@@ -17703,15 +17770,16 @@ function PlaybookApp() {
                                                         deletePeriod(openScript.id, per.id);
                                                     }
                                                 }, title: "Delete this period", style: { padding: "3px 7px", borderRadius: 4, cursor: "pointer", border: "1px solid rgba(239,68,68,0.4)", background: "rgba(239,68,68,0.08)", color: "#f87171", fontSize: 12 } }, "\uD83D\uDDD1")),
-                                        playsInPeriod.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.35)", fontStyle: "italic", padding: "4px 0 6px" } }, "No plays in this period.")) : (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 6 } }, playsInPeriod.map((p, pIdx) => (React.createElement("div", { key: p.id, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.18)", borderRadius: 5 } },
+                                        playsInPeriod.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.35)", fontStyle: "italic", padding: "4px 0 6px" } }, "No plays in this period.")) : (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 6 } }, playsInPeriod.map((p, pIdx) => { const flatIdx = perPrior + pIdx; const isStart = !!(runFrom && runFrom.kind === "script" && runFrom.setId === openScript.id && runFrom.idx === flatIdx); return (React.createElement("div", { key: p.id, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", background: isStart ? "rgba(168,85,247,0.16)" : "rgba(74,222,128,0.06)", border: `1px solid ${isStart ? "rgba(168,85,247,0.65)" : "rgba(74,222,128,0.18)"}`, borderRadius: 5 } },
                                             React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", minWidth: 18, textAlign: "right" } },
                                                 pIdx + 1,
                                                 "."),
-                                            React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
+                                            React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12, color: isStart ? "#e9d5ff" : "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
+                                                React.createElement("button", { onClick: () => setRunFrom(isStart ? null : { kind: "script", setId: openScript.id, idx: flatIdx }), title: isStart ? "\u25B6 RUN starts here — tap to clear and start from the top" : "Start the run at this play (then hit \u25B6 RUN)", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: `1px solid ${isStart ? "rgba(168,85,247,0.8)" : "rgba(168,85,247,0.3)"}`, background: isStart ? "rgba(168,85,247,0.3)" : "transparent", color: isStart ? "#e9d5ff" : "rgba(168,85,247,0.75)", fontSize: 11 } }, "\u25B6"),
                                             React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.4)", fontFamily: "'JetBrains Mono',monospace" } }, playFormations(p)[0] || ""),
                                             React.createElement("button", { onClick: () => movePlayInPeriod(openScript.id, per.id, p.id, -1), disabled: pIdx === 0, title: "Move up", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === 0 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === 0 ? 0.3 : 1, fontSize: 10 } }, "\u2191"),
                                             React.createElement("button", { onClick: () => movePlayInPeriod(openScript.id, per.id, p.id, 1), disabled: pIdx === playsInPeriod.length - 1, title: "Move down", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === playsInPeriod.length - 1 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === playsInPeriod.length - 1 ? 0.3 : 1, fontSize: 10 } }, "\u2193"),
-                                            React.createElement("button", { onClick: () => togglePlayInPeriod(openScript.id, per.id, p.id), title: "Remove from period", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7")))))),
+                                            React.createElement("button", { onClick: () => togglePlayInPeriod(openScript.id, per.id, p.id), title: "Remove from period", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7"))); }))),
                                         playsNotInPeriod.length > 0 && (React.createElement(AddPlayPicker, { available: playsNotInPeriod, onAdd: (pid) => togglePlayInPeriod(openScript.id, per.id, pid), summaryLabel: "+ ADD PLAY", secondary: (p) => p.category }))));
                                 }),
                                 React.createElement("button", { onClick: () => {
@@ -17871,7 +17939,7 @@ function PlaybookApp() {
                                         background: installViewMode === "cards" ? "rgba(34,211,238,0.18)" : "transparent",
                                         color: installViewMode === "cards" ? "#67e8f9" : "rgba(255,255,255,0.5)" } }, "CARDS"),
                                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginLeft: "auto" } }, installViewMode === "edit" ? "manage plays & formations" : "visual show — share with players"),
-                                React.createElement("button", { onClick: () => { setRunStepIdx(0); setRunningInstallId(openInst.id); }, disabled: openInst.playIds.length === 0, title: "Step through the install full-screen, one play at a time, with PLAY IN ACTION on each", style: { padding: "5px 12px", borderRadius: 5, cursor: openInst.playIds.length === 0 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
+                                React.createElement("button", { onClick: () => { setRunStepIdx((runFrom && runFrom.kind === "inst" && runFrom.setId === openInst.id) ? runFrom.idx : 0); setRunningInstallId(openInst.id); }, disabled: openInst.playIds.length === 0, title: "Step through the install full-screen, one play at a time, with PLAY IN ACTION on each", style: { padding: "5px 12px", borderRadius: 5, cursor: openInst.playIds.length === 0 ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em",
                                         border: "1px solid rgba(168,85,247,0.5)",
                                         background: openInst.playIds.length === 0 ? "rgba(168,85,247,0.05)" : "rgba(168,85,247,0.2)",
                                         color: openInst.playIds.length === 0 ? "rgba(168,85,247,0.4)" : "#e9d5ff",
@@ -17913,8 +17981,9 @@ function PlaybookApp() {
                                     React.createElement("div", { className: "hd", style: { fontSize: 12, color: "#fcd34d", letterSpacing: "0.1em", marginBottom: 6 } },
                                         "PLAYS \u00B7 ",
                                         playsInInstall.length),
-                                    playsInInstall.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontStyle: "italic", marginBottom: 10 } }, "No plays in this install yet.")) : (React.createElement("div", { "data-inst-list": "1", "data-inst-count": playsInInstall.length, style: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 } }, renderInstHeader("__start__"), playsInInstall.map((p, pIdx) => (React.createElement(React.Fragment, { key: p.id }, renderInstHeader(p.id), instDrag && instDrag.idx === pIdx && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })), React.createElement("div", { "data-inst-row": pIdx, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.18)", borderRadius: 5, opacity: (instDrag && instDrag.playId === p.id) ? 0.4 : 1 } }, !readOnly && (React.createElement("span", { onMouseDown: e => beginInstallPlayDrag(e, openInst.id, p.id), onTouchStart: e => beginInstallPlayDrag(e, openInst.id, p.id), title: "Drag to reorder", style: { cursor: "grab", color: "rgba(255,255,255,0.4)", fontSize: 14, lineHeight: 1, padding: "0 2px", touchAction: "none", userSelect: "none" } }, "\u2261")), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", minWidth: 18, textAlign: "right" } }, pIdx + 1, "."), React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name), React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.4)", fontFamily: "'JetBrains Mono',monospace" } }, playFormations(p)[0] || ""), !readOnly && (React.createElement(React.Fragment, null, React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, -1), disabled: pIdx === 0, title: "Move up", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === 0 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === 0 ? 0.3 : 1, fontSize: 10 } }, "\u2191"), React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, 1), disabled: pIdx === playsInInstall.length - 1, title: "Move down", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === playsInInstall.length - 1 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === playsInInstall.length - 1 ? 0.3 : 1, fontSize: 10 } }, "\u2193"), React.createElement("button", { onClick: () => addInstallSection(openInst.id, p.id, "New Section"), title: "Add a subsection header above this play (optional grouping)", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(250,204,21,0.3)", background: "transparent", color: "rgba(250,204,21,0.75)", fontSize: 11 } }, "+\u00a7"),
-                                                    React.createElement("button", { onClick: () => toggleInstallPlay(openInst.id, p.id), title: "Remove from install", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7"))))))), instDrag && instDrag.idx === playsInInstall.length && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })))),
+                                    playsInInstall.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontStyle: "italic", marginBottom: 10 } }, "No plays in this install yet.")) : (React.createElement("div", { "data-inst-list": "1", "data-inst-count": playsInInstall.length, style: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 } }, renderInstHeader("__start__"), playsInInstall.map((p, pIdx) => (React.createElement(React.Fragment, { key: p.id }, renderInstHeader(p.id), instDrag && instDrag.idx === pIdx && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })), (() => { const isStart = !!(runFrom && runFrom.kind === "inst" && runFrom.setId === openInst.id && runFrom.idx === pIdx); return React.createElement("div", { "data-inst-row": pIdx, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", background: isStart ? "rgba(168,85,247,0.16)" : "rgba(74,222,128,0.06)", border: `1px solid ${isStart ? "rgba(168,85,247,0.65)" : "rgba(74,222,128,0.18)"}`, borderRadius: 5, opacity: (instDrag && instDrag.playId === p.id) ? 0.4 : 1 } }, !readOnly && (React.createElement("span", { onMouseDown: e => beginInstallPlayDrag(e, openInst.id, p.id), onTouchStart: e => beginInstallPlayDrag(e, openInst.id, p.id), title: "Drag to reorder", style: { cursor: "grab", color: "rgba(255,255,255,0.4)", fontSize: 14, lineHeight: 1, padding: "0 2px", touchAction: "none", userSelect: "none" } }, "\u2261")), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", minWidth: 18, textAlign: "right" } }, pIdx + 1, "."), React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12, color: isStart ? "#e9d5ff" : "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name),
+                                                React.createElement("button", { onClick: () => setRunFrom(isStart ? null : { kind: "inst", setId: openInst.id, idx: pIdx }), title: isStart ? "\u25B6 RUN starts here — tap to clear and start from the top" : "Start the run at this play (then hit \u25B6 RUN)", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: `1px solid ${isStart ? "rgba(168,85,247,0.8)" : "rgba(168,85,247,0.3)"}`, background: isStart ? "rgba(168,85,247,0.3)" : "transparent", color: isStart ? "#e9d5ff" : "rgba(168,85,247,0.75)", fontSize: 11 } }, "\u25B6"), React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.4)", fontFamily: "'JetBrains Mono',monospace" } }, playFormations(p)[0] || ""), !readOnly && (React.createElement(React.Fragment, null, React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, -1), disabled: pIdx === 0, title: "Move up", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === 0 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === 0 ? 0.3 : 1, fontSize: 10 } }, "\u2191"), React.createElement("button", { onClick: () => movePlayInInstall(openInst.id, p.id, 1), disabled: pIdx === playsInInstall.length - 1, title: "Move down", style: { padding: "1px 5px", borderRadius: 3, cursor: pIdx === playsInInstall.length - 1 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "rgba(255,255,255,0.55)", opacity: pIdx === playsInInstall.length - 1 ? 0.3 : 1, fontSize: 10 } }, "\u2193"), React.createElement("button", { onClick: () => addInstallSection(openInst.id, p.id, "New Section"), title: "Add a subsection header above this play (optional grouping)", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(250,204,21,0.3)", background: "transparent", color: "rgba(250,204,21,0.75)", fontSize: 11 } }, "+\u00a7"),
+                                                    React.createElement("button", { onClick: () => toggleInstallPlay(openInst.id, p.id), title: "Remove from install", style: { padding: "1px 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7")))); })()))), instDrag && instDrag.idx === playsInInstall.length && (React.createElement("div", { style: { height: 2, background: "#fbbf24", borderRadius: 2, margin: "1px 4px" } })))),
                                     playsNotInInstall.length > 0 && (React.createElement("div", { style: { marginBottom: 14 } },
                                         React.createElement(AddPlayPicker, { available: playsNotInInstall, onAdd: (pid) => toggleInstallPlay(openInst.id, pid), summaryLabel: "+ ADD PLAYS", secondary: (p) => `${p.category} · ${playFormations(p)[0] || "—"}` }))),
                                     React.createElement("div", { className: "hd", style: { fontSize: 12, color: "#67e8f9", letterSpacing: "0.1em", marginBottom: 6, marginTop: 6 } },
@@ -19003,6 +19072,7 @@ if (typeof window !== "undefined")
      ReactDOM.createRoot(...).render() replaces #root's children on the shell's
      first render, so this needs no removal code at all. --><div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a14;gap:16px">
 <div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:46px;letter-spacing:0.16em;color:#e8fff1">GRIDIRON</div>
+<div style="font-family:monospace;font-size:10px;color:rgba(255,255,255,0.28);letter-spacing:0.08em">build 2026-07-14a</div>
 <div style="width:130px;height:3px;background:rgba(255,255,255,0.12);border-radius:2px;overflow:hidden"><div style="width:38%;height:100%;background:#34d399;border-radius:2px;animation:gpSplashSlide 1.05s ease-in-out infinite"></div></div>
 </div></div>
 
