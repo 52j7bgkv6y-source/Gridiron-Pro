@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-15a";
+window.__gpBuild = "2026-07-15k";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -1758,7 +1758,7 @@ function LazyThumb({ play, w, h }) {
 //   J  rewind 2×                   Shift+J  slow rewind ½× (simulated)
 //   ← / →  skip 15 s back/forward  R  restart from the start point
 //   N / P  next / previous clip
-function FilmPanel({ active }) {
+function FilmPanel({ active, stacked, players, routes, playName, gradeSessions, onSaveSession, onDeleteSession, onShareResult }) {
     const [clips, setClips] = useState([]); // { id, name, url }
     const [idx, setIdx] = useState(0);
     const [mode, setMode] = useState("pause"); // "pause" | "play" | "ff" | "rev"
@@ -1766,6 +1766,50 @@ function FilmPanel({ active }) {
     const [now, setNow] = useState(0);
     const [dur, setDur] = useState(0);
     const [inPt, setInPt] = useState(0);
+    const [showKeys, setShowKeys] = useState(false); // ⌨ shortcuts overlay
+    // ── GHOST OVERLAY: the current play drawn semi-transparent over the film.
+    // Calibrate by dragging (position), −/+ (size), FLIP (far-sideline film),
+    // and the opacity slider. Grades are per-session coaching marks — green
+    // correct / amber close / red wrong — set while a player is isolated.
+    const [ovOn, setOvOn] = useState(false);
+    const [ovX, setOvX] = useState(0);
+    const [ovY, setOvY] = useState(0);
+    const [ovScale, setOvScale] = useState(1);
+    const [ovFlip, setOvFlip] = useState(false);
+    const [ovAlpha, setOvAlpha] = useState(0.55);
+    const [ovGrades, setOvGrades] = useState({}); // playerId → "ok" | "close" | "wrong"
+    const [ovIso, setOvIso] = useState(null); // isolated playerId | null
+    const ovDragRef = useRef(null);
+    const GRADE_COLORS = { ok: "#4ade80", close: "#fbbf24", wrong: "#f87171" };
+    const setGrade = (pid, g) => setOvGrades(m => { const n = { ...m }; if (!g)
+        delete n[pid];
+    else
+        n[pid] = g; return n; });
+    const ovPointerDown = (e) => {
+        e.preventDefault();
+        ovDragRef.current = { sx: e.clientX, sy: e.clientY, bx: ovX, by: ovY };
+        if (e.currentTarget.setPointerCapture && e.pointerId != null) {
+            try {
+                e.currentTarget.setPointerCapture(e.pointerId);
+            }
+            catch (_) { }
+        }
+    };
+    const ovPointerMove = (e) => {
+        const d = ovDragRef.current;
+        if (!d)
+            return;
+        setOvX(d.bx + (e.clientX - d.sx));
+        setOvY(d.by + (e.clientY - d.sy));
+    };
+    const ovPointerUp = () => { ovDragRef.current = null; };
+    const ovPlayers = [...(players || [])].sort((a, b) => {
+        const ao = a.ptype === "defense" ? 1 : 0, bo = b.ptype === "defense" ? 1 : 0;
+        if (ao !== bo)
+            return ao - bo;
+        return String(a.label || "").localeCompare(String(b.label || ""));
+    });
+    const [showResult, setShowResult] = useState(false); // 📊 final-result card
     const vidRef = useRef(null);
     const fileRef = useRef(null);
     const inMapRef = useRef({}); // clip id → start point (s)
@@ -2025,12 +2069,14 @@ function FilmPanel({ active }) {
     const fmt = (t) => { t = Math.max(0, Math.floor(t || 0)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
     const badge = mode === "pause" ? "⏸ PAUSED" : mode === "play" ? "▶ 1×" : mode === "ff" ? `▶▶ ${rate}×` : `◀◀ ${rate === 0.5 ? "½" : rate}×`;
     const btnS = { padding: "6px 9px", cursor: "pointer", borderRadius: 5, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.85)", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, whiteSpace: "nowrap" };
-    return (React.createElement("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: "50%", display: "flex", flexDirection: "column", background: "#05070c", borderRight: "1px solid rgba(255,255,255,0.14)", zIndex: 5 } },
+    return (React.createElement("div", { style: { position: "absolute", ...(stacked ? { left: 0, top: 0, right: 0, height: "42vh", borderBottom: "1px solid rgba(255,255,255,0.14)" } : { left: 0, top: 0, bottom: 0, width: "50%", borderRight: "1px solid rgba(255,255,255,0.14)" }), display: "flex", flexDirection: "column", background: "#05070c", zIndex: 5 } },
         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid rgba(255,255,255,0.1)", flexWrap: "wrap" } },
             React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", color: "#5eead4", fontSize: 14 } }, "\uD83C\uDFAC FILM"),
             React.createElement("input", { ref: fileRef, type: "file", accept: "video/*", multiple: true, style: { display: "none" }, onChange: onFiles }),
             React.createElement("button", { style: btnS, onClick: () => fileRef.current && fileRef.current.click(), title: "Load one or more video files from this device. Clips stay on the device for this session \u2014 nothing uploads." }, "\uD83C\uDF9E LOAD"),
             clip && (React.createElement(React.Fragment, null,
+            React.createElement("button", { style: { ...btnS, color: ovOn ? "#c4b5fd" : btnS.color, borderColor: ovOn ? "rgba(167,139,250,0.6)" : btnS.borderColor, background: ovOn ? "rgba(167,139,250,0.14)" : btnS.background }, onClick: () => setOvOn(v => !v), title: "Ghost the current play over the film \u2014 drag to line it up, isolate a player, grade him" }, "\uD83D\uDC7B OVERLAY"),
+            ovOn && React.createElement("button", { style: { ...btnS, color: "#c4b5fd", borderColor: "rgba(167,139,250,0.45)" }, onClick: () => { setOvIso(null); setShowResult(true); }, title: "The whole rep matched together \u2014 every grade at once, a score, and results saved on this device" }, "\uD83D\uDCCA RESULT"),
                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.75)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }, title: clip.name }, clip.name),
                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.5)" } },
                     idx + 1,
@@ -2044,7 +2090,8 @@ function FilmPanel({ active }) {
                     "IN ",
                     fmt(inPt)),
                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#93c5fd" } }, badge)))),
-        React.createElement("div", { style: { flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#000" } }, clip ? (React.createElement("video", { key: clip.id, ref: vidRef, src: clip.url, controls: true, playsInline: true, style: { width: "100%", height: "100%", objectFit: "contain" }, onLoadedMetadata: onLoaded, onTimeUpdate: onTime, onSeeked: onSeeked, onPlay: onNativePlay, onPause: onNativePause })) : (React.createElement("button", { style: { ...btnS, padding: "16px 22px", fontSize: 13 }, onClick: () => fileRef.current && fileRef.current.click() }, "\uD83C\uDF9E LOAD FILM (video files)"))),
+        React.createElement("div", { style: { flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#000", position: "relative" } }, clip ? (React.createElement("video", { key: clip.id, ref: vidRef, src: clip.url, controls: true, playsInline: true, style: { width: "100%", height: "100%", objectFit: "contain" }, onLoadedMetadata: onLoaded, onTimeUpdate: onTime, onSeeked: onSeeked, onPlay: onNativePlay, onPause: onNativePause })) : (React.createElement("button", { style: { ...btnS, padding: "16px 22px", fontSize: 13 }, onClick: () => fileRef.current && fileRef.current.click() }, "\uD83C\uDF9E LOAD FILM (video files)")), clip && ovOn && (React.createElement("div", { onPointerDown: ovPointerDown, onPointerMove: ovPointerMove, onPointerUp: ovPointerUp, onPointerCancel: ovPointerUp, style: { position: "absolute", inset: 0, cursor: "grab", touchAction: "none", zIndex: 3, overflow: "hidden" }, title: "Drag to line the ghosts up with the film" }, React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", transform: `translate(${ovX}px, ${ovY}px)`, opacity: ovAlpha } }, React.createElement("svg", { viewBox: `0 0 ${FW} ${FH}`, preserveAspectRatio: "xMidYMid meet", style: { width: "100%", height: "100%", transform: `scale(${ovFlip ? -ovScale : ovScale}, ${ovScale})` } }, (routes || []).map(r => { if (!r || !r.points || r.points.length < 2 || !r.ownerId) return null; if (ovIso && r.ownerId !== ovIso) return null; const own = (players || []).find(p => p.id === r.ownerId); if (!own) return null; const col = GRADE_COLORS[ovGrades[r.ownerId]] || own.color || "#e2e8f0"; return React.createElement("polyline", { key: r.id, points: r.points.map(pt => pt.x + "," + pt.y).join(" "), fill: "none", stroke: col, strokeWidth: 3.4, strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: r.rtype === "preSnapMotion" || r.rtype === "postSnapMotion" ? "7 6" : undefined }); }), (players || []).map(p => { if (!p) return null; const dim = ovIso && p.id !== ovIso; const col = GRADE_COLORS[ovGrades[p.id]] || p.color || "#94a3b8"; return (React.createElement("g", { key: p.id, opacity: dim ? 0.12 : 1 }, React.createElement("circle", { cx: p.x, cy: p.y, r: 9, fill: col, stroke: "#05070c", strokeWidth: 1.6 }), React.createElement("text", { x: p.x, y: p.y + 3.4, textAnchor: "middle", fontSize: 9.5, fontWeight: 800, fontFamily: "'Bebas Neue',sans-serif", fill: "#05070c", transform: ovFlip ? `scale(-1,1) translate(${-2 * p.x},0)` : undefined }, p.label || p.role || "?"))); })))))),
+        clip && ovOn && (React.createElement("div", { style: { borderTop: "1px solid rgba(255,255,255,0.1)", padding: "6px 8px", display: "flex", flexDirection: "column", gap: 6 } }, React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } }, React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.45)" } }, "GHOST"), React.createElement("button", { style: btnS, onClick: () => setOvScale(s => Math.max(0.25, +(s / 1.15).toFixed(3))), title: "Shrink the ghosts" }, "\u2212"), React.createElement("button", { style: btnS, onClick: () => setOvScale(s => Math.min(4, +(s * 1.15).toFixed(3))), title: "Grow the ghosts" }, "+"), React.createElement("button", { style: { ...btnS, color: ovFlip ? "#c4b5fd" : btnS.color }, onClick: () => setOvFlip(f => !f), title: "Mirror left\u2194right \u2014 for film shot from the far sideline" }, "\u21C4 FLIP"), React.createElement("input", { type: "range", min: 15, max: 95, value: Math.round(ovAlpha * 100), onChange: e => setOvAlpha(Number(e.target.value) / 100), style: { width: 80 }, title: "Ghost opacity" }), React.createElement("button", { style: btnS, onClick: () => { setOvX(0); setOvY(0); setOvScale(1); setOvFlip(false); }, title: "Reset position, size and flip" }, "RESET"), React.createElement("span", { style: { flex: 1 } }), React.createElement("button", { style: { ...btnS, color: "#fca5a5" }, onClick: () => { setOvGrades({}); setOvIso(null); }, title: "Clear every player's grade" }, "CLEAR GRADES")), React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" } }, React.createElement("button", { onClick: () => setOvIso(null), style: { ...btnS, background: !ovIso ? "rgba(94,234,212,0.18)" : btnS.background, color: !ovIso ? "#99f6e4" : "rgba(255,255,255,0.6)" }, title: "Show everyone" }, "ALL"), ovPlayers.map(p => { const g = ovGrades[p.id]; const on = ovIso === p.id; return (React.createElement("button", { key: p.id, onClick: () => setOvIso(v => v === p.id ? null : p.id), title: "Isolate " + (p.label || p.role || "player") + " — watch just him against his ghost, then grade", style: { ...btnS, padding: "3px 8px", borderColor: g ? GRADE_COLORS[g] : (on ? "rgba(94,234,212,0.6)" : btnS.borderColor), color: g ? GRADE_COLORS[g] : (on ? "#99f6e4" : "rgba(255,255,255,0.75)"), background: on ? "rgba(94,234,212,0.12)" : btnS.background } }, p.label || p.role || "?")); })), ovIso && (() => { const ip = (players || []).find(p => p.id === ovIso); return (React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } }, React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#99f6e4" } }, (ip && (ip.label || ip.role)) || "?", " \u2014"), React.createElement("button", { style: { ...btnS, color: "#4ade80", borderColor: "rgba(74,222,128,0.5)" }, onClick: () => setGrade(ovIso, "ok") }, "\u2713 CORRECT"), React.createElement("button", { style: { ...btnS, color: "#fbbf24", borderColor: "rgba(251,191,36,0.5)" }, onClick: () => setGrade(ovIso, "close") }, "~ CLOSE"), React.createElement("button", { style: { ...btnS, color: "#f87171", borderColor: "rgba(248,113,113,0.5)" }, onClick: () => setGrade(ovIso, "wrong") }, "\u2717 WRONG"), React.createElement("button", { style: btnS, onClick: () => setGrade(ovIso, null) }, "CLEAR"))); })(), React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)", lineHeight: 1.5 } }, "Ghosts follow live edits \u2014 pause the film and move players / draw routes on the field until they line up, to capture a formation or play straight from film.", "  ", "\u2713 ", Object.values(ovGrades).filter(g => g === "ok").length, " \u00B7 ~ ", Object.values(ovGrades).filter(g => g === "close").length, " \u00B7 \u2717 ", Object.values(ovGrades).filter(g => g === "wrong").length))),
         clip && (React.createElement("div", { style: { display: "flex", gap: 5, padding: "6px 8px", borderTop: "1px solid rgba(255,255,255,0.1)", flexWrap: "wrap", justifyContent: "center" } },
             React.createElement("button", { style: btnS, onClick: () => go(-1), title: "Previous clip (P)" }, "\u23EE"),
             React.createElement("button", { style: btnS, onClick: () => skip(-15), title: "Back 15 s (\u2190) \u2014 also moves the start point here" }, "\u221215s"),
@@ -2053,7 +2100,26 @@ function FilmPanel({ active }) {
             React.createElement("button", { style: btnS, onClick: cycleFF, title: "Fast-forward \u2014 tap: 2\u00D7 (L), tap again: 4\u00D7 (Shift+L), again: 1\u00D7" }, "FF \u25B6\u25B6"),
             React.createElement("button", { style: btnS, onClick: () => skip(15), title: "Forward 15 s (\u2192)" }, "+15s"),
             React.createElement("button", { style: btnS, onClick: () => go(1), title: "Next clip (N)" }, "\u23ED"),
-            React.createElement("button", { style: { ...btnS, color: "#fcd34d", borderColor: "rgba(245,158,11,0.45)" }, onClick: restart, title: "Restart from the start point (R) \u2014 the point moves whenever you rewind" }, "\u21BA START")))));
+            React.createElement("button", { style: { ...btnS, color: "#fcd34d", borderColor: "rgba(245,158,11,0.45)" }, onClick: restart, title: "Restart from the start point (R) \u2014 the point moves whenever you rewind" }, "\u21BA START"),
+            React.createElement("button", { style: { ...btnS, color: "#99f6e4", borderColor: "rgba(94,234,212,0.4)" }, onClick: () => setShowKeys(v => !v), title: "Show every film keyboard shortcut" }, "\u2328 KEYS"))),
+        showKeys && (React.createElement("div", { onClick: () => setShowKeys(false), style: { position: "absolute", inset: 0, zIndex: 9, background: "rgba(5,7,12,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 14, cursor: "pointer" } },
+            React.createElement("div", { onClick: e => e.stopPropagation(), style: { maxWidth: 380, width: "100%", maxHeight: "100%", overflowY: "auto", background: "#0b0f16", border: "1px solid rgba(94,234,212,0.35)", borderRadius: 10, padding: "12px 16px", cursor: "default" } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+                    React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", color: "#5eead4", fontSize: 15 } }, "\u2328 FILM SHORTCUTS"),
+                    React.createElement("div", { style: { flex: 1 } }),
+                    React.createElement("button", { style: btnS, onClick: () => setShowKeys(false) }, "\u2715")),
+                [
+                    ["Space / K", "pause ⇄ play"],
+                    ["L", "fast-forward 2× — tap again for 4× (Shift+L), again back to 1×"],
+                    ["J", "rewind 2× — tap again for slow ½× (Shift+J), again to stop"],
+                    ["← / →", "skip 15 s back / forward — a backward skip also moves the start point"],
+                    ["R", "restart from the start point — the point moves whenever you rewind"],
+                    ["N / P", "next / previous clip"],
+                ].map(([k, d]) => (React.createElement("div", { key: k, style: { display: "flex", gap: 10, marginBottom: 7, alignItems: "flex-start" } },
+                    React.createElement("span", { className: "mono", style: { flexShrink: 0, minWidth: 74, padding: "2px 7px", borderRadius: 5, border: "1px solid rgba(94,234,212,0.3)", background: "rgba(94,234,212,0.08)", color: "#99f6e4", fontSize: 11, textAlign: "center" } }, k),
+                    React.createElement("span", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.75)", lineHeight: 1.5 } }, d)))),
+                React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 10 } }, "Keys work while film study is open and nothing else (run mode, a text box) has focus.")))),
+        showResult && (React.createElement("div", { onClick: () => setShowResult(false), style: { position: "absolute", inset: 0, zIndex: 10, background: "rgba(5,7,12,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 14, cursor: "pointer" } }, React.createElement("div", { onClick: e => e.stopPropagation(), style: { maxWidth: 430, width: "100%", maxHeight: "100%", overflowY: "auto", background: "#0b0f16", border: "1px solid rgba(167,139,250,0.4)", borderRadius: 10, padding: "12px 16px", cursor: "default" } }, (() => { const ids = Object.keys(ovGrades); const nOk = ids.filter(k => ovGrades[k] === "ok").length; const nClose = ids.filter(k => ovGrades[k] === "close").length; const nWrong = ids.filter(k => ovGrades[k] === "wrong").length; const graded = nOk + nClose + nWrong; const pct = graded ? Math.round(((nOk + nClose * 0.5) / graded) * 100) : 0; const pctCol = pct >= 80 ? "#4ade80" : pct >= 55 ? "#fbbf24" : "#f87171"; const mine = [...(gradeSessions || [])].sort((a, b) => (((b.playName === playName) ? 1 : 0) - ((a.playName === playName) ? 1 : 0)) || (b.when - a.when)).slice(0, 12); return (React.createElement(React.Fragment, null, React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 } }, React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", color: "#c4b5fd", fontSize: 15 } }, "\uD83D\uDCCA PLAY RESULT"), React.createElement("div", { style: { flex: 1 } }), React.createElement("button", { style: btnS, onClick: () => setShowResult(false) }, "\u2715")), React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.75)", marginBottom: 8 } }, playName || "Untitled play", clip ? " · " + clip.name : ""), React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 } }, React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 30, color: pctCol, lineHeight: 1 } }, graded ? pct + "%" : "—"), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.6)", lineHeight: 1.6 } }, "\u2713 ", nOk, " correct \u00B7 ~ ", nClose, " close \u00B7 \u2717 ", nWrong, " wrong", React.createElement("br", null), graded, "/", ovPlayers.length, " players graded")), [["OFFENSE", ovPlayers.filter(p => p.ptype !== "defense"), "#86efac"], ["DEFENSE", ovPlayers.filter(p => p.ptype === "defense"), "#fca5a5"]].map(([lbl, arr, col]) => arr.length === 0 ? null : (React.createElement("div", { key: lbl, style: { marginBottom: 8 } }, React.createElement("div", { className: "hd", style: { fontSize: 10, letterSpacing: "0.14em", color: col, marginBottom: 4 } }, lbl), React.createElement("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } }, arr.map(p => { const g = ovGrades[p.id]; return (React.createElement("span", { key: p.id, className: "mono", style: { fontSize: 10, padding: "2px 7px", borderRadius: 5, border: `1px solid ${g ? GRADE_COLORS[g] : "rgba(255,255,255,0.15)"}`, color: g ? GRADE_COLORS[g] : "rgba(255,255,255,0.45)" } }, p.label || p.role || "?", " ", g === "ok" ? "✓" : g === "close" ? "~" : g === "wrong" ? "✗" : "—")); }))))), React.createElement("div", { style: { display: "flex", gap: 6, margin: "10px 0" } }, React.createElement("button", { style: { ...btnS, color: "#c4b5fd", borderColor: "rgba(167,139,250,0.5)", opacity: graded === 0 ? 0.45 : 1, cursor: graded === 0 ? "default" : "pointer" }, disabled: graded === 0, onClick: () => { if (graded === 0) return; if (onSaveSession) onSaveSession({ id: "fg" + Date.now().toString(36), playName: playName || "Untitled play", clipName: clip ? clip.name : "", when: Date.now(), grades: { ...ovGrades }, calib: { x: ovX, y: ovY, scale: ovScale, flip: ovFlip, alpha: ovAlpha }, score: pct, counts: { ok: nOk, close: nClose, wrong: nWrong } }); }, title: "Save this rep's grades on this device \u2014 reload it any time from the list below" }, "\uD83D\uDCBE SAVE RESULT"), React.createElement("button", { style: { ...btnS, color: "#5eead4", borderColor: "rgba(94,234,212,0.5)", opacity: (graded === 0 || !onShareResult) ? 0.45 : 1, cursor: (graded === 0 || !onShareResult) ? "default" : "pointer" }, disabled: graded === 0 || !onShareResult, onClick: () => { if (graded === 0 || !onShareResult) return; onShareResult({ playName: playName || "Untitled play", clipName: clip ? clip.name : "", when: Date.now(), score: pct, counts: { ok: nOk, close: nClose, wrong: nWrong }, entries: ovPlayers.map(p => ({ label: p.label || p.role || "?", side: p.ptype === "defense" ? "def" : "off", grade: ovGrades[p.id] || null })) }); }, title: "Send this result to coaches or players \u2014 pick people or a whole group" }, "\uD83D\uDCE4 SHARE")), React.createElement("div", { className: "hd", style: { fontSize: 10, letterSpacing: "0.14em", color: "rgba(255,255,255,0.5)", marginBottom: 4 } }, "SAVED RESULTS ", React.createElement("span", { className: "mono", style: { letterSpacing: 0 } }, "(this device only)")), mine.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)" } }, "None yet \u2014 isolate players, grade them, then save the rep.")) : mine.map(r => (React.createElement("div", { key: r.id, style: { display: "flex", gap: 8, alignItems: "center", padding: "5px 0", borderTop: "1px solid rgba(255,255,255,0.07)" } }, React.createElement("div", { style: { flex: 1, minWidth: 0 } }, React.createElement("div", { className: "mono", style: { fontSize: 10, color: r.playName === playName ? "#c4b5fd" : "rgba(255,255,255,0.75)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.playName, r.clipName ? " · " + r.clipName : ""), React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)" } }, new Date(r.when).toLocaleString(), " \u00B7 ", r.score, "% \u00B7 \u2713", r.counts.ok, " ~", r.counts.close, " \u2717", r.counts.wrong)), React.createElement("button", { style: btnS, onClick: () => { setOvGrades(r.grades || {}); if (r.calib) { setOvX(r.calib.x || 0); setOvY(r.calib.y || 0); setOvScale(r.calib.scale || 1); setOvFlip(!!r.calib.flip); setOvAlpha(r.calib.alpha || 0.55); } setOvOn(true); setOvIso(null); }, title: "Load these grades + overlay calibration (open the matching play for the labels to line up)" }, "LOAD"), React.createElement("button", { style: { ...btnS, color: "#fca5a5" }, onClick: () => { if (onDeleteSession) onDeleteSession(r.id); }, title: "Delete this saved result" }, "\u2715")))))); })())))));
 }
 class ErrorBoundary extends React.Component {
     constructor(props) { super(props); this.state = { err: null }; }
@@ -2184,7 +2250,7 @@ function AddPlayPicker({ available, onAdd, summaryLabel, secondary }) {
 //    standalone editor, where there is no team backend. The panel mounts when an
 //    install is opened and unmounts when it's closed, so its lifecycle doubles
 //    as the per-player study-time clock.
-function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActive, focusQ, onFocusDone }) {
+function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActive, focusQ, onFocusDone, onSeen }) {
     const installId = install.id;
     const [myRow, setMyRow] = useState(null);
     const [rows, setRows] = useState(null);
@@ -2262,11 +2328,13 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActi
             const qq = await db.from("play_questions").select("*")
                 .eq("team_id", teamId).eq("install_id", installId).order("created_at", { ascending: false });
             setQuestions(qq.data || []);
+            if (onSeen)
+                onSeen(qq.data || []); // viewing the list counts as reading
         }
         catch (e) {
             setErr("Couldn't load team data — check your connection.");
         }
-    }, [db, teamId, installId, isCoach]);
+    }, [db, teamId, installId, isCoach, onSeen]);
     // Open → start the study clock + load. Close/switch → flush remaining time.
     // Also flush every 30s so a long session is captured even without closing.
     useEffect(() => {
@@ -2413,10 +2481,24 @@ function InstallTeamPanel({ db, teamId, userId, install, plays, isCoach, runActi
                         React.createElement("div", { style: { fontSize: 10, color: "#64748b", marginTop: 2 } }, when(q.created_at))))),
             err && React.createElement("div", { style: { fontSize: 12, color: "#fca5a5", marginTop: 6 } }, err)))));
 }
+// Segmented side-of-ball filter shared by the notes surfaces (editor modal +
+// run-viewer notes screen). "all" shows both groups with headers.
+function NotesSideFilter({ value, onChange, center }) {
+    return (React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: center ? "center" : "flex-start" } },
+        React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginRight: 2 } }, "SHOW"),
+        ["all", "offense", "defense"].map(k => {
+            const on = value === k;
+            const col = k === "defense" ? ["rgba(248,113,113,0.55)", "rgba(248,113,113,0.14)", "#fca5a5"]
+                : k === "offense" ? ["rgba(74,222,128,0.55)", "rgba(74,222,128,0.14)", "#86efac"]
+                    : ["rgba(251,191,36,0.55)", "rgba(251,191,36,0.14)", "#fcd34d"];
+            return (React.createElement("button", { key: k, onClick: () => onChange(k), style: { padding: "4px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em",
+                    border: `1px solid ${on ? col[0] : "rgba(255,255,255,0.12)"}`, background: on ? col[1] : "transparent", color: on ? col[2] : "rgba(255,255,255,0.5)" } }, k === "all" ? "BOTH SIDES" : k.toUpperCase()));
+        })));
+}
 // Script-scoped twin of InstallTeamPanel's question cards: players ask a coach
 // about a play in this practice script; coaches see and resolve the questions.
 // No progress tracking — that concept is install-only.
-function ScriptTeamPanel({ db, teamId, userId, script, plays, isCoach, focusQ, onFocusDone }) {
+function ScriptTeamPanel({ db, teamId, userId, script, plays, isCoach, focusQ, onFocusDone, onSeen }) {
     const scriptId = script.id;
     const [questions, setQuestions] = useState(null);
     const [err, setErr] = useState("");
@@ -2438,11 +2520,13 @@ function ScriptTeamPanel({ db, teamId, userId, script, plays, isCoach, focusQ, o
             const qq = await db.from("play_questions").select("*")
                 .eq("team_id", teamId).eq("script_id", scriptId).order("created_at", { ascending: false });
             setQuestions(qq.data || []);
+            if (onSeen)
+                onSeen(qq.data || []); // viewing the list counts as reading
         }
         catch (e) {
             setErr("Couldn't load questions — check your connection.");
         }
-    }, [db, teamId, scriptId, isCoach]);
+    }, [db, teamId, scriptId, isCoach, onSeen]);
     useEffect(() => {
         loadQ();
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2865,6 +2949,7 @@ function PlaybookApp() {
     const [showNotes, setShowNotes] = useState(false);
     const [notesEditorOpen, setNotesEditorOpen] = useState(false);
     const [runNotesShown, setRunNotesShown] = useState(false); // run viewer: showing the notes screen for the current step
+    const [notesSideFilter, setNotesSideFilter] = useState("all"); // notes surfaces: show "all" | "offense" | "defense" players
     const [showHudl, setShowHudl] = useState(false);
     const [mobilePanel, setMobilePanel] = useState(null);
     // Full-screen "show it off" mode in the 2D editor — hides all chrome and
@@ -3319,6 +3404,48 @@ function PlaybookApp() {
     const [ballPlan, setBallPlan] = useState({ snapTo: null, steps: [], reads: {} });
     const [showBallPanel, setShowBallPanel] = useState(false);
     const [filmOn, setFilmOn] = useState(false); // 🎬 FILM STUDY: side-by-side video + editor
+    // FILM STUDY layout: side-by-side needs real width. Under 860 CSS px the
+    // film stacks ON TOP of the field (42vh) and the floating control panels
+    // drop below it, so phones get a clean vertical split instead of two slivers.
+    const [filmStacked, setFilmStacked] = useState(() => typeof window !== "undefined" && window.innerWidth < 860);
+    useEffect(() => {
+        const onR = () => setFilmStacked(typeof window !== "undefined" && window.innerWidth < 860);
+        window.addEventListener("resize", onR);
+        return () => window.removeEventListener("resize", onR);
+    }, []);
+    // ── Film grade result sessions — saved ON THIS DEVICE ONLY (like the film
+    // clips themselves, they never upload). Each record is one graded rep:
+    // per-player grades, the overlay calibration, and a score snapshot.
+    const [filmGradeSessions, setFilmGradeSessions] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem("gp_filmGrades_v1") || "[]");
+        }
+        catch (e) {
+            return [];
+        }
+    });
+    const saveFilmGradeSession = useCallback((rec) => {
+        if (!rec || !rec.id)
+            return;
+        setFilmGradeSessions(list => {
+            const next = [rec, ...list.filter(r => r && r.id !== rec.id)].slice(0, 200);
+            try {
+                localStorage.setItem("gp_filmGrades_v1", JSON.stringify(next));
+            }
+            catch (e) { }
+            return next;
+        });
+    }, []);
+    const deleteFilmGradeSession = useCallback((id) => {
+        setFilmGradeSessions(list => {
+            const next = list.filter(r => r && r.id !== id);
+            try {
+                localStorage.setItem("gp_filmGrades_v1", JSON.stringify(next));
+            }
+            catch (e) { }
+            return next;
+        });
+    }, []);
     // Ball-plan helpers
     // Snap targets are offensive ball-handlers (QB or skill). If a formation has
     // none (e.g. a defense/special-teams look, or an O-line-only set), there's
@@ -3868,8 +3995,9 @@ function PlaybookApp() {
         const byId = new Map(arr.map(p => [p.id, p]));
         const OT_CUSHION = 2.2 * YARD; // ~2 yds toward the end zone (over the top)
         const TRAIL_DIST = 2.0 * YARD; // ~2 yds behind the receiver (trail)
-        const cp = Math.max(0, Math.min(1, progress / 0.35)); // converge, then track
-        const ke = cp < 0.5 ? 2 * cp * cp : 1 - Math.pow(-2 * cp + 2, 2) / 2;
+        const easeK = (t) => { const c = Math.max(0, Math.min(1, t)); return c < 0.5 ? 2 * c * c : 1 - Math.pow(-2 * c + 2, 2) / 2; };
+        const rbpMain = animRouteByPlayerRef.current;
+        const rbpOpt = animOptionRouteByPlayerRef.current;
         const repl = new Map();
         links.forEach(ml => {
             const defP = byId.get(ml.fromId);
@@ -3878,6 +4006,48 @@ function PlaybookApp() {
                 return;
             const def0 = (starts && starts.get(ml.fromId)) || defP;
             const rec0 = (starts && starts.get(ml.toId)) || recP;
+            // PICKUP — how far into the play (0..0.95 of the post-snap clock) this
+            // defender stays on his own drawn path before locking onto his man.
+            // 0 (default) = man from the snap, exactly the old behavior. With a
+            // pickup set he is untouched until `progress` reaches it, then he
+            // converges over the next ~25% of the play and tracks.
+            const pickup = Math.max(0, Math.min(0.95, typeof ml.pickup === "number" ? ml.pickup : 0));
+            // POST-SNAP MOTION FIRST — a man defender's own post-snap motion is
+            // always DONE before coverage takes him: startAnim compressed it to
+            // finish by max(pickup, ~12% of the clock), even in SYNC. This math
+            // (arc length up to the chain junction × the route's duration share
+            // from the durations map; ids missing from the map fall back to the
+            // full clock to match the tick) lands the motion's end at or before
+            // the slider, so the max() picks the slider — or, with pickup at 0,
+            // the moment the quick motion ends.
+            let effPickup = pickup;
+            const ownR = (rbpMain && rbpMain.get(ml.fromId)) || (rbpOpt && rbpOpt.get(ml.fromId));
+            if (ownR && ownR.rtype === "postSnapMotion" && ownR.points && ownR.points.length >= 2) {
+                const pts = ownR.points;
+                const jIdx = (typeof ownR.junctionIdx === "number") ? ownR.junctionIdx : pts.length - 1;
+                let toJ = 0, total = 0;
+                for (let i = 0; i < pts.length - 1; i++) {
+                    const seg = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                    total += seg;
+                    if (i < jIdx)
+                        toJ += seg;
+                }
+                if (total > 0.001) {
+                    const durs = animRouteDurationsRef.current;
+                    const durFrac = (durs && durs.get(ownR.id)) ? Math.min(1, durs.get(ownR.id) / ANIM_DURATION_MS) : 1;
+                    effPickup = Math.max(effPickup, Math.min(0.95, (toJ / total) * durFrac));
+                }
+            }
+            if (progress < effPickup)
+                return; // still running his own drawn motion/route
+            const ke = effPickup > 0 ? easeK((progress - effPickup) / 0.25) : easeK(progress / 0.35);
+            // Blend base: a defender WITH a drawn route converges from where that
+            // route has him RIGHT NOW — the drawn path plays out first, then melts
+            // into coverage with no teleport back to his alignment. Routeless
+            // defenders keep the original stable def0 anchor so every existing
+            // play animates exactly as before (tick and GIF/3D sampler alike).
+            const hasOwnRoute = !!((rbpMain && rbpMain.get(ml.fromId)) || (rbpOpt && rbpOpt.get(ml.fromId)));
+            const base = hasOwnRoute ? defP : def0;
             let tx, ty;
             if (ml.mode === "overTop") {
                 // Offense faces UP (end zone at smaller y) → stay on the deep side.
@@ -3897,7 +4067,7 @@ function PlaybookApp() {
                     ty = recP.y;
                 }
             }
-            repl.set(ml.fromId, { x: def0.x + (tx - def0.x) * ke, y: def0.y + (ty - def0.y) * ke });
+            repl.set(ml.fromId, { x: base.x + (tx - base.x) * ke, y: base.y + (ty - base.y) * ke });
         });
         if (!repl.size)
             return arr;
@@ -4224,10 +4394,24 @@ function PlaybookApp() {
     const [notifPickerOpen, setNotifPickerOpen] = useState(false); // admin recipient-picker view
     const [notifMembers, setNotifMembers] = useState(null); // coach-capable roster rows (picker)
     const [notifRecipList, setNotifRecipList] = useState(null); // picked user_ids (picker)
+    const [notifShares, setNotifShares] = useState([]); // film results shared to me (newest first; _readAt local)
+    const [notifShareOpen, setNotifShareOpen] = useState(null); // opened share (detail view in the bell)
     const loadNotifs = useCallback(async () => {
         if (!teamDB || !teamId || !myUserId)
             return;
         try {
+            // Film results shared to me — loads for every member (players included),
+            // independent of the question-recipient gate below. Before the sharing
+            // migration runs, .data is simply null and this stays empty.
+            const sh = await teamDB.from("film_grade_shares")
+                .select("*, film_share_recipients!inner(user_id, read_at)")
+                .eq("team_id", teamId)
+                .eq("film_share_recipients.user_id", myUserId)
+                .order("created_at", { ascending: false }).limit(30);
+            setNotifShares((sh.data || []).map(s => {
+                const rec = (s.film_share_recipients || [])[0] || {};
+                return { ...s, _readAt: rec.read_at || null };
+            }));
             const rr = await teamDB.from("notify_recipients").select("user_id,created_at")
                 .eq("team_id", teamId).eq("user_id", myUserId);
             const mine = (rr.data && rr.data[0]) || null;
@@ -4264,6 +4448,8 @@ function PlaybookApp() {
         return () => clearInterval(iv);
     }, [loadNotifs, teamDB, teamId, myUserId]);
     const notifUnread = notifItems.filter(q => !notifReads[q.id]).length;
+    const shareUnread = notifShares.filter(s => !s._readAt).length;
+    const bellUnread = notifUnread + shareUnread;
     const markQuestionRead = useCallback(async (q) => {
         if (!teamDB || !myUserId || !q || !q.id)
             return;
@@ -4273,17 +4459,41 @@ function PlaybookApp() {
         }
         catch (e) { /* best-effort */ }
     }, [teamDB, myUserId]);
+    // Viewing a panel's question list marks everything in it read for me —
+    // a coach looking at the questions has, by definition, read them.
+    const markQuestionsSeen = useCallback(async (qs) => {
+        if (!teamDB || !myUserId || !qs || qs.length === 0)
+            return;
+        const mine = qs.filter(q => q && q.id && q.asker_id !== myUserId);
+        if (mine.length === 0)
+            return;
+        setNotifReads(m => { const n = { ...m }; mine.forEach(q => { n[q.id] = true; }); return n; });
+        try {
+            await teamDB.from("question_reads").upsert(mine.map(q => ({ team_id: q.team_id, question_id: q.id, user_id: myUserId })), { onConflict: "question_id,user_id", ignoreDuplicates: true });
+        }
+        catch (e) { /* best-effort */ }
+    }, [teamDB, myUserId]);
     const markAllQuestionsRead = useCallback(async () => {
         if (!teamDB || !teamId)
             return;
         setNotifReads(m => { const n = { ...m }; notifItems.forEach(q => { n[q.id] = true; }); return n; });
+        // Film-result unreads clear too — one button empties the whole bell.
+        const unreadShares = notifShares.filter(s => !s._readAt).map(s => s.id);
+        if (unreadShares.length) {
+            setNotifShares(list => list.map(x => x._readAt ? x : { ...x, _readAt: new Date().toISOString() }));
+            try {
+                await teamDB.from("film_share_recipients").update({ read_at: new Date().toISOString() })
+                    .eq("user_id", myUserId).is("read_at", null).in("share_id", unreadShares);
+            }
+            catch (e) { /* best-effort */ }
+        }
         try {
             await teamDB.rpc("mark_all_questions_read", { p_team: teamId });
         }
         catch (e) {
             loadNotifs();
         }
-    }, [teamDB, teamId, notifItems, loadNotifs]);
+    }, [teamDB, teamId, notifItems, loadNotifs, notifShares, myUserId]);
     const openQuestionSpot = useCallback((q) => {
         if (!q)
             return;
@@ -4350,6 +4560,116 @@ function PlaybookApp() {
             loadNotifPicker();
         }
     }, [teamDB, teamId, myUserId, loadNotifs, loadNotifPicker]);
+    const markShareRead = useCallback(async (s) => {
+        if (!teamDB || !myUserId || !s || !s.id || s._readAt)
+            return;
+        setNotifShares(list => list.map(x => x.id === s.id ? { ...x, _readAt: new Date().toISOString() } : x));
+        try {
+            await teamDB.from("film_share_recipients").update({ read_at: new Date().toISOString() })
+                .eq("share_id", s.id).eq("user_id", myUserId).is("read_at", null);
+        }
+        catch (e) { /* best-effort */ }
+    }, [teamDB, myUserId]);
+    // ── Sharing a film result: draft payload from the film panel, roster +
+    // reusable groups, then one RPC that snapshots recipients at send time.
+    const [shareDraft, setShareDraft] = useState(null); // payload from the RESULT card
+    const [shareMembers, setShareMembers] = useState(null); // whole roster (players included)
+    const [shareGroups, setShareGroups] = useState([]); // reusable groups
+    const [shareGroupMembers, setShareGroupMembers] = useState({}); // group_id → [user_id]
+    const [sharePicked, setSharePicked] = useState([]); // individually picked user_ids
+    const [sharePickedGroups, setSharePickedGroups] = useState([]); // picked group ids
+    const [shareNote, setShareNote] = useState("");
+    const [shareBusy, setShareBusy] = useState(false);
+    const [shareGroupEdit, setShareGroupEdit] = useState(null); // null | { id?, name, members: [] }
+    const loadShareData = useCallback(async () => {
+        if (!teamDB || !teamId)
+            return;
+        try {
+            const mm = await teamDB.from("memberships").select("user_id,display_name,role").eq("team_id", teamId);
+            setShareMembers(mm.data || []);
+            const gg = await teamDB.from("share_groups").select("id,name").eq("team_id", teamId).order("name");
+            setShareGroups(gg.data || []);
+            const gm = await teamDB.from("share_group_members").select("group_id,user_id").eq("team_id", teamId);
+            const map = {};
+            (gm.data || []).forEach(r => { (map[r.group_id] = map[r.group_id] || []).push(r.user_id); });
+            setShareGroupMembers(map);
+        }
+        catch (e) {
+            setShareMembers([]);
+        }
+    }, [teamDB, teamId]);
+    const openShareResult = useCallback((payload) => {
+        if (!teamDB || !teamId || !payload)
+            return;
+        setShareDraft(payload);
+        setSharePicked([]);
+        setSharePickedGroups([]);
+        setShareNote("");
+        setShareGroupEdit(null);
+        setShareBusy(false);
+        loadShareData();
+    }, [teamDB, teamId, loadShareData]);
+    const sendShare = useCallback(async () => {
+        if (!teamDB || !teamId || !shareDraft || shareBusy)
+            return;
+        const ids = {};
+        sharePicked.forEach(u => { ids[u] = true; });
+        sharePickedGroups.forEach(g => (shareGroupMembers[g] || []).forEach(u => { ids[u] = true; }));
+        delete ids[myUserId];
+        const list = Object.keys(ids);
+        if (list.length === 0)
+            return;
+        setShareBusy(true);
+        try {
+            await teamDB.rpc("share_film_grades", {
+                p_team: teamId,
+                p_play_name: shareDraft.playName || "Untitled play",
+                p_clip_name: shareDraft.clipName || "",
+                p_score: shareDraft.score || 0,
+                p_counts: shareDraft.counts || {},
+                p_entries: shareDraft.entries || [],
+                p_note: shareNote.trim() || null,
+                p_recipients: list
+            });
+            setShareDraft(null);
+        }
+        catch (e) { /* keep the modal open so nothing is lost */ }
+        setShareBusy(false);
+    }, [teamDB, teamId, shareDraft, shareBusy, sharePicked, sharePickedGroups, shareGroupMembers, myUserId, shareNote]);
+    const saveShareGroup = useCallback(async () => {
+        if (!teamDB || !teamId || !shareGroupEdit || !shareGroupEdit.name.trim())
+            return;
+        const ge = shareGroupEdit;
+        try {
+            let gid = ge.id || null;
+            if (!gid) {
+                const ins = await teamDB.from("share_groups").insert({ team_id: teamId, name: ge.name.trim(), created_by: myUserId }).select("id");
+                gid = (ins.data && ins.data[0] && ins.data[0].id) || null;
+            }
+            else {
+                await teamDB.from("share_groups").update({ name: ge.name.trim() }).eq("id", gid);
+            }
+            if (gid) {
+                await teamDB.from("share_group_members").delete().eq("group_id", gid);
+                if (ge.members.length) {
+                    await teamDB.from("share_group_members").insert(ge.members.map(u => ({ group_id: gid, team_id: teamId, user_id: u })));
+                }
+            }
+            setShareGroupEdit(null);
+            loadShareData();
+        }
+        catch (e) { /* leave the editor open */ }
+    }, [teamDB, teamId, myUserId, shareGroupEdit, loadShareData]);
+    const deleteShareGroup = useCallback(async (gid) => {
+        if (!teamDB || !gid)
+            return;
+        try {
+            await teamDB.from("share_groups").delete().eq("id", gid);
+            setSharePickedGroups(l => l.filter(x => x !== gid));
+            loadShareData();
+        }
+        catch (e) { /* ignore */ }
+    }, [teamDB, loadShareData]);
     const [runSeen, setRunSeen] = useState([]); // play_ids the player has viewed in the running install (for auto-completion %)
     const [zoom, setZoom] = useState(1);
     const [viewCenter, setViewCenter] = useState({ x: FW / 2, y: LOS_Y });
@@ -4383,6 +4703,7 @@ function PlaybookApp() {
     // link's bubble with the Man tool. Drives how the defender RUNS WITH his
     // receiver during PLAY IN ACTION (see applyManCoverage).
     const [manMode, setManMode] = useState("trail");
+    const [manEditId, setManEditId] = useState(null); // man link whose PICKUP point is being edited (Select-tool click on the midpoint)
     const [editingZoneId, setEditingZoneId] = useState(null);
     const [editingZoneLabel, setEditingZoneLabel] = useState("");
     const [zoneShape, setZoneShape] = useState("ellipse"); // shape used for newly drawn zones
@@ -10974,6 +11295,27 @@ function PlaybookApp() {
             optionRouteByPlayer.forEach(r => { if (r && r.id)
                 durations.set(r.id, ANIM_DURATION_MS); });
         }
+        // MAN + POST-SNAP MOTION: a man defender's own post-snap motion is ALWAYS
+        // compressed to finish by the moment coverage is supposed to start — even
+        // in SYNC, where a motion would otherwise take the whole play. Pickup set:
+        // the motion is done by the slider point. Pickup at 0 (man from the snap):
+        // he rips through the motion in the first ~12% of the clock, then locks
+        // on. Compression only ever speeds a motion up (min with its natural
+        // duration); the coverage pickup math reads this same durations map, so
+        // the lock-on lands exactly where the motion ends or at the slider,
+        // whichever is later — and never later than both.
+        const MAN_MOTION_MIN_FRAC = 0.12; // quickest window a motion squeezes into
+        coverages.forEach(c => {
+            if (!c || c.ctype !== "man" || !c.fromId)
+                return;
+            const pk = Math.max(0, Math.min(0.95, typeof c.pickup === "number" ? c.pickup : 0));
+            const r = routeByPlayer.get(c.fromId);
+            if (r && r.rtype === "postSnapMotion" && r.points && r.points.length >= 2) {
+                const windowFrac = Math.max(pk, MAN_MOTION_MIN_FRAC);
+                const cur = durations.get(r.id) || ANIM_DURATION_MS;
+                durations.set(r.id, Math.max(1, Math.min(cur, Math.round(ANIM_DURATION_MS * windowFrac))));
+            }
+        });
         animStartPosRef.current = starts;
         animRouteByPlayerRef.current = routeByPlayer;
         animOptionRouteByPlayerRef.current = optionRouteByPlayer;
@@ -13809,9 +14151,9 @@ function PlaybookApp() {
                 React.createElement("button", { className: "sbtn dim", onClick: () => { setHelpQuery(""); setHelpCat("start"); setShowHelp(true); }, title: "Help \u2014 an interactive guide to every control in the app", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0 } },
                     React.createElement("span", { style: { fontSize: 14, fontWeight: 800, lineHeight: 1 } }, "?"),
                     React.createElement("span", { className: "hd", style: { fontSize: 14, letterSpacing: "0.06em" } }, "HELP")),
-                teamDB && teamId && (notifRecipient || effRole === "admin" || effRole === "coadmin") && (React.createElement("button", { className: "sbtn dim", onClick: () => { setNotifPickerOpen(false); setShowNotif(true); loadNotifs(); }, title: "Player questions on installs & practice scripts \u2014 tap one to jump to it", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0, position: "relative" } },
+                teamDB && teamId && (notifRecipient || effRole === "admin" || effRole === "coadmin" || notifShares.length > 0) && (React.createElement("button", { className: "sbtn dim", onClick: () => { setNotifPickerOpen(false); setShowNotif(true); loadNotifs(); }, title: "Player questions on installs & practice scripts \u2014 tap one to jump to it", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0, position: "relative" } },
                     React.createElement("span", { style: { fontSize: 14, lineHeight: 1 } }, "\uD83D\uDD14"),
-                    notifUnread > 0 && (React.createElement("span", { style: { position: "absolute", top: -5, right: -5, minWidth: 17, height: 17, borderRadius: 99, background: "#ef4444", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1, border: "1px solid #0c0c17" } }, notifUnread > 9 ? "9+" : notifUnread)))),
+                    bellUnread > 0 && (React.createElement("span", { style: { position: "absolute", top: -5, right: -5, minWidth: 17, height: 17, borderRadius: 99, background: "#ef4444", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1, border: "1px solid #0c0c17" } }, bellUnread > 9 ? "9+" : bellUnread)))),
                 React.createElement("button", { className: "sbtn amb", onClick: () => setShowHudl(true), style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", flexShrink: 0 } },
                     React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round" },
                         React.createElement("path", { d: "M4 7h16M4 12h16M4 17h16" })),
@@ -14135,8 +14477,8 @@ function PlaybookApp() {
                                     color: (customFieldImg || endzoneText || endzoneBgOverride || endzoneTextColor) ? "#38bdf8" : "rgba(255,255,255,0.6)" } },
                                 "\u2913 ",
                                 (customFieldImg || endzoneText || endzoneBgOverride || endzoneTextColor) ? "Field Customized" : "Customize Field"))),
-                    React.createElement("div", { className: "field-wrap" + (filmOn ? " film-on" : ""), style: { flex: 1, minHeight: 0, overflow: "hidden", padding: filmOn ? "6px 6px 6px calc(50% + 10px)" : "6px", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" } },
-                        filmOn && React.createElement(FilmPanel, { active: filmOn && !runningScriptId && !runningInstallId }),
+                    React.createElement("div", { className: "field-wrap" + (filmOn ? " film-on" : ""), style: { flex: 1, minHeight: 0, overflow: "hidden", padding: filmOn ? (filmStacked ? "calc(42vh + 10px) 6px 6px 6px" : "6px 6px 6px calc(50% + 10px)") : "6px", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" } },
+                        filmOn && React.createElement(FilmPanel, { active: filmOn && !runningScriptId && !runningInstallId, stacked: filmStacked, players: players, routes: routes, playName: playName, gradeSessions: filmGradeSessions, onSaveSession: saveFilmGradeSession, onDeleteSession: deleteFilmGradeSession, onShareResult: openShareResult }),
                         filmSrc && (React.createElement(DraggablePanel, { style: { position: "absolute", top: 16, left: 16, zIndex: 30, display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 9, background: "rgba(10,10,20,0.82)", border: "1px solid rgba(244,114,182,0.4)", backdropFilter: "blur(4px)", flexWrap: "wrap", maxWidth: "calc(100% - 32px)" } },
                             React.createElement("span", { style: { fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#f9a8d4", letterSpacing: "0.05em" } }, "FILM"),
                             React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "rgba(255,255,255,0.6)" }, title: "Film opacity" },
@@ -14355,7 +14697,7 @@ function PlaybookApp() {
                                         const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2;
                                         const mMode = m.mode === "overTop" ? "overTop" : "trail";
                                         const mLetter = mMode === "overTop" ? "O" : "T";
-                                        const interactive = tool === "erase" || tool === "man";
+                                        const interactive = tool === "erase" || tool === "man" || tool === "select";
                                         return (React.createElement("g", { key: m.id, style: { cursor: interactive ? "pointer" : "default" }, onClick: () => {
                                                 if (tool === "erase") {
                                                     pushUndo(players, routes);
@@ -14364,14 +14706,22 @@ function PlaybookApp() {
                                                 else if (tool === "man") {
                                                     setCoverages(prev => prev.map(c => c.id === m.id ? { ...c, mode: (c.mode === "overTop" ? "trail" : "overTop") } : c));
                                                 }
+                                                else if (tool === "select") {
+                                                    pushUndo(players, routes);
+                                                    setManEditId(m.id);
+                                                }
                                             } },
-                                            React.createElement("title", null, mMode === "overTop"
-                                                ? "Over the top — defender stays on the end-zone side of the route. Click with the Man tool to switch to Trail."
-                                                : "Trail — defender trails behind the receiver. Click with the Man tool to switch to Over-the-top."),
+                                            React.createElement("title", null, (mMode === "overTop"
+    ? "Over the top — defender stays on the end-zone side of the route. Click with the Man tool to switch to Trail."
+    : "Trail — defender trails behind the receiver. Click with the Man tool to switch to Over-the-top.")
+    + " Click with the Select tool to set the PICKUP point — how far into the play he runs his own drawn route before locking on."),
                                             React.createElement("line", { x1: from.x, y1: from.y, x2: to.x, y2: to.y, stroke: m.color, strokeWidth: "2.2", strokeDasharray: "7,4", opacity: "0.85", pointerEvents: "none" }),
                                             React.createElement("circle", { cx: mx, cy: my, r: "11", fill: "transparent", pointerEvents: interactive ? "auto" : "none" }),
                                             React.createElement("circle", { cx: mx, cy: my, r: "6", fill: m.color, fillOpacity: "0.3", stroke: m.color, strokeWidth: "1", pointerEvents: "none" }),
-                                            React.createElement("text", { x: mx, y: my + 3, textAnchor: "middle", fill: m.color, fontSize: "8.5", fontFamily: "'JetBrains Mono',monospace", fontWeight: "bold", style: { pointerEvents: "none", userSelect: "none" } }, mLetter)));
+                                            React.createElement("text", { x: mx, y: my + 3, textAnchor: "middle", fill: m.color, fontSize: "8.5", fontFamily: "'JetBrains Mono',monospace", fontWeight: "bold", style: { pointerEvents: "none", userSelect: "none" } }, mLetter),
+                                            (m.pickup || 0) > 0 && React.createElement("text", { x: mx, y: my + 15, textAnchor: "middle", fill: m.color, fontSize: "7", fontFamily: "'JetBrains Mono',monospace", fontWeight: "bold", style: { pointerEvents: "none", userSelect: "none" } },
+    Math.round(m.pickup * 100),
+    "%")));
                                     }),
                                     showOlLines && players.filter(p => p.ptype === "offense" && p.role === "OL").map(p => (React.createElement("line", { key: `olline-${p.id}`, x1: p.x, y1: EZ, x2: p.x, y2: FH - EZ, stroke: "rgba(250,250,255,0.40)", strokeWidth: "1.2", strokeDasharray: "3,4", pointerEvents: "none" }))),
                                     !playingAnim && players.map(pp => {
@@ -14906,8 +15256,10 @@ function PlaybookApp() {
                             React.createElement("div", { style: { display: "flex", border: "1px solid rgba(251,146,60,0.4)", borderRadius: 4, overflow: "hidden" } },
                                 React.createElement("button", { onClick: () => setManMode("trail"), title: "New man links trail the receiver (defender follows behind)", style: { padding: "3px 8px", border: "none", background: manMode === "trail" ? "#fb923c" : "transparent", color: manMode === "trail" ? "#0a0a14" : "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 10, fontWeight: "bold", fontFamily: "'JetBrains Mono',monospace" } }, "TRAIL"),
                                 React.createElement("button", { onClick: () => setManMode("overTop"), title: "New man links stay over the top (defender on the end-zone side)", style: { padding: "3px 8px", border: "none", borderLeft: "1px solid rgba(251,146,60,0.4)", background: manMode === "overTop" ? "#fb923c" : "transparent", color: manMode === "overTop" ? "#0a0a14" : "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 10, fontWeight: "bold", fontFamily: "'JetBrains Mono',monospace" } }, "OVER TOP")),
+                            React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u00B7"),
+                            React.createElement("span", { style: { color: "rgba(255,255,255,0.5)", fontSize: 10 } }, "SELECT-click a link's O/T badge to set WHEN he locks on"),
                             manFromId && (React.createElement("button", { onClick: () => setManFromId(null), style: { padding: "3px 9px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: 10 } }, "CANCEL")))),
-                        React.createElement(DraggablePanel, { style: { position: "absolute", top: 14, left: 14, zIndex: 8, display: "flex", alignItems: "center", gap: 6, pointerEvents: "auto" } }, alignMode ? (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 8,
+                        React.createElement(DraggablePanel, { style: { position: "absolute", top: filmOn && filmStacked ? "calc(42vh + 12px)" : 14, left: filmOn && !filmStacked ? "calc(50% + 18px)" : 14, zIndex: 8, display: "flex", alignItems: "center", gap: 6, pointerEvents: "auto" } }, alignMode ? (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 8,
                                 background: "rgba(34,211,238,0.16)", border: "1px solid rgba(34,211,238,0.55)",
                                 backdropFilter: "blur(8px)", boxShadow: "0 2px 14px rgba(0,0,0,0.4)",
                                 fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "#67e8f9" } },
@@ -14963,7 +15315,7 @@ function PlaybookApp() {
                                     boxShadow: "0 2px 14px rgba(0,0,0,0.4)" } },
                                 React.createElement("span", { style: { fontSize: 11 } }, "\u2503"),
                                 showOlLines ? "OL LINES ON" : "OL LINES")))),
-                        React.createElement(DraggablePanel, { style: { position: "absolute", top: fieldFullscreen ? 64 : 14, right: 14, zIndex: 8, display: "flex", alignItems: "center", gap: 6, pointerEvents: "auto" } },
+                        React.createElement(DraggablePanel, { style: { position: "absolute", top: fieldFullscreen ? 64 : (filmOn && filmStacked ? "calc(42vh + 12px)" : 14), right: 14, zIndex: 8, display: "flex", alignItems: "center", gap: 6, pointerEvents: "auto" } },
                             !playingAnim && (React.createElement("div", { style: { display: "flex", alignItems: "center", background: "rgba(10,10,18,0.7)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, padding: 2, backdropFilter: "blur(6px)" } },
                                 React.createElement("button", { onClick: () => setAnimTimingMode("sync"), title: "All routes finish at the same moment (uniform pacing)", style: { padding: "4px 8px", borderRadius: 5, border: "none", cursor: "pointer",
                                         background: animTimingMode === "sync" ? "rgba(74,222,128,0.2)" : "transparent",
@@ -15035,6 +15387,27 @@ function PlaybookApp() {
                                         React.createElement("span", { style: { fontSize: 11 } }, exportingVideo ? "●" : "⬇"),
                                         exportingVideo ? "BUILDING…" : "EXPORT GIF"))));
                             })()),
+                        manEditId && (() => {
+                            const ml = coverages.find(c => c.id === manEditId && c.ctype === "man");
+                            if (!ml)
+                                return null;
+                            const defPl = players.find(p => p.id === ml.fromId);
+                            const recPl = players.find(p => p.id === ml.toId);
+                            const v = Math.round((typeof ml.pickup === "number" ? ml.pickup : 0) * 100);
+                            const defHasMotion = !!(defPl && routes.some(r => r && r.ownerId === defPl.id && r.rtype === "postSnapMotion" && r.points && r.points.length >= 2));
+                            return (React.createElement(DraggablePanel, { style: { position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", zIndex: 9, pointerEvents: "auto",
+                                    display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderRadius: 10, flexWrap: "wrap", justifyContent: "center", maxWidth: "94%",
+                                    background: "rgba(10,10,18,0.88)", border: "1px solid rgba(251,146,60,0.55)", backdropFilter: "blur(8px)", boxShadow: "0 4px 18px rgba(0,0,0,0.5)" } },
+                                React.createElement("span", { className: "hd", style: { fontSize: 13, letterSpacing: "0.08em", color: "#fb923c", whiteSpace: "nowrap" } },
+                                    "MAN PICKUP \u00B7 ",
+                                    (defPl && (defPl.label || defPl.role)) || "DEF",
+                                    " on ",
+                                    (recPl && (recPl.label || recPl.role)) || "REC"),
+                                React.createElement("input", { type: "range", min: 0, max: 95, step: 5, value: v, "data-no-drag": true, onChange: e => { const nv = Math.max(0, Math.min(95, parseInt(e.target.value, 10) || 0)) / 100; setCoverages(prev => prev.map(c => c.id === ml.id ? { ...c, pickup: nv } : c)); }, style: { width: 150, accentColor: "#fb923c", cursor: "pointer" } }),
+                                React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.75)", whiteSpace: "nowrap" } }, v === 0 ? "man from the snap" : v + "% in — runs his route, then locks on"),
+                                defHasMotion && (React.createElement("span", { className: "mono", style: { fontSize: 10, color: "#67e8f9", maxWidth: 240, lineHeight: 1.5 } }, "has a post-snap motion \u2014 it always finishes before he locks on: at 0 he rips through it right after the snap; with a point set it speeds up to be done by then")),
+                                React.createElement("button", { onClick: () => setManEditId(null), className: "sbtn dim", style: { padding: "4px 10px", fontSize: 11 } }, "DONE")));
+                        })(),
                         tool === "zone" && !coverageDraft && !selectedZoneId && (React.createElement("div", { ref: zoneHintRef, style: { position: "absolute",
                                 ...(zoneHintPos ? { left: zoneHintPos.x, top: zoneHintPos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
                                 background: "rgba(10,10,18,0.92)", border: `1px solid #38bdf880`, padding: "7px 12px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 5, display: "flex", alignItems: "center", gap: 9, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)" } },
@@ -16781,6 +17154,18 @@ function PlaybookApp() {
                         return ao - bo;
                     return String(a.label || "").localeCompare(String(b.label || ""));
                 });
+                // Side groups with header sentinels; the filter hides a whole side.
+                const offL = list.filter(p => p.ptype !== "defense");
+                const defL = list.filter(p => p.ptype === "defense");
+                const rowsN = [];
+                if (notesSideFilter !== "defense" && offL.length) {
+                    rowsN.push({ hdr: "OFFENSE" });
+                    offL.forEach(p => rowsN.push(p));
+                }
+                if (notesSideFilter !== "offense" && defL.length) {
+                    rowsN.push({ hdr: "DEFENSE" });
+                    defL.forEach(p => rowsN.push(p));
+                }
                 return (React.createElement("div", { onClick: close, style: { position: "fixed", inset: 0, background: "rgba(6,6,12,0.82)", zIndex: 2147483646, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
                     React.createElement("div", { onClick: e => e.stopPropagation(), style: { width: "min(720px,96vw)", maxHeight: "90vh", display: "flex", flexDirection: "column", background: "#12121c", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, boxShadow: "0 18px 60px rgba(0,0,0,0.6)" } },
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.08)" } },
@@ -16797,14 +17182,19 @@ function PlaybookApp() {
                                     color: showNotes ? "#fcd34d" : "rgba(255,255,255,0.7)", fontFamily: "'JetBrains Mono',monospace", fontSize: 12, textAlign: "left" } },
                                 React.createElement("span", { style: { fontSize: 15 } }, showNotes ? "▣" : "▢"),
                                 React.createElement("span", null, "Show the notes screen after this play during an install RUN"))),
+                        React.createElement("div", { style: { padding: "10px 20px 0" } }, React.createElement(NotesSideFilter, { value: notesSideFilter, onChange: setNotesSideFilter })),
                         React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: "8px 20px 18px" } },
-                            list.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", padding: "24px 0", textAlign: "center" } }, "No players on the field yet.")) : (React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } },
+                            rowsN.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", padding: "24px 0", textAlign: "center" } }, list.length === 0 ? "No players on the field yet." : "No " + notesSideFilter + " players on this play.")) : (React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } },
                                 React.createElement("thead", null,
                                     React.createElement("tr", null,
                                         React.createElement("th", { style: { textAlign: "left", padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em", width: 48 } }, "POS"),
                                         React.createElement("th", { style: { textAlign: "left", padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em" } }, "ASSIGNMENT"),
                                         React.createElement("th", { style: { textAlign: "left", padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.4)", letterSpacing: "0.05em" } }, "ALIGNMENT"))),
-                                React.createElement("tbody", null, list.map(pl => {
+                                React.createElement("tbody", null, rowsN.map(pl => {
+                                    if (pl.hdr)
+                                        return (React.createElement("tr", { key: "hdr-" + pl.hdr },
+                                            React.createElement("td", { colSpan: 3, style: { padding: "12px 6px 3px" } },
+                                                React.createElement("span", { className: "hd", style: { fontSize: 12, letterSpacing: "0.14em", color: pl.hdr === "OFFENSE" ? "#86efac" : "#fca5a5" } }, pl.hdr))));
                                     const n = positionNotes[pl.id] || {};
                                     return (React.createElement("tr", { key: pl.id },
                                         React.createElement("td", { style: { padding: "4px 6px", verticalAlign: "top" } },
@@ -17897,11 +18287,29 @@ function PlaybookApp() {
                         const pn = pl.positionNotes || {};
                         const assigns = pls.filter(p => pn[p.id] && pn[p.id].assign && pn[p.id].assign.trim());
                         const aligns = pls.filter(p => pn[p.id] && pn[p.id].align && pn[p.id].align.trim());
-                        const rowsFor = (items, field) => items.length === 0
-                            ? React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.32)" } }, "\u2014")
-                            : items.map(p => (React.createElement("div", { key: p.id, style: { display: "flex", gap: 12, marginBottom: 14, alignItems: "flex-start" } },
-                                React.createElement("span", { style: { flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 30, height: 30, borderRadius: 7, background: p.color || "#475569", color: "#0a0a14", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, fontWeight: 700, padding: "0 7px" } }, p.label || p.role || "?"),
-                                React.createElement("span", { style: { flex: 1, color: "#e8e8ee", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, lineHeight: 1.5, whiteSpace: "pre-wrap", paddingTop: 5 } }, pn[p.id][field]))));
+                        // Group each column by side of ball; the shared filter can hide a side.
+                        const withHdrs = (items) => {
+                            const off = items.filter(p => p.ptype !== "defense");
+                            const def = items.filter(p => p.ptype === "defense");
+                            const out = [];
+                            if (notesSideFilter !== "defense" && off.length) {
+                                out.push({ hdr: "OFFENSE" });
+                                off.forEach(p => out.push(p));
+                            }
+                            if (notesSideFilter !== "offense" && def.length) {
+                                out.push({ hdr: "DEFENSE" });
+                                def.forEach(p => out.push(p));
+                            }
+                            return out;
+                        };
+                        const rowsFor = (items, field) => {
+                            const rs = withHdrs(items);
+                            return rs.length === 0
+                                ? React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.32)" } }, "\u2014")
+                                : rs.map(p => p.hdr ? (React.createElement("div", { key: "hdr-" + p.hdr, className: "hd", style: { fontSize: 11, color: p.hdr === "OFFENSE" ? "#86efac" : "#fca5a5", letterSpacing: "0.14em", margin: "2px 0 10px" } }, p.hdr)) : (React.createElement("div", { key: p.id, style: { display: "flex", gap: 12, marginBottom: 14, alignItems: "flex-start" } },
+                                    React.createElement("span", { style: { flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 30, height: 30, borderRadius: 7, background: p.color || "#475569", color: "#0a0a14", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, fontWeight: 700, padding: "0 7px" } }, p.label || p.role || "?"),
+                                    React.createElement("span", { style: { flex: 1, color: "#e8e8ee", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, lineHeight: 1.5, whiteSpace: "pre-wrap", paddingTop: 5 } }, pn[p.id][field]))));
+                        };
                         return (React.createElement("div", { style: { position: "absolute", inset: 0, background: "#0a0a14", zIndex: 5, display: "flex", flexDirection: "column" } },
                             typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", style: { position: "absolute", left: 10, top: 10, zIndex: 6, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer" } }, "\u2190 Dashboard")),
                             React.createElement("div", { style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
@@ -17914,6 +18322,7 @@ function PlaybookApp() {
                                         " / ",
                                         flat.length),
                                     React.createElement("button", { onClick: exit, className: "sbtn dim", style: { padding: "6px 14px" } }, "EXIT"))),
+                            React.createElement("div", { style: { padding: "12px 0 0" } }, React.createElement(NotesSideFilter, { value: notesSideFilter, onChange: setNotesSideFilter, center: true })),
                             React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: "26px 32px", display: "flex", gap: 44, flexWrap: "wrap", alignItems: "flex-start" } },
                                 React.createElement("div", { style: { flex: 1, minWidth: 280 } },
                                     React.createElement("div", { className: "hd", style: { fontSize: 16, color: "#f59e0b", letterSpacing: "0.12em", marginBottom: 14, paddingBottom: 8, borderBottom: "1px solid rgba(245,158,11,0.25)" } }, "ASSIGNMENT"),
@@ -17927,72 +18336,8 @@ function PlaybookApp() {
                                 React.createElement("button", { onClick: next, disabled: idx === flat.length - 1, style: { padding: "9px 22px", borderRadius: 7, cursor: idx === flat.length - 1 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em", border: `1px solid ${idx === flat.length - 1 ? "rgba(74,222,128,0.25)" : "rgba(74,222,128,0.6)"}`, background: idx === flat.length - 1 ? "rgba(74,222,128,0.05)" : "rgba(74,222,128,0.18)", color: idx === flat.length - 1 ? "rgba(134,239,172,0.4)" : "#86efac", opacity: idx === flat.length - 1 ? 0.6 : 1 } }, "NEXT \u203A"))));
                     })()));
             })(),
-            showNotif && (() => {
-                const closeN = () => { setShowNotif(false); setNotifPickerOpen(false); };
-                const canPick = effRole === "admin" || effRole === "coadmin";
-                const nameOf = (q) => {
-                    if (q.script_id) {
-                        const s = sharedScripts.find(x => x.id === q.script_id) || personalScripts.find(x => x.id === q.script_id);
-                        return { icon: "📝", set: (s && s.name) || "Practice script", kind: "script" };
-                    }
-                    const i = sharedInstalls.find(x => x.id === q.install_id) || personalInstalls.find(x => x.id === q.install_id);
-                    return { icon: "📋", set: (i && i.name) || "Install", kind: "install" };
-                };
-                const whenN = (t) => { try {
-                    return t ? new Date(t).toLocaleString() : "";
-                }
-                catch (_) {
-                    return "";
-                } };
-                return (React.createElement("div", { className: "mover", style: { zIndex: 1250 }, onClick: closeN },
-                    React.createElement("div", { className: "mbox", style: { maxWidth: 520, maxHeight: "82vh", display: "flex", flexDirection: "column", padding: 0 }, onClick: e => e.stopPropagation() },
-                        React.createElement("div", { style: { padding: "14px 20px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 8 } },
-                            React.createElement("div", { className: "hd", style: { fontSize: 19, color: "#fff", letterSpacing: "0.08em" } }, "\uD83D\uDD14 QUESTIONS"),
-                            notifUnread > 0 && React.createElement("span", { className: "mono", style: { fontSize: 11, color: "#fca5a5" } },
-                                notifUnread,
-                                " unread"),
-                            React.createElement("div", { style: { flex: 1 } }),
-                            canPick && (React.createElement("button", { onClick: () => { const nx = !notifPickerOpen; setNotifPickerOpen(nx); if (nx)
-                                    loadNotifPicker(); }, title: "Pick which coaches receive question notifications", className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", borderColor: notifPickerOpen ? "rgba(251,191,36,0.55)" : undefined, color: notifPickerOpen ? "#fcd34d" : undefined } }, "\u2699 RECIPIENTS")),
-                            React.createElement("button", { onClick: closeN, style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 20, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
-                        notifPickerOpen ? (React.createElement("div", { style: { padding: "12px 20px 16px", overflowY: "auto", flex: 1 } },
-                            React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.5)", marginBottom: 10 } }, "Picked coaches get the \uD83D\uDD14 with unread counts for new player questions. Coaches you don't pick never see it."),
-                            notifMembers === null || notifRecipList === null ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)" } }, "Loading\u2026")) : notifMembers.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)" } }, "No coach-level members found.")) : notifMembers.map(m => {
-                                const on = notifRecipList.indexOf(m.user_id) !== -1;
-                                return (React.createElement("div", { key: m.user_id, onClick: () => toggleNotifRecipient(m.user_id, !on), style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 4,
-                                        border: `1px solid ${on ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.08)"}`, background: on ? "rgba(74,222,128,0.08)" : "transparent" } },
-                                    React.createElement("span", { style: { width: 18, height: 18, borderRadius: 5, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12,
-                                            border: `1px solid ${on ? "rgba(74,222,128,0.7)" : "rgba(255,255,255,0.25)"}`, background: on ? "rgba(74,222,128,0.25)" : "transparent", color: "#86efac" } }, on ? "✓" : ""),
-                                    React.createElement("span", { style: { fontSize: 13, color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
-                                        m.display_name || "Unnamed",
-                                        m.user_id === myUserId ? " · you" : ""),
-                                    React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)" } }, ROLE_LABELS_APP[m.role] || m.role)));
-                            }))) : (React.createElement("div", { style: { padding: "10px 20px 16px", overflowY: "auto", flex: 1 } }, !notifRecipient ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", padding: "10px 0" } }, "You're not receiving question notifications yet. Use \u2699 RECIPIENTS to pick coaches \u2014 including yourself.")) : notifItems.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "12px 0", textAlign: "center" } }, "No questions yet \u2014 you're all caught up.")) : (React.createElement(React.Fragment, null,
-                            React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 6 } },
-                                React.createElement("button", { onClick: markAllQuestionsRead, disabled: notifUnread === 0, className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", opacity: notifUnread === 0 ? 0.5 : 1, cursor: notifUnread === 0 ? "default" : "pointer" } }, "\u2713 MARK ALL AS READ")),
-                            notifItems.map(q => {
-                                const nm = nameOf(q);
-                                const unread = !notifReads[q.id];
-                                return (React.createElement("div", { key: q.id, onClick: () => openQuestionSpot(q), title: "Open this " + nm.kind + " at the question", style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "9px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 4,
-                                        border: `1px solid ${unread ? "rgba(251,191,36,0.35)" : "rgba(255,255,255,0.07)"}`, background: unread ? "rgba(251,191,36,0.07)" : "transparent" } },
-                                    React.createElement("span", { style: { width: 8, height: 8, borderRadius: 99, marginTop: 5, flexShrink: 0, background: unread ? "#fbbf24" : "rgba(255,255,255,0.12)" } }),
-                                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
-                                        React.createElement("div", { style: { fontSize: 12, color: "#c4b5fd", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em" } },
-                                            nm.icon,
-                                            " ",
-                                            nm.set,
-                                            " ",
-                                            React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u2192"),
-                                            " ",
-                                            q.play_name || "General"),
-                                        React.createElement("div", { style: { fontSize: 13, color: "#e2e8f0", marginTop: 2, whiteSpace: "pre-wrap" } }, q.body),
-                                        React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 3 } },
-                                            q.asker_name || "Player",
-                                            " \u00B7 ",
-                                            whenN(q.created_at),
-                                            q.resolved ? " · resolved" : ""))));
-                            }))))))));
-            })(),
+            shareDraft && (() => { const closeS = () => setShareDraft(null); const canManageGroups = effRole === "admin" || effRole === "coadmin" || effRole === "coach"; const pickedCount = (() => { const ids = {}; sharePicked.forEach(u => { ids[u] = true; }); sharePickedGroups.forEach(g => (shareGroupMembers[g] || []).forEach(u => { ids[u] = true; })); delete ids[myUserId]; return Object.keys(ids).length; })(); const roster = [...(shareMembers || [])].sort((a, b) => { const ra = ROLE_ORDER_APP.indexOf(a.role), rb = ROLE_ORDER_APP.indexOf(b.role); if (ra !== rb) return ra - rb; return String(a.display_name || "").localeCompare(String(b.display_name || "")); }); const chk = (on) => ({ width: 16, height: 16, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, border: `1px solid ${on ? "rgba(94,234,212,0.7)" : "rgba(255,255,255,0.25)"}`, background: on ? "rgba(94,234,212,0.25)" : "transparent", color: "#99f6e4" }); return (React.createElement("div", { className: "mover", style: { zIndex: 1255 }, onClick: closeS }, React.createElement("div", { className: "mbox", style: { maxWidth: 520, maxHeight: "84vh", display: "flex", flexDirection: "column", padding: 0 }, onClick: e => e.stopPropagation() }, React.createElement("div", { style: { padding: "14px 20px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 8 } }, React.createElement("div", { className: "hd", style: { fontSize: 19, color: "#fff", letterSpacing: "0.08em" } }, "\uD83D\uDCE4 SHARE RESULT"), React.createElement("div", { style: { flex: 1 } }), React.createElement("button", { onClick: closeS, style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 20, cursor: "pointer", lineHeight: 1 } }, "\u2715")), React.createElement("div", { style: { padding: "10px 20px 16px", overflowY: "auto", flex: 1 } }, React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 8 } }, "\uD83D\uDCCA ", shareDraft.playName, shareDraft.clipName ? " · " + shareDraft.clipName : "", " \u00B7 ", React.createElement("span", { style: { color: (shareDraft.score || 0) >= 80 ? "#4ade80" : (shareDraft.score || 0) >= 55 ? "#fbbf24" : "#f87171" } }, shareDraft.score || 0, "%")), React.createElement("textarea", { value: shareNote, onChange: e => setShareNote(e.target.value), rows: 2, placeholder: "Add a note for the group (optional)\u2026", style: { width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 7, background: "#15151f", color: "#fff", border: "1px solid rgba(255,255,255,0.18)", fontSize: 13, resize: "vertical", fontFamily: "inherit", marginBottom: 10 } }), React.createElement("div", { className: "hd", style: { fontSize: 11, letterSpacing: "0.14em", color: "#99f6e4", marginBottom: 4 } }, "GROUPS"), React.createElement("div", { style: { display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginBottom: 6 } }, shareGroups.map(g => { const on = sharePickedGroups.indexOf(g.id) !== -1; return (React.createElement("span", { key: g.id, style: { display: "inline-flex", alignItems: "center", gap: 4 } }, React.createElement("button", { onClick: () => setSharePickedGroups(l => on ? l.filter(x => x !== g.id) : l.concat([g.id])), className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", borderColor: on ? "rgba(94,234,212,0.6)" : undefined, color: on ? "#99f6e4" : undefined, background: on ? "rgba(94,234,212,0.12)" : undefined } }, g.name, " \u00B7 ", (shareGroupMembers[g.id] || []).length), canManageGroups && (React.createElement("button", { onClick: () => setShareGroupEdit({ id: g.id, name: g.name, members: (shareGroupMembers[g.id] || []).slice() }), title: "Edit who is in " + g.name, style: { background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 11, padding: 2 } }, "\u270E")), canManageGroups && (React.createElement("button", { onClick: () => deleteShareGroup(g.id), title: "Delete the group " + g.name, style: { background: "none", border: "none", color: "rgba(248,113,113,0.6)", cursor: "pointer", fontSize: 11, padding: 2 } }, "\u2715")))); }), canManageGroups && !shareGroupEdit && (React.createElement("button", { onClick: () => setShareGroupEdit({ name: "", members: [] }), className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", color: "#99f6e4" } }, "\u2795 NEW GROUP")), shareGroups.length === 0 && !canManageGroups && (React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)" } }, "No groups yet."))), shareGroupEdit && (React.createElement("div", { style: { border: "1px solid rgba(94,234,212,0.35)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 } }, React.createElement("input", { value: shareGroupEdit.name, onChange: e => setShareGroupEdit(ge => ({ ...ge, name: e.target.value })), placeholder: "Group name (e.g. WRs, DBs, All coaches)", style: { width: "100%", boxSizing: "border-box", padding: "6px 9px", borderRadius: 6, background: "#15151f", color: "#fff", border: "1px solid rgba(255,255,255,0.18)", fontSize: 12, marginBottom: 6 } }), React.createElement("div", { style: { maxHeight: 130, overflowY: "auto", marginBottom: 6 } }, roster.map(m => { const on = shareGroupEdit.members.indexOf(m.user_id) !== -1; return (React.createElement("div", { key: m.user_id, onClick: () => setShareGroupEdit(ge => ({ ...ge, members: on ? ge.members.filter(x => x !== m.user_id) : ge.members.concat([m.user_id]) })), style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 2px", cursor: "pointer" } }, React.createElement("span", { style: chk(on) }, on ? "✓" : ""), React.createElement("span", { style: { fontSize: 12, color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, m.display_name || "Unnamed"), React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)" } }, ROLE_LABELS_APP[m.role] || m.role))); })), React.createElement("div", { style: { display: "flex", gap: 6 } }, React.createElement("button", { onClick: saveShareGroup, className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", color: "#99f6e4" } }, "\uD83D\uDCBE SAVE GROUP"), React.createElement("button", { onClick: () => setShareGroupEdit(null), className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px" } }, "CANCEL")))), React.createElement("div", { className: "hd", style: { fontSize: 11, letterSpacing: "0.14em", color: "#99f6e4", margin: "4px 0" } }, "PEOPLE"), shareMembers === null ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)" } }, "Loading\u2026")) : roster.filter(m => m.user_id !== myUserId).map(m => { const on = sharePicked.indexOf(m.user_id) !== -1; return (React.createElement("div", { key: m.user_id, onClick: () => setSharePicked(l => on ? l.filter(x => x !== m.user_id) : l.concat([m.user_id])), style: { display: "flex", alignItems: "center", gap: 8, padding: "5px 2px", cursor: "pointer" } }, React.createElement("span", { style: chk(on) }, on ? "✓" : ""), React.createElement("span", { style: { fontSize: 13, color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, m.display_name || "Unnamed"), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)" } }, ROLE_LABELS_APP[m.role] || m.role))); })), React.createElement("div", { style: { padding: "10px 20px 14px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 8 } }, React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.5)" } }, pickedCount, " recipient", pickedCount === 1 ? "" : "s"), React.createElement("div", { style: { flex: 1 } }), React.createElement("button", { onClick: sendShare, disabled: pickedCount === 0 || shareBusy, className: "sbtn dim", style: { fontSize: 12, padding: "6px 14px", color: "#99f6e4", borderColor: "rgba(94,234,212,0.5)", opacity: (pickedCount === 0 || shareBusy) ? 0.5 : 1, cursor: (pickedCount === 0 || shareBusy) ? "default" : "pointer" } }, shareBusy ? "SENDING…" : "📤 SEND"))))); })(),
+            showNotif && (() => { const closeN = () => { setShowNotif(false); setNotifPickerOpen(false); }; const canPick = effRole === "admin" || effRole === "coadmin"; const nameOf = (q) => { if (q.script_id) { const s = sharedScripts.find(x => x.id === q.script_id) || personalScripts.find(x => x.id === q.script_id); return { icon: "📝", set: (s && s.name) || "Practice script", kind: "script" }; } const i = sharedInstalls.find(x => x.id === q.install_id) || personalInstalls.find(x => x.id === q.install_id); return { icon: "📋", set: (i && i.name) || "Install", kind: "install" }; }; const whenN = (t) => { try { return t ? new Date(t).toLocaleString() : ""; } catch (_) { return ""; } }; return (React.createElement("div", { className: "mover", style: { zIndex: 1250 }, onClick: closeN }, React.createElement("div", { className: "mbox", style: { maxWidth: 520, maxHeight: "82vh", display: "flex", flexDirection: "column", padding: 0 }, onClick: e => e.stopPropagation() }, React.createElement("div", { style: { padding: "14px 20px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 8 } }, React.createElement("div", { className: "hd", style: { fontSize: 19, color: "#fff", letterSpacing: "0.08em" } }, "\uD83D\uDD14 QUESTIONS"), bellUnread > 0 && React.createElement("span", { className: "mono", style: { fontSize: 11, color: "#fca5a5" } }, bellUnread, " unread"), React.createElement("div", { style: { flex: 1 } }), canPick && (React.createElement("button", { onClick: () => { const nx = !notifPickerOpen; setNotifPickerOpen(nx); if (nx) loadNotifPicker(); }, title: "Pick which coaches receive question notifications", className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", borderColor: notifPickerOpen ? "rgba(251,191,36,0.55)" : undefined, color: notifPickerOpen ? "#fcd34d" : undefined } }, "\u2699 RECIPIENTS")), React.createElement("button", { onClick: closeN, style: { background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 20, cursor: "pointer", lineHeight: 1 } }, "\u2715")), notifPickerOpen ? (React.createElement("div", { style: { padding: "12px 20px 16px", overflowY: "auto", flex: 1 } }, React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.5)", marginBottom: 10 } }, "Picked coaches get the \uD83D\uDD14 with unread counts for new player questions. Coaches you don't pick never see it."), notifMembers === null || notifRecipList === null ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)" } }, "Loading\u2026")) : notifMembers.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)" } }, "No coach-level members found.")) : notifMembers.map(m => { const on = notifRecipList.indexOf(m.user_id) !== -1; return (React.createElement("div", { key: m.user_id, onClick: () => toggleNotifRecipient(m.user_id, !on), style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 4, border: `1px solid ${on ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.08)"}`, background: on ? "rgba(74,222,128,0.08)" : "transparent" } }, React.createElement("span", { style: { width: 18, height: 18, borderRadius: 5, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, border: `1px solid ${on ? "rgba(74,222,128,0.7)" : "rgba(255,255,255,0.25)"}`, background: on ? "rgba(74,222,128,0.25)" : "transparent", color: "#86efac" } }, on ? "✓" : ""), React.createElement("span", { style: { fontSize: 13, color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, m.display_name || "Unnamed", m.user_id === myUserId ? " · you" : ""), React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)" } }, ROLE_LABELS_APP[m.role] || m.role))); }))) : (React.createElement("div", { style: { padding: "10px 20px 16px", overflowY: "auto", flex: 1 } }, notifShareOpen ? (() => { const s = notifShareOpen; const ents = Array.isArray(s.entries) ? s.entries : []; const gcol = { ok: "#4ade80", close: "#fbbf24", wrong: "#f87171" }; return (React.createElement("div", null, React.createElement("button", { onClick: () => setNotifShareOpen(null), className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px", marginBottom: 8 } }, "\u2190 BACK"), React.createElement("div", { style: { fontSize: 15, color: "#e2e8f0", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em" } }, "\uD83D\uDCCA ", s.play_name || "Play result"), React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.45)", margin: "2px 0 8px" } }, s.sender_name || "Coach", s.clip_name ? " · " + s.clip_name : "", " \u00B7 ", whenN(s.created_at)), React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, lineHeight: 1, marginBottom: 8, color: (s.score || 0) >= 80 ? "#4ade80" : (s.score || 0) >= 55 ? "#fbbf24" : "#f87171" } }, s.score || 0, "%"), s.note ? React.createElement("div", { style: { fontSize: 12, color: "#e2e8f0", whiteSpace: "pre-wrap", background: "rgba(255,255,255,0.05)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 } }, s.note) : null, [["OFFENSE", "off", "#86efac"], ["DEFENSE", "def", "#fca5a5"]].map(([lbl, side, col]) => { const arr = ents.filter(en => en && en.side === side); if (arr.length === 0) return null; return (React.createElement("div", { key: side, style: { marginBottom: 8 } }, React.createElement("div", { className: "hd", style: { fontSize: 10, letterSpacing: "0.14em", color: col, marginBottom: 4 } }, lbl), React.createElement("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } }, arr.map((en, i) => (React.createElement("span", { key: i, className: "mono", style: { fontSize: 10, padding: "2px 7px", borderRadius: 5, border: `1px solid ${en.grade ? gcol[en.grade] : "rgba(255,255,255,0.15)"}`, color: en.grade ? gcol[en.grade] : "rgba(255,255,255,0.45)" } }, en.label, " ", en.grade === "ok" ? "✓" : en.grade === "close" ? "~" : en.grade === "wrong" ? "✗" : "—")))))); }))); })() : (React.createElement(React.Fragment, null, bellUnread > 0 && (React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 6 } }, React.createElement("button", { onClick: markAllQuestionsRead, className: "sbtn dim", style: { fontSize: 11, padding: "4px 10px" } }, "\u2713 MARK ALL AS READ"))), notifShares.length > 0 && (React.createElement(React.Fragment, null, React.createElement("div", { className: "hd", style: { fontSize: 11, letterSpacing: "0.14em", color: "#c4b5fd", margin: "2px 0 4px" } }, "\uD83D\uDCCA FILM RESULTS"), notifShares.map(s => { const unread = !s._readAt; return (React.createElement("div", { key: s.id, onClick: () => { markShareRead(s); setNotifShareOpen(s); }, title: "Open this graded rep", style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 4, border: `1px solid ${unread ? "rgba(196,181,253,0.4)" : "rgba(255,255,255,0.07)"}`, background: unread ? "rgba(196,181,253,0.08)" : "transparent" } }, React.createElement("span", { style: { width: 8, height: 8, borderRadius: 99, marginTop: 5, flexShrink: 0, background: unread ? "#c4b5fd" : "rgba(255,255,255,0.12)" } }), React.createElement("div", { style: { flex: 1, minWidth: 0 } }, React.createElement("div", { style: { fontSize: 12, color: "#c4b5fd", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em" } }, s.play_name || "Play result", " ", React.createElement("span", { style: { color: "rgba(255,255,255,0.5)" } }, "\u00B7 ", s.score || 0, "%")), React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 2 } }, s.sender_name || "Coach", " \u00B7 ", whenN(s.created_at))))); }))), notifRecipient ? (React.createElement(React.Fragment, null, notifShares.length > 0 && React.createElement("div", { className: "hd", style: { fontSize: 11, letterSpacing: "0.14em", color: "#fcd34d", margin: "8px 0 4px" } }, "\u2753 QUESTIONS"), notifItems.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "12px 0", textAlign: "center" } }, "No questions yet \u2014 you're all caught up.")) : notifItems.map(q => { const nm = nameOf(q); const unread = !notifReads[q.id]; return (React.createElement("div", { key: q.id, onClick: () => openQuestionSpot(q), title: "Open this " + nm.kind + " at the question", style: { display: "flex", gap: 10, alignItems: "flex-start", padding: "9px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 4, border: `1px solid ${unread ? "rgba(251,191,36,0.35)" : "rgba(255,255,255,0.07)"}`, background: unread ? "rgba(251,191,36,0.07)" : "transparent" } }, React.createElement("span", { style: { width: 8, height: 8, borderRadius: 99, marginTop: 5, flexShrink: 0, background: unread ? "#fbbf24" : "rgba(255,255,255,0.12)" } }), React.createElement("div", { style: { flex: 1, minWidth: 0 } }, React.createElement("div", { style: { fontSize: 12, color: "#c4b5fd", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em" } }, nm.icon, " ", nm.set, " ", React.createElement("span", { style: { color: "rgba(255,255,255,0.4)" } }, "\u2192"), " ", q.play_name || "General"), React.createElement("div", { style: { fontSize: 13, color: "#e2e8f0", marginTop: 2, whiteSpace: "pre-wrap" } }, q.body), React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 3 } }, q.asker_name || "Player", " \u00B7 ", whenN(q.created_at), q.resolved ? " · resolved" : "")))); }))) : canPick ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.5)", padding: "10px 0" } }, "You're not receiving question notifications yet. Use \u2699 RECIPIENTS to pick coaches \u2014 including yourself.")) : notifShares.length === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "12px 0", textAlign: "center" } }, "Nothing here yet.")) : null))))))); })(),
             showScripts && (() => {
                 const openScript = openScriptId ? scripts.find(s => s.id === openScriptId) : null;
                 const close = () => { setShowScripts(false); setOpenScriptId(null); };
@@ -18062,7 +18407,7 @@ function PlaybookApp() {
                                         opacity: playCount === 0 ? 0.6 : 1 } }, "\u25B6 RUN"),
                                 React.createElement("button", { onClick: () => gpSaveOffline("This script"), title: "Save an offline copy to this device — the whole playbook comes with it, so everything works with zero internet at practice.", style: { padding: "5px 12px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em", border: "1px solid rgba(125,211,252,0.5)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc" } }, "⬇ OFFLINE"),
                                 React.createElement("span", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.4)", marginLeft: "auto" } }, scriptViewMode === "edit" ? "manage periods & order" : "visual show — share with players")),
-                            scriptViewMode === "cards" ? (React.createElement("div", { style: { padding: "12px 22px 16px", overflowY: "auto", flex: 1 } }, React.createElement(ScriptTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, script: openScript, plays: scriptQPlays, isCoach: effRole !== "player", focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null) }), openScript.periods.length === 0 || playCount === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "20px 0", textAlign: "center" } }, "No plays to show \u2014 switch to EDIT and add some.")) : (openScript.periods.map((per) => {
+                            scriptViewMode === "cards" ? (React.createElement("div", { style: { padding: "12px 22px 16px", overflowY: "auto", flex: 1 } }, React.createElement(ScriptTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, script: openScript, plays: scriptQPlays, isCoach: effRole !== "player", focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null), onSeen: markQuestionsSeen }), openScript.periods.length === 0 || playCount === 0 ? (React.createElement("div", { className: "mono", style: { fontSize: 12, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "20px 0", textAlign: "center" } }, "No plays to show \u2014 switch to EDIT and add some.")) : (openScript.periods.map((per) => {
                                 const playsInPer = per.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
                                 if (playsInPer.length === 0)
                                     return null;
@@ -18095,7 +18440,7 @@ function PlaybookApp() {
                                                 playFormations(p)[0] || "—",
                                                 toTypeArr(p.type).length > 0 ? " · " + toTypeArr(p.type).join("/") : ""))))))));
                             })))) : (React.createElement("div", { style: { padding: "12px 22px 16px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 11 } },
-                                React.createElement(ScriptTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, script: openScript, plays: scriptQPlays, isCoach: effRole !== "player", focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null) }),
+                                React.createElement(ScriptTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, script: openScript, plays: scriptQPlays, isCoach: effRole !== "player", focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null), onSeen: markQuestionsSeen }),
                                 openScript.periods.length === 0 && (React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.45)", fontStyle: "italic", padding: "8px 0" } }, "No periods yet \u2014 add one below.")),
                                 openScript.periods.map((per, perIdx) => {
                                     const playsInPeriod = per.playIds.map(pid => plays.find(p => p.id === pid)).filter(Boolean);
@@ -18306,7 +18651,7 @@ function PlaybookApp() {
                                         color: playsInInstall.length === 0 ? "rgba(167,139,250,0.4)" : "#c4b5fd",
                                         opacity: playsInInstall.length === 0 ? 0.5 : 1 } }, "\uD83D\uDDA8 PDF"))),
                             React.createElement("div", { style: { padding: "14px 22px 16px", overflowY: "auto", flex: 1 } },
-                                React.createElement(InstallTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, install: openInst, plays: playsInInstall, isCoach: effRole !== "player", runActive: runningInstallId === openInst.id, focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null) }),
+                                React.createElement(InstallTeamPanel, { db: teamDB, teamId: teamId, userId: myUserId, install: openInst, plays: playsInInstall, isCoach: effRole !== "player", runActive: runningInstallId === openInst.id, focusQ: notifFocusQ, onFocusDone: () => setNotifFocusQ(null), onSeen: markQuestionsSeen }),
                                 installViewMode === "cards" ? (React.createElement("div", null,
                                     formationsInInstall.length > 0 && (React.createElement("div", { style: { marginBottom: 14 } },
                                         React.createElement("div", { className: "hd", style: { fontSize: 11, color: "#67e8f9", letterSpacing: "0.1em", marginBottom: 6 } }, "FORMATIONS"),
