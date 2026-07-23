@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-15k";
+window.__gpBuild = "2026-07-15p";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -2618,6 +2618,10 @@ function PlaybookApp() {
     const [players, setPlayers] = useState([]);
     const [routes, setRoutes] = useState([]);
     const [selectedId, setSelectedId] = useState(null);
+    const [routeNameEdit, setRouteNameEdit] = useState(null);
+    const setRouteName = useCallback((rid, nm) => {
+        setRoutes(prev => prev.map(r => r.id === rid ? { ...r, name: (nm && nm.trim()) ? nm.trim() : undefined } : r));
+    }, []);
     const [dragging, setDragging] = useState(false);
     const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
     const [drawingRoute, setDrawingRoute] = useState(false);
@@ -8110,6 +8114,62 @@ function PlaybookApp() {
         window.addEventListener("touchmove", onMove, { passive: false });
         window.addEventListener("touchend", onUp);
     }, [routes, players, getSVGPt, pushUndo, snapRoutePt]);
+    // ── Route editing & deletion (SELECT tool, no erase tool needed) ──────────
+    // Delete one route and its option children (same cascade as the erase tool).
+    const deleteRouteById = useCallback((rid) => {
+        if (!rid)
+            return;
+        pushUndo(players, routes);
+        setRoutes(prev => prev
+            .filter(r => r.id !== rid && r.optionOf !== rid)
+            // A follow-up chained onto this route (if it was a motion) detaches.
+            .map(r => (r && r.attachedToMotion === rid) ? { ...r, attachedToMotion: null } : r));
+        setSelectedId(s => s === rid ? null : s);
+    }, [players, routes, pushUndo]);
+    // Delete a whole route COMBINATION — every offensive pass/branch route on the
+    // field (routes owned by non-defensive players, excluding blocking, blitz,
+    // and motion). Leaves formation, blocking, motions, and defense intact.
+    const deleteRouteCombination = useCallback(() => {
+        const offIds = new Set(players.filter(p => p.ptype !== "defense").map(p => p.id));
+        const isCombo = (r) => r && offIds.has(r.ownerId) &&
+            r.rtype !== "blocking" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz" &&
+            r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion";
+        if (!routes.some(isCombo))
+            return;
+        pushUndo(players, routes);
+        setRoutes(prev => prev.filter(r => !isCombo(r)));
+        setSelectedId(null);
+    }, [players, routes, pushUndo]);
+    // Append a new bend point to a route (SELECT-tool edit), a short step past its
+    // current end so the user can immediately drag it into place.
+    const addRoutePointToSelected = useCallback((rid) => {
+        const route = routes.find(r => r.id === rid);
+        if (!route || !route.points || route.points.length < 1)
+            return;
+        pushUndo(players, routes);
+        const pts = route.points;
+        const last = pts[pts.length - 1];
+        const prev = pts.length >= 2 ? pts[pts.length - 2] : { x: last.x, y: last.y + 20 };
+        let dx = last.x - prev.x, dy = last.y - prev.y;
+        const len = Math.hypot(dx, dy) || 1;
+        dx = (dx / len) * 26;
+        dy = (dy / len) * 26;
+        const np = { x: Math.max(0, Math.min(FW, last.x + dx)), y: Math.max(0, Math.min(FH, last.y + dy)) };
+        setRoutes(rs => rs.map(r => r.id === rid ? { ...r, points: [...r.points, np] } : r));
+    }, [routes, players, pushUndo]);
+    // Remove one interior point from a route (double-click a mid handle). The
+    // anchor (0) and the final endpoint are protected so the route stays valid.
+    const removeRoutePoint = useCallback((rid, idx) => {
+        const route = routes.find(r => r.id === rid);
+        if (!route || !route.points)
+            return;
+        if (idx <= 0 || idx >= route.points.length - 1)
+            return; // keep anchor + endpoint
+        if (route.points.length <= 2)
+            return;
+        pushUndo(players, routes);
+        setRoutes(rs => rs.map(r => r.id === rid ? { ...r, points: r.points.filter((_, i) => i !== idx) } : r));
+    }, [routes, players, pushUndo]);
     // ── Copy / paste for routes, zones, and text (Ctrl/Cmd+C, Ctrl/Cmd+V) ──
     // Priority on copy: the selected ROUTE, else the selected ZONE, else the
     // selected TEXT. A pasted copy stands alone — chain links (option/follow-up),
@@ -10148,6 +10208,171 @@ function PlaybookApp() {
         }));
         setSelectedScheme(trimmed);
     }, [selectedCoverage, selectedBlitz, players, routes, losY, offenseCenterX, setSchemePresets]);
+    // ── FILM QUICK DRAW. Nothing here reads the video — the coach recognizes
+    // the look on film and the app does the drawing labor. Every generated
+    // piece carries a qd tag ("cover" | "man" | "blitz" | "scheme" | "concept")
+    // so re-tapping a chip replaces earlier generated work of the SAME kind and
+    // never touches anything hand-drawn.
+    const [qdOpen, setQdOpen] = useState(false);
+    const [qdSide, setQdSide] = useState("defense");
+    const qdCenterX = () => {
+        const c = players.find(p => p.ptype !== "defense" && p.label === "C");
+        return c ? c.x : FW / 2;
+    };
+    const qdEligibles = () => players.filter(p => p.ptype !== "defense" && (p.role === "WR" || p.role === "TE" || p.role === "HB"));
+    const qdCoverage = (name) => {
+        const zs = [];
+        const Z = (label, x, y, w, h) => zs.push({ id: uid(), ctype: "zone", shape: "ellipse", x, y, w, h, color: "#38bdf8", label, qd: "cover" });
+        const deepY = losY - 26 * YARD, deepH = 14 * YARD;
+        const underY = losY - 11 * YARD, underH = 9 * YARD;
+        const flatY = losY - 5 * YARD, flatH = 6 * YARD;
+        if (name === "Cover 2") {
+            Z("½", 0, deepY, FW / 2, deepH);
+            Z("½", FW / 2, deepY, FW / 2, deepH);
+            Z("FLAT", 0, flatY, 90, flatH);
+            Z("FLAT", FW - 90, flatY, 90, flatH);
+            Z("HOOK", 100, underY, 90, underH);
+            Z("HOOK", FW / 2 - 45, underY, 90, underH);
+            Z("HOOK", FW - 190, underY, 90, underH);
+        }
+        else if (name === "Cover 3") {
+            Z("⅓", 0, deepY, FW / 3, deepH);
+            Z("⅓", FW / 3, deepY, FW / 3, deepH);
+            Z("⅓", (2 * FW) / 3, deepY, FW / 3, deepH);
+            Z("FLAT", 0, flatY, 95, flatH);
+            Z("FLAT", FW - 95, flatY, 95, flatH);
+            Z("HOOK", 110, underY, 120, underH);
+            Z("HOOK", FW - 230, underY, 120, underH);
+        }
+        else if (name === "Cover 4") {
+            Z("¼", 0, deepY, FW / 4, deepH);
+            Z("¼", FW / 4, deepY, FW / 4, deepH);
+            Z("¼", FW / 2, deepY, FW / 4, deepH);
+            Z("¼", (3 * FW) / 4, deepY, FW / 4, deepH);
+            Z("FLAT", 0, flatY, 95, flatH);
+            Z("FLAT", FW - 95, flatY, 95, flatH);
+            Z("HOOK", FW / 2 - 60, underY, 120, underH);
+        }
+        else if (name === "Cover 6") {
+            Z("¼", 0, deepY, FW / 4, deepH);
+            Z("¼", FW / 4, deepY, FW / 4, deepH);
+            Z("½", FW / 2, deepY, FW / 2, deepH);
+            Z("FLAT", 0, flatY, 95, flatH);
+            Z("FLAT", FW - 95, flatY, 95, flatH);
+            Z("HOOK", FW / 2 - 60, underY, 120, underH);
+        }
+        // Seat defenders into the fresh shells through the existing assigner —
+        // called directly with the new arrays, so nothing reads stale state.
+        const acRules = (sortPrefs.autoCoverRules && sortPrefs.autoCoverRules.length) ? sortPrefs.autoCoverRules : DEFAULT_AUTOCOVER_RULES;
+        const seeded = coverages.filter(c => !(c.qd === "cover" || c.qd === "man")).concat(zs);
+        const assigned = assignZonesToDefenders(seeded, players, routes.filter(r => !r.autoCov), losY, acRules);
+        setCoverages(assigned);
+    };
+    const qdMan = (free) => {
+        const els = qdEligibles().sort((a, b) => a.x - b.x);
+        let defs = players.filter(p => p.ptype === "defense");
+        if (!defs.length || !els.length)
+            return;
+        const links = [];
+        const zs = [];
+        let post = null;
+        if (free && defs.length > els.length) {
+            post = defs.reduce((m, d) => (d.y < m.y ? d : m), defs[0]);
+            defs = defs.filter(d => d.id !== post.id);
+        }
+        const taken = {};
+        els.forEach(e => {
+            let best = null, bd = Infinity;
+            defs.forEach(d => {
+                if (taken[d.id])
+                    return;
+                const dd = Math.hypot(d.x - e.x, d.y - e.y);
+                if (dd < bd) {
+                    bd = dd;
+                    best = d;
+                }
+            });
+            if (best) {
+                taken[best.id] = true;
+                links.push({ id: uid(), ctype: "man", fromId: best.id, toId: e.id, color: "#fb923c", mode: "trail", qd: "man" });
+            }
+        });
+        if (post)
+            zs.push({ id: uid(), ctype: "zone", shape: "ellipse", x: FW / 2 - 90, y: losY - 28 * YARD, w: 180, h: 14 * YARD, color: "#38bdf8", label: "POST", attachedTo: post.id, lock: true, qd: "man" });
+        setCoverages(cs => cs.filter(c => !(c.qd === "cover" || c.qd === "man")).concat(links, zs));
+    };
+    const qdBlitz = (pkg) => {
+        const cx = qdCenterX();
+        const defs = players.filter(p => p.ptype === "defense");
+        if (!defs.length)
+            return;
+        const lbs = defs.filter(d => d.role === "LB");
+        const line = defs.filter(d => d.role === "DL");
+        const pool = line.length ? line : defs;
+        const edge = (side) => side === "L" ? pool.reduce((m, d) => (d.x < m.x ? d : m), pool[0]) : pool.reduce((m, d) => (d.x > m.x ? d : m), pool[0]);
+        let rushers = [];
+        if (pkg === "EDGE L")
+            rushers = [edge("L")].concat(lbs.length ? [lbs.reduce((m, d) => (d.x < m.x ? d : m), lbs[0])] : []);
+        else if (pkg === "EDGE R")
+            rushers = [edge("R")].concat(lbs.length ? [lbs.reduce((m, d) => (d.x > m.x ? d : m), lbs[0])] : []);
+        else if (pkg === "A-GAPS")
+            rushers = [...lbs].sort((a, b) => Math.abs(a.x - cx) - Math.abs(b.x - cx)).slice(0, 2);
+        else if (pkg === "ALL OUT")
+            rushers = lbs;
+        const seen = {};
+        rushers = rushers.filter(d => d && !seen[d.id] && (seen[d.id] = true));
+        if (!rushers.length)
+            return;
+        const rs = rushers.map((d, i) => {
+            const gapX = pkg === "A-GAPS" ? cx + (i === 0 ? -10 : 10)
+                : pkg === "EDGE L" ? Math.min(d.x, cx - 62)
+                    : pkg === "EDGE R" ? Math.max(d.x, cx + 62)
+                        : cx + (d.x < cx ? -1 : 1) * (14 + 12 * i);
+            return { id: uid(), ownerId: d.id, rtype: "showBlitz", qd: "blitz", points: [{ x: d.x, y: d.y }, { x: gapX, y: losY - 1 * YARD }, { x: gapX, y: losY + 7 * YARD }] };
+        });
+        setRoutes(list => list.filter(r => r.qd !== "blitz").concat(rs));
+    };
+    const qdScheme = (name) => {
+        const ols = players.filter(p => p.ptype !== "defense" && p.role === "OL");
+        if (!ols.length)
+            return;
+        const rs = ols.map(o => {
+            let tx = o.x, ty = o.y - 3 * YARD;
+            if (name === "SLIDE L")
+                tx = o.x - 16;
+            else if (name === "SLIDE R")
+                tx = o.x + 16;
+            else if (name === "ZONE L") {
+                tx = o.x - 26;
+                ty = o.y - 2 * YARD;
+            }
+            else if (name === "ZONE R") {
+                tx = o.x + 26;
+                ty = o.y - 2 * YARD;
+            }
+            return { id: uid(), ownerId: o.id, rtype: "blocking", qd: "scheme", points: [{ x: o.x, y: o.y }, { x: tx, y: ty }] };
+        });
+        setRoutes(list => list.filter(r => r.qd !== "scheme").concat(rs));
+    };
+    const qdConcept = (name) => {
+        const els = qdEligibles();
+        if (!els.length)
+            return;
+        const rs = els.map(e => {
+            const inw = e.x < FW / 2 ? 1 : -1; // toward the middle of the field
+            let pts;
+            if (name === "VERTS")
+                pts = [{ x: e.x, y: e.y }, { x: e.x, y: losY - 24 * YARD }];
+            else if (name === "CURLS")
+                pts = [{ x: e.x, y: e.y }, { x: e.x, y: losY - 12 * YARD }, { x: e.x + inw * 14, y: losY - 10 * YARD }];
+            else if (name === "SLANTS")
+                pts = [{ x: e.x, y: e.y }, { x: e.x, y: losY - 2 * YARD }, { x: e.x + inw * 46, y: losY - 9 * YARD }];
+            else
+                pts = [{ x: e.x, y: e.y }, { x: e.x, y: losY - 10 * YARD }, { x: e.x - inw * 40, y: losY - 10 * YARD }];
+            return { id: uid(), ownerId: e.id, rtype: "pass", qd: "concept", points: pts };
+        });
+        setRoutes(list => list.filter(r => r.qd !== "concept").concat(rs));
+    };
     const applyScheme = useCallback((name) => {
         const preset = schemePresets[name];
         if (!preset) {
@@ -14597,7 +14822,7 @@ function PlaybookApp() {
                                                 React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#fff", strokeWidth: (((_b = ROUTE_CFG[route.rtype]) === null || _b === void 0 ? void 0 : _b.width) || 2.5) * 1.0 * (selectedId === route.id ? 1.4 : 1), strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: ((_c = ROUTE_CFG[route.rtype]) === null || _c === void 0 ? void 0 : _c.dash) || "none", markerEnd: skipArrow ? "none" : `url(#arr-${route.rtype})`, style: { pointerEvents: "none", filter: selectedId === route.id ? "drop-shadow(0 0 3px rgba(251,191,36,0.6))" : "none" } }),
                                                 React.createElement("path", { d: ptPath(route.points), fill: "none", stroke: "transparent", strokeWidth: Math.max(((((_d = ROUTE_CFG[route.rtype]) === null || _d === void 0 ? void 0 : _d.width) || 2.5) * 1.0 * (selectedId === route.id ? 1.4 : 1)), COARSE_POINTER ? 20 : 0), strokeLinecap: "round", strokeLinejoin: "round", style: { cursor: "pointer", touchAction: "none" }, onClick: () => onRouteClick(route.id), onTouchEnd: (e) => { if (tool === "select" || tool === "erase" || linkingFromId) { e.stopPropagation(); if (e.cancelable) e.preventDefault(); onRouteClick(route.id); } } }),
                   selectedId === route.id && tool !== "erase" && (route.points || []).map((pt, pi) => (pi === 0 ? (React.createElement("circle", { key: route.id + "-anchor", cx: pt.x, cy: pt.y, r: 4.5, fill: "none", stroke: (ROUTE_CFG[route.rtype] ? ROUTE_CFG[route.rtype].color : null) || "#fbbf24", strokeWidth: 1.6, style: { pointerEvents: "none" } })) : (React.createElement("g", { key: route.id + "-h" + pi },
-                    React.createElement("circle", { cx: pt.x, cy: pt.y, r: 12, fill: "transparent", onMouseDown: (e) => startRoutePointDrag(e, route.id, pi), onTouchStart: (e) => startRoutePointDrag(e, route.id, pi), style: { cursor: "move", touchAction: "none" } }),
+                    React.createElement("circle", { cx: pt.x, cy: pt.y, r: 12, fill: "transparent", onMouseDown: (e) => startRoutePointDrag(e, route.id, pi), onTouchStart: (e) => startRoutePointDrag(e, route.id, pi), onDoubleClick: (e) => { e.stopPropagation(); removeRoutePoint(route.id, pi); }, style: { cursor: "move", touchAction: "none" } }, React.createElement("title", null, "Drag to reshape \u00b7 double-click to remove this point")),
                     React.createElement("circle", { cx: pt.x, cy: pt.y, r: 5, fill: "#fbbf24", stroke: "#0a0a14", strokeWidth: 1.5, style: { pointerEvents: "none" } }))))),
                                                 route.optionOf && route.points && route.points[0] && (React.createElement("circle", { cx: route.points[0].x, cy: route.points[0].y, r: 3.8, fill: ((_d = ROUTE_CFG.option) === null || _d === void 0 ? void 0 : _d.color) || "#14b8a6", stroke: "#fff", strokeWidth: 1.2, style: { pointerEvents: "none" } })),
                                                 route.snapTarget && route.points && route.points.length > 0 && (React.createElement("text", { x: route.points[route.points.length - 1].x + 7, y: route.points[route.points.length - 1].y - 7, fontSize: "10", style: { pointerEvents: "none", userSelect: "none" } }, "\uD83E\uDDF2")),
@@ -14615,7 +14840,8 @@ function PlaybookApp() {
                                                         React.createElement("circle", { cx: bx, cy: by, r: 11, fill: "transparent", onMouseDown: (e) => startOrderDrag(e, route.id), onTouchStart: (e) => startOrderDrag(e, route.id), style: { cursor: "move", touchAction: "none" } }),
                                                         React.createElement("circle", { cx: bx, cy: by, r: 6.5, fill: col, fillOpacity: 0.3, stroke: col, strokeOpacity: 0.9, strokeWidth: 1.2, style: { pointerEvents: "none" } }),
                                                         React.createElement("text", { x: bx, y: by, dy: "0.34em", textAnchor: "middle", fill: col, fontSize: "8.5", fontWeight: "bold", style: { pointerEvents: "none", fontFamily: "'Bebas Neue',sans-serif", userSelect: "none" } }, route.order)));
-                                                })()));
+                                                })(),
+                                                route.name && route.points && route.points.length > 0 && (() => { var _a; const ep = route.points[route.points.length - 1]; const col = ((_a = ROUTE_CFG[route.rtype]) === null || _a === void 0 ? void 0 : _a.color) || "#e2e8f0"; return (React.createElement("text", { x: ep.x + 8, y: ep.y - 8, fontSize: "10", fontWeight: "bold", fill: col, style: { pointerEvents: "none", userSelect: "none", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.04em", paintOrder: "stroke", stroke: "#05070c", strokeWidth: 2.4 } }, route.name)); })()));
                                         });
                                     })(),
                                     coverages.filter(c => c.ctype === "zone").map(z => {
@@ -15315,6 +15541,7 @@ function PlaybookApp() {
                                     boxShadow: "0 2px 14px rgba(0,0,0,0.4)" } },
                                 React.createElement("span", { style: { fontSize: 11 } }, "\u2503"),
                                 showOlLines ? "OL LINES ON" : "OL LINES")))),
+                        filmOn && (React.createElement(DraggablePanel, { style: { position: "absolute", top: filmStacked ? "calc(42vh + 92px)" : 92, left: !filmStacked ? "calc(50% + 18px)" : 14, zIndex: 9, maxWidth: 340, pointerEvents: "auto" } }, React.createElement("div", { style: { background: "rgba(8,10,18,0.92)", border: "1px solid rgba(94,234,212,0.35)", borderRadius: 10, padding: "6px 9px" } }, React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }, onClick: () => setQdOpen(v => !v), title: "Auto-draw standard looks while charting film \u2014 pick the side, tap a chip" }, React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.08em", color: "#5eead4" } }, "\u270F QUICK DRAW"), React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.4)" } }, qdOpen ? "▾" : "▸")), qdOpen && (React.createElement("div", { style: { marginTop: 6, display: "flex", flexDirection: "column", gap: 6 } }, React.createElement("div", { style: { display: "flex", gap: 4 } }, ["offense", "defense"].map(s => (React.createElement("button", { key: s, onClick: () => setQdSide(s), style: { flex: 1, padding: "4px 0", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", border: `1px solid ${qdSide === s ? (s === "defense" ? "rgba(248,113,113,0.55)" : "rgba(74,222,128,0.55)") : "rgba(255,255,255,0.12)"}`, background: qdSide === s ? (s === "defense" ? "rgba(248,113,113,0.14)" : "rgba(74,222,128,0.14)") : "transparent", color: qdSide === s ? (s === "defense" ? "#fca5a5" : "#86efac") : "rgba(255,255,255,0.5)" } }, s.toUpperCase())))), (() => { const chipRow = (title, items, fn) => (React.createElement("div", null, React.createElement("div", { className: "mono", style: { fontSize: 8, color: "rgba(255,255,255,0.4)", letterSpacing: "0.1em", marginBottom: 2 } }, title), React.createElement("div", { style: { display: "flex", gap: 3, flexWrap: "wrap" } }, items.map(n => (React.createElement("button", { key: n, onClick: () => fn(n), style: { padding: "3px 8px", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace", border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.04)", color: "#e2e8f0" } }, n)))))); const fnames = (side) => Object.keys(FORMATIONS[side] || {}).filter(n => n.indexOf("Field Goal") === -1); return qdSide === "offense" ? (React.createElement(React.Fragment, null, chipRow("FORMATION", fnames("offense"), n => loadFormation(n, "offense", true, true)), chipRow("ROUTES", ["VERTS", "CURLS", "SLANTS", "OUTS"], qdConcept), chipRow("BLOCKING", ["BASE", "SLIDE L", "SLIDE R", "ZONE L", "ZONE R"], qdScheme), (() => { const combos = Object.keys(sortPrefs.routePresets || {}).filter(k => (sortPrefs.routePresets[k] || {}).kind === "combo"); return combos.length ? chipRow("FROM PLAYBOOK", combos, n => { if (tab === "offense") applyRouteCombo(n); else alert("Switch to the OFFENSE tab to drop an offensive route combo."); }) : null; })())) : (React.createElement(React.Fragment, null, chipRow("FRONT", fnames("defense"), n => loadFormation(n, "defense", true, true)), chipRow("COVERAGE", ["Cover 0", "Cover 1", "Cover 2", "Cover 3", "Cover 4", "Cover 6"], n => (n === "Cover 0" ? qdMan(false) : n === "Cover 1" ? qdMan(true) : qdCoverage(n))), chipRow("BLITZ", ["EDGE L", "EDGE R", "A-GAPS", "ALL OUT"], qdBlitz), (() => { const covs = Object.keys(coveragePresets || {}); return covs.length ? chipRow("FROM PLAYBOOK", covs, n => { if (tab === "defense") applyCoverage(n); else alert("Switch to the DEFENSE tab to drop a saved coverage."); }) : null; })())); })(), React.createElement("div", { className: "mono", style: { fontSize: 8, color: "rgba(255,255,255,0.35)", lineHeight: 1.5, maxWidth: 330 } }, "Draws standard looks instantly \u2014 it doesn't read the film. FROM PLAYBOOK pulls your saved combos/coverages and re-anchors them to this formation. Re-tap any chip to redo it; hand-drawn work is never touched. Select any route to name it.")))))),
                         React.createElement(DraggablePanel, { style: { position: "absolute", top: fieldFullscreen ? 64 : (filmOn && filmStacked ? "calc(42vh + 12px)" : 14), right: 14, zIndex: 8, display: "flex", alignItems: "center", gap: 6, pointerEvents: "auto" } },
                             !playingAnim && (React.createElement("div", { style: { display: "flex", alignItems: "center", background: "rgba(10,10,18,0.7)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, padding: 2, backdropFilter: "blur(6px)" } },
                                 React.createElement("button", { onClick: () => setAnimTimingMode("sync"), title: "All routes finish at the same moment (uniform pacing)", style: { padding: "4px 8px", borderRadius: 5, border: "none", cursor: "pointer",
@@ -15387,6 +15614,7 @@ function PlaybookApp() {
                                         React.createElement("span", { style: { fontSize: 11 } }, exportingVideo ? "●" : "⬇"),
                                         exportingVideo ? "BUILDING…" : "EXPORT GIF"))));
                             })()),
+                        !readOnly && tool === "select" && selectedId && (() => { const r = routes.find(x => x.id === selectedId); if (!r) return null; const owner = players.find(p => p.id === r.ownerId); const isCombo = owner && owner.ptype !== "defense" && r.rtype !== "blocking" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz" && r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion"; const bs = { padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em", border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.05)", color: "#e2e8f0" }; return (React.createElement(DraggablePanel, { style: { position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", zIndex: 9, pointerEvents: "auto" } }, React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, background: "rgba(8,10,18,0.94)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 9, padding: "6px 10px" } }, React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.5)" } }, "ROUTE", owner ? " · " + (owner.label || owner.role || "") : ""), routeNameEdit && routeNameEdit.id === r.id ? (React.createElement(React.Fragment, null, React.createElement("input", { autoFocus: true, value: routeNameEdit.value, onChange: e => setRouteNameEdit({ id: r.id, value: e.target.value }), onKeyDown: e => { if (e.key === "Enter") { setRouteName(r.id, routeNameEdit.value); setRouteNameEdit(null); } if (e.key === "Escape") setRouteNameEdit(null); }, placeholder: "Name (e.g. Dig, Mesh\u2026)", style: { width: 120, padding: "4px 8px", borderRadius: 6, background: "#15151f", color: "#fff", border: "1px solid rgba(94,234,212,0.5)", fontSize: 12 } }), React.createElement("button", { style: { ...bs, color: "#99f6e4" }, onClick: () => { setRouteName(r.id, routeNameEdit.value); setRouteNameEdit(null); } }, "SAVE"))) : (React.createElement("button", { style: bs, onClick: () => setRouteNameEdit({ id: r.id, value: r.name || "" }), title: "Give this route/scheme a name shown on the field" }, "\u270E ", r.name ? "RENAME" : "NAME")), React.createElement("button", { style: bs, onClick: () => addRoutePointToSelected(r.id), title: "Add a bend point at the end \u2014 then drag it into place" }, "\uFF0B PT"), React.createElement("button", { style: { ...bs, color: "#f87171", borderColor: "rgba(248,113,113,0.5)" }, onClick: () => deleteRouteById(r.id), title: "Delete just this route" }, "\uD83D\uDDD1 DELETE"), isCombo && React.createElement("button", { style: { ...bs, color: "#fca5a5", borderColor: "rgba(248,113,113,0.35)" }, onClick: () => { if (typeof window === "undefined" || window.confirm("Delete every offensive route on the field? (Formation, blocking, motions and defense stay.)")) deleteRouteCombination(); }, title: "Delete the whole route combination \u2014 every offensive pass route on the field" }, "\uD83D\uDDD1 COMBO"), React.createElement("button", { style: bs, onClick: () => setSelectedId(null), title: "Done" }, "\u2713")))); })(),
                         manEditId && (() => {
                             const ml = coverages.find(c => c.id === manEditId && c.ctype === "man");
                             if (!ml)
@@ -18899,7 +19127,7 @@ function PlaybookApp() {
 // and three failures are caught so they can never white-screen the whole app.
 function Walkthrough3D({ data, onClose }) {
     const mountRef = useRef(null);
-    const stateRef = useRef({ t: 0, playing: true, speed: 1, autoRotate: false, perf: (() => { try { return localStorage.getItem("gp_3dPerf") === "1"; } catch (e) { return false; } })(), mode: "aerial", mode3d: (data && data.sync && data.sync.frames && data.sync.frames.length) ? "sync" : "real", povIdx: -1, theta: Math.PI * 0.5, phi: 0.85, radius: 140, groundDist: 22, dragging: false, lastX: 0, lastY: 0 });
+    const stateRef = useRef({ t: 0, playing: true, speed: 1, autoRotate: false, perf: (() => { try { return localStorage.getItem("gp_3dPerf") === "1"; } catch (e) { return false; } })(), mode: "aerial", mode3d: (data && data.sync && data.sync.frames && data.sync.frames.length) ? "sync" : "real", povIdx: -1, theta: Math.PI * 0.5, phi: 0.85, radius: 140, groundDist: 22, dragging: false, lastX: 0, lastY: 0, headYaw: 0, headPitch: 0 });
     const [, force] = useState(0);
     // Re-arms the build effect if it had to wait for three.js (fetched in the
     // background by the shell — the field never blocks on it).
@@ -19551,9 +19779,9 @@ function Walkthrough3D({ data, onClose }) {
                 else if (s.mode === "player" && figs[s.povIdx]) {
                     const fig = figs[s.povIdx], pos = figPos(s.povIdx, s.t);
                     camera.position.set(pos.x, 5, pos.z);
+                    let bx, by, bz;
                     if (fig.side === "def" && ballMesh) {
-                        const bp = ballPos(s.t);
-                        camera.lookAt(bp.x, bp.y, bp.z); // defenders watch the actual ball (snap → handoff → throw)
+                        const bp = ballPos(s.t); bx = bp.x - pos.x; by = bp.y - 5; bz = bp.z - pos.z; // defenders watch the actual ball
                     }
                     else {
                         const ahead = figPos(s.povIdx, Math.min(1, s.t + 0.012));
@@ -19567,8 +19795,13 @@ function Walkthrough3D({ data, onClose }) {
                             fxx /= fl;
                             fzz /= fl;
                         }
-                        camera.lookAt(pos.x + fxx * 40, 3, pos.z + fzz * 40);
+                        bx = fxx * 40; by = -2; bz = fzz * 40;
                     }
+                    const yaw = s.headYaw || 0, cyv = Math.cos(yaw), syv = Math.sin(yaw);
+                    const rx = bx * cyv - bz * syv, rz = bx * syv + bz * cyv;
+                    const horiz = Math.hypot(rx, rz) || 1;
+                    const ry = by + Math.tan(Math.max(-0.9, Math.min(0.9, s.headPitch || 0))) * horiz;
+                    camera.lookAt(pos.x + rx, 5 + ry, pos.z + rz);
                 }
                 else {
                     camera.position.set(center.x + s.radius * Math.sin(s.phi) * Math.cos(s.theta), center.y + s.radius * Math.cos(s.phi), center.z + s.radius * Math.sin(s.phi) * Math.sin(s.theta));
@@ -19583,7 +19816,7 @@ function Walkthrough3D({ data, onClose }) {
             const el = renderer.domElement;
             const down = (e) => { const s = stateRef.current; s.dragging = true; const pt = e.touches ? e.touches[0] : e; s.lastX = pt.clientX; s.lastY = pt.clientY; };
             const move = (e) => { const s = stateRef.current; if (!s.dragging)
-                return; const pt = e.touches ? e.touches[0] : e; s.theta -= (pt.clientX - s.lastX) * 0.006; s.phi = Math.max(0.18, Math.min(1.45, s.phi - (pt.clientY - s.lastY) * 0.006)); s.lastX = pt.clientX; s.lastY = pt.clientY; };
+                return; const pt = e.touches ? e.touches[0] : e; const dx = pt.clientX - s.lastX, dy = pt.clientY - s.lastY; if (s.mode === "player") { let y = (s.headYaw || 0) - dx * 0.008; while (y > Math.PI) y -= 2 * Math.PI; while (y < -Math.PI) y += 2 * Math.PI; s.headYaw = y; s.headPitch = Math.max(-0.8, Math.min(0.8, (s.headPitch || 0) - dy * 0.006)); } else { s.theta -= dx * 0.006; s.phi = Math.max(0.18, Math.min(1.45, s.phi - dy * 0.006)); } s.lastX = pt.clientX; s.lastY = pt.clientY; };
             const up = () => { stateRef.current.dragging = false; };
             const wheel = (e) => { e.preventDefault(); const s = stateRef.current; if (s.mode === "offense" || s.mode === "defense") {
                 s.groundDist = Math.max(6, Math.min(140, s.groundDist * (e.deltaY > 0 ? 1.1 : 0.9)));
@@ -19657,10 +19890,11 @@ function Walkthrough3D({ data, onClose }) {
             React.createElement("div", { style: { display: "flex", gap: 3, alignItems: "center", marginLeft: 6 } },
                 [["aerial", "AERIAL"], ["offense", "BEHIND O"], ["defense", "BEHIND D"]].map(([m, lbl]) => (React.createElement("button", { key: m, onClick: () => apply({ mode: m, povIdx: -1 }), className: "sbtn dim", style: { padding: "5px 9px", opacity: ui.mode === m ? 1 : 0.5, borderColor: ui.mode === m ? "rgba(74,222,128,0.5)" : undefined, color: ui.mode === m ? "#bbf7d0" : undefined } }, lbl))),
                 React.createElement("select", { value: ui.mode === "player" ? String(ui.povIdx) : "", onChange: e => { const v = e.target.value; if (v !== "")
-                        apply({ mode: "player", povIdx: parseInt(v, 10) }); }, style: { padding: "6px 10px", borderRadius: 6, background: "var(--s2)", color: "#fff", border: "1px solid " + (ui.mode === "player" ? "rgba(74,222,128,0.6)" : "rgba(255,255,255,0.18)"), fontSize: 13, fontFamily: "system-ui, sans-serif", cursor: "pointer", appearance: "none" } },
+                        apply({ mode: "player", povIdx: parseInt(v, 10), headYaw: 0, headPitch: 0 }); }, style: { padding: "6px 10px", borderRadius: 6, background: "var(--s2)", color: "#fff", border: "1px solid " + (ui.mode === "player" ? "rgba(74,222,128,0.6)" : "rgba(255,255,255,0.18)"), fontSize: 13, fontFamily: "system-ui, sans-serif", cursor: "pointer", appearance: "none" } },
                     React.createElement("option", { value: "", style: { background: "#0a0a14", color: "#fff" } }, "Player POV\u2026"),
                     React.createElement("optgroup", { label: "Offense", style: { background: "#0a0a14", color: "#fff" } }, (data.players || []).map((p, i) => ({ p, i })).filter(o => o.p.side === "off").map(o => React.createElement("option", { key: o.i, value: o.i, style: { background: "#0a0a14", color: "#fff" } }, o.p.label || ("Player " + (o.i + 1))))),
                     React.createElement("optgroup", { label: "Defense", style: { background: "#0a0a14", color: "#fff" } }, (data.players || []).map((p, i) => ({ p, i })).filter(o => o.p.side === "def").map(o => React.createElement("option", { key: o.i, value: o.i, style: { background: "#0a0a14", color: "#fff" } }, o.p.label || ("Player " + (o.i + 1))))))),
+            ui.mode === "player" && ui.povIdx >= 0 && (React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, marginLeft: 4 } }, React.createElement("span", { style: { fontSize: 10, color: "rgba(255,255,255,0.45)", fontFamily: "'JetBrains Mono',monospace" } }, "\uD83D\uDC40"), React.createElement("input", { type: "range", min: -180, max: 180, step: 1, value: Math.round(((ui.headYaw || 0) * 180 / Math.PI)), onChange: e => apply({ headYaw: Number(e.target.value) * Math.PI / 180 }), title: "Swivel the player's head left / right \u2014 drag on the view does this too", style: { width: 110, accentColor: "#4ade80" } }), React.createElement("button", { onClick: () => apply({ headYaw: (ui.headYaw || 0) >= Math.PI * 0.75 ? 0 : Math.PI * 0.83 }), className: "sbtn dim", style: { padding: "5px 8px", borderColor: (ui.headYaw || 0) >= Math.PI * 0.75 ? "rgba(74,222,128,0.6)" : undefined, color: (ui.headYaw || 0) >= Math.PI * 0.75 ? "#86efac" : undefined }, title: "Look back over your shoulder \u2014 tap again to face front" }, "\uD83D\uDC40 OVER SHOULDER"), React.createElement("button", { onClick: () => apply({ headYaw: 0, headPitch: 0 }), className: "sbtn dim", style: { padding: "5px 8px" }, title: "Face forward again" }, "\u21BA"))),
             React.createElement("div", { style: { flex: 1 } }),
             React.createElement("button", { onClick: () => apply({ playing: !ui.playing }), className: "sbtn" }, ui.playing ? "❚❚ PAUSE" : "▶ PLAY"),
             React.createElement("button", { onClick: () => apply({ t: 0 }), className: "sbtn dim" }, "\u27F2 RESTART"),
@@ -19676,7 +19910,7 @@ function Walkthrough3D({ data, onClose }) {
                 React.createElement("button", { onClick: onClose, className: "sbtn", style: { borderColor: "rgba(248,113,113,0.5)", color: "#fca5a5" } }, "\u2715 CLOSE")),
         React.createElement("div", { ref: mountRef, style: { flex: 1, minHeight: 0, cursor: ui.mode === "aerial" ? "grab" : "default" } }),
         React.createElement("div", { style: { padding: "6px 14px", fontSize: 10.5, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.4)", borderTop: "1px solid rgba(255,255,255,0.06)" } },
-            ui.mode === "aerial" ? "Drag to orbit · scroll to zoom" : ui.mode === "player" ? "First-person — defenders track the ball; others look where they run" : "Ground view · scroll to zoom in and out",
+            ui.mode === "aerial" ? "Drag to orbit · scroll to zoom" : ui.mode === "player" ? "First-person — drag to swivel your head (look over your shoulder); defenders track the ball, others look where they run" : "Ground view · scroll to zoom in and out",
             " \u00B7 routes & zones from the play are drawn on the field \u00B7 ",
             ui.mode3d === "sync" ? "SYNC: exact 2D-play replay" : "REAL: cinematic 3D motion")));
 }
