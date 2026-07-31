@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-15p";
+window.__gpBuild = "2026-07-15q";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -13251,6 +13251,24 @@ function PlaybookApp() {
         set((runningInstallId || runningScriptId) ? "none" : "");
         return () => set("");
     }, [runningInstallId, runningScriptId]);
+    // The shell's "← Dashboard" button is position:fixed at the bottom-left, which
+    // is exactly where the play library's collapsible 🕵️ SCOUT section sits — it
+    // covered the SCOUT header and any expanded scout plays. Measure the real
+    // button (0 when the editor runs standalone with no shell) and pad the play
+    // lists by that much so the list can scroll clear of it.
+    const [dashPad, setDashPad] = useState(0);
+    useEffect(() => {
+        if (typeof document === "undefined")
+            return;
+        const measure = () => {
+            const b = document.getElementById("gp-dash-btn");
+            setDashPad(b ? (b.offsetHeight || 32) + 22 : 0);
+        };
+        measure();
+        const t = setTimeout(measure, 400); // the shell may mount its button just after us
+        window.addEventListener("resize", measure);
+        return () => { clearTimeout(t); window.removeEventListener("resize", measure); };
+    }, []);
     // ── Per-player install completion tracking (cloud only) ──
     // When a player opens an install's RUN, seed runSeen from what they've
     // already viewed; clear it when not running an install.
@@ -14397,7 +14415,7 @@ function PlaybookApp() {
                                 border: `1px solid ${levelFilter === v ? "rgba(56,189,248,0.55)" : "rgba(255,255,255,0.12)"}`,
                                 background: levelFilter === v ? "rgba(56,189,248,0.16)" : "transparent",
                                 color: levelFilter === v ? "#bae6fd" : "rgba(255,255,255,0.5)" } }, lbl)))),
-                    React.createElement("div", { ref: playListRef, style: { flex: 1, overflowY: "auto", padding: "8px 8px" } },
+                    React.createElement("div", { ref: playListRef, style: { flex: 1, overflowY: "auto", padding: "8px 8px", paddingBottom: 8 + dashPad } },
                         filteredPlays.length === 0 && React.createElement("div", { style: { padding: "24px 8px", textAlign: "center", color: "rgba(255,255,255,0.18)", fontSize: 12 }, className: "mono" }, levelFilter === "all" ? React.createElement(React.Fragment, null,
                             "No plays yet.",
                             React.createElement("br", null),
@@ -15861,7 +15879,7 @@ function PlaybookApp() {
                         React.createElement("button", { onClick: () => { clearSide("offense"); setMobilePanel(null); }, title: "Clear offense only", style: { padding: "5px 10px", borderRadius: 6, border: "1px solid rgba(74,222,128,0.4)", background: "rgba(74,222,128,0.1)", color: "#86efac", cursor: "pointer" }, className: "hd" }, "CLR O"),
                         React.createElement("button", { onClick: () => { clearSide("defense"); setMobilePanel(null); }, title: "Clear defense only", style: { padding: "5px 10px", borderRadius: 6, border: "1px solid rgba(248,113,113,0.4)", background: "rgba(248,113,113,0.1)", color: "#fca5a5", cursor: "pointer" }, className: "hd" }, "CLR D"),
                         React.createElement("button", { onClick: () => setMobilePanel(null), style: { background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 20, cursor: "pointer" } }, "\u2715"))),
-                React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 10 } }, libraryList.map(play => play.__scoutHdr ? (React.createElement("button", { key: "__scoutHdr", onClick: () => setScoutOpen(v => !v), className: "mono", style: { width: "100%", textAlign: "left", margin: "10px 0 6px", padding: "7px 10px", borderRadius: 8, border: "1px dashed rgba(196,181,253,0.35)", background: "rgba(196,181,253,0.06)", color: "#c4b5fd", cursor: "pointer", fontSize: 11, letterSpacing: "0.08em" } }, "🕵️ SCOUT (", scoutPlays.length, ") ", scoutOpen ? "▾ shown" : "▸ hidden")) : (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => { loadPlay(play); setMobilePanel(null); } },
+                React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: 10, paddingBottom: 10 + dashPad } }, libraryList.map(play => play.__scoutHdr ? (React.createElement("button", { key: "__scoutHdr", onClick: () => setScoutOpen(v => !v), className: "mono", style: { width: "100%", textAlign: "left", margin: "10px 0 6px", padding: "7px 10px", borderRadius: 8, border: "1px dashed rgba(196,181,253,0.35)", background: "rgba(196,181,253,0.06)", color: "#c4b5fd", cursor: "pointer", fontSize: 11, letterSpacing: "0.08em" } }, "🕵️ SCOUT (", scoutPlays.length, ") ", scoutOpen ? "▾ shown" : "▸ hidden")) : (React.createElement("div", { key: play.id, className: `pitem ${(currentPlay === null || currentPlay === void 0 ? void 0 : currentPlay.id) === play.id ? "on" : ""}`, onClick: () => { loadPlay(play); setMobilePanel(null); } },
                     React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
                         React.createElement("span", { style: { fontWeight: 600, fontSize: 15, color: "#fff" } }, play.name),
                         caps.deleteContent && (React.createElement("button", { onClick: e => { e.stopPropagation(); setPlays(p => p.filter(x => x.id !== play.id)); }, style: { background: "none", border: "none", color: "rgba(239,68,68,0.5)", cursor: "pointer", fontSize: 13 } }, "\u2715"))),
