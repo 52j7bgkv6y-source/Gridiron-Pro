@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-15x";
+window.__gpBuild = "2026-07-15z";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -1676,7 +1676,7 @@ function PlayThumbnail({ play, w = 200, h = 132, animT = null }) {
         }),
         [[10, "10"], [20, "20"], [30, "30"], [40, "40"], [50, "50"], [60, "40"], [70, "30"], [80, "20"], [90, "10"]].map(([yd, n]) => {
             const y = EZ + (FIELD_DIM / 100) * yd;
-            const leftX = 34, rightX = FW - 34;
+            const leftX = FW * 0.13, rightX = FW * 0.87;
             return (React.createElement("g", { key: `yn${yd}` },
                 React.createElement("text", { x: leftX, y: y, fill: "rgba(255,255,255,0.9)", fontSize: "33", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "5", textAnchor: "middle", dominantBaseline: "central", transform: `rotate(90 ${leftX} ${y})`, style: { userSelect: "none" } }, n),
                 React.createElement("text", { x: rightX, y: y, fill: "rgba(255,255,255,0.9)", fontSize: "33", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "5", textAnchor: "middle", dominantBaseline: "central", transform: `rotate(-90 ${rightX} ${y})`, style: { userSelect: "none" } }, n)));
@@ -8247,6 +8247,24 @@ function PlaybookApp() {
         const startPt = getSVGPt(e);
         const orig = { x: route.points[idx].x, y: route.points[idx].y };
         const isEnd = idx === route.points.length - 1;
+        // ── Proportional drag setup ──────────────────────────────────────────
+        // Snapshot the route as it was when the drag began and measure distance
+        // ALONG the path (not straight-line, and not index count — points are
+        // unevenly spaced, so arc length is the honest measure of "nearby").
+        const origPts = route.points.map(p => ({ x: p.x, y: p.y }));
+        const cum = [0];
+        for (let i = 1; i < origPts.length; i++) {
+            cum[i] = cum[i - 1] + Math.hypot(origPts[i].x - origPts[i - 1].x, origPts[i].y - origPts[i - 1].y);
+        }
+        const totalLen = cum[cum.length - 1] || 0;
+        // Only routes with real interior detail bend; a 3–4 point route keeps its
+        // sharp break exactly as before. Radius scales with the route's own length
+        // so a short hitch and a deep post both feel right.
+        const softRadius = (origPts.length >= 5 && totalLen > 0)
+            ? Math.max(45, Math.min(230, totalLen * 0.30)) : 0;
+        // Cosine taper: full strength at the grabbed point, easing to zero at the
+        // edge of the radius — no visible seam where the influence stops.
+        const falloff = (d) => (d >= softRadius ? 0 : 0.5 * (1 + Math.cos(Math.PI * (d / softRadius))));
         const onMove = (ev) => {
             if (ev.cancelable) ev.preventDefault();
             const pt = getSVGPt(ev);
@@ -8261,9 +8279,26 @@ function PlaybookApp() {
                 ny = sn.pt.y;
                 setSnapGuide(sn.guide);
             } else setSnapGuide(null);
+            // The delta actually travelled by the grabbed point (post-snap), so the
+            // followers stay coherent with wherever it landed.
+            const dx = nx - orig.x, dy = ny - orig.y;
+            const soft = softRadius > 0 && !ev.altKey; // ALT = move this point alone
             setRoutes(rs => rs.map(r => {
-                if (r.id !== rid) return r;
+                if (r.id !== rid)
+                    return r;
                 const pts = r.points.slice();
+                if (soft) {
+                    for (let i = 1; i < pts.length; i++) { // i=0 is the player anchor
+                        if (i === idx)
+                            continue;
+                        const w = falloff(Math.abs(cum[i] - cum[idx]));
+                        if (w <= 0)
+                            continue;
+                        pts[i] = { ...pts[i],
+                            x: Math.max(0, Math.min(FW, origPts[i].x + dx * w)),
+                            y: Math.max(0, Math.min(FH, origPts[i].y + dy * w)) };
+                    }
+                }
                 pts[idx] = { ...pts[idx], x: nx, y: ny };
                 return { ...r, points: pts };
             }));
@@ -12695,7 +12730,7 @@ function PlaybookApp() {
                     ctx.letterSpacing = (5 * s) + "px";
                 }
                 catch (e) { }
-                const leftNX = 34 * s, rightNX = (FW - 34) * s;
+                const leftNX = FW * 0.13 * s, rightNX = FW * 0.87 * s;
                 [[10, "10"], [20, "20"], [30, "30"], [40, "40"], [50, "50"], [60, "40"], [70, "30"], [80, "20"], [90, "10"]].forEach(([yd, label]) => {
                     const ny = (EZ + (FIELD_DIM / 100) * yd) * s;
                     ctx.save();
@@ -14342,7 +14377,7 @@ function PlaybookApp() {
         const nums = [[10, "10"], [20, "20"], [30, "30"], [40, "40"], [50, "50"], [60, "40"], [70, "30"], [80, "20"], [90, "10"]];
         nums.forEach(([yd, n]) => {
             const y = EZ + (FIELD_DIM / 100) * yd;
-            const leftX = 34, rightX = FW - 34;
+            const leftX = FW * 0.13, rightX = FW * 0.87;
             const dir = yd === 50 ? 0 : (yd < 50 ? -1 : 1);
             els.push(React.createElement("text", { key: `nL${yd}`, x: leftX, y: y, fill: "rgba(255,255,255,0.9)", fontSize: "33", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "5", textAnchor: "middle", dominantBaseline: "central", transform: `rotate(90 ${leftX} ${y})`, style: { userSelect: "none" } }, n));
             els.push(React.createElement("text", { key: `nR${yd}`, x: rightX, y: y, fill: "rgba(255,255,255,0.9)", fontSize: "33", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "5", textAnchor: "middle", dominantBaseline: "central", transform: `rotate(-90 ${rightX} ${y})`, style: { userSelect: "none" } }, n));
@@ -18592,7 +18627,7 @@ function PlaybookApp() {
                             }),
                             [[10, "10"], [20, "20"], [30, "30"], [40, "40"], [50, "50"], [60, "40"], [70, "30"], [80, "20"], [90, "10"]].map(([yd, n]) => {
                                 const y = EZ + (FIELD_DIM / 100) * yd;
-                                const leftX = 34, rightX = FW - 34;
+                                const leftX = FW * 0.13, rightX = FW * 0.87;
                                 return (React.createElement("g", { key: "yn" + yd },
                                     React.createElement("text", { x: leftX, y: y, fill: "rgba(255,255,255,0.9)", fontSize: "33", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "5", textAnchor: "middle", dominantBaseline: "central", transform: `rotate(90 ${leftX} ${y})` }, n),
                                     React.createElement("text", { x: rightX, y: y, fill: "rgba(255,255,255,0.9)", fontSize: "33", fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "5", textAnchor: "middle", dominantBaseline: "central", transform: `rotate(-90 ${rightX} ${y})` }, n)));
