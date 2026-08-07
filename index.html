@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-15q";
+window.__gpBuild = "2026-07-15x";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -1498,10 +1498,95 @@ const SAMPLE_PLAYS = [
 // Renders the same elements as the main field — including route arrow markers,
 // zone text labels, the "M" man-coverage marker, and player jersey labels —
 // so the printed sheet keeps every piece of information that was on the play.
-function PlayThumbnail({ play, w = 200, h = 132 }) {
-    const players = play.players || [];
+// Walk each player along his own route so a saved play can animate anywhere a
+// thumbnail is rendered (study quiz, cards) without loading it onto the field.
+// Deliberately simple: it runs ROUTES — primary + pre-snap motion + the whole
+// follow-up chain — at a constant pace. It is NOT the full PLAY IN ACTION
+// engine: no man-coverage chase, no ball flight, no blitz order stagger. It
+// answers "where does everyone go", which is what studying a play needs.
+function thumbAnimPlayers(players, routes, t) {
+    if (!players.length || !routes.length)
+        return players;
+    const fuByParent = new Map();
+    routes.forEach(r => {
+        if (r && r.attachedToMotion && !fuByParent.has(r.attachedToMotion))
+            fuByParent.set(r.attachedToMotion, r);
+    });
+    const isFollowUp = new Set(routes.filter(r => r && r.attachedToMotion).map(r => r.id));
+    const ownerOf = (r) => {
+        if (r.ownerId)
+            return r.ownerId;
+        const p0 = r.points && r.points[0];
+        if (!p0)
+            return null;
+        let best = null, bd = Infinity;
+        players.forEach(p => { const d = Math.hypot(p.x - p0.x, p.y - p0.y); if (d < bd) {
+            bd = d;
+            best = p;
+        } });
+        return (best && bd <= 40) ? best.id : null;
+    };
+    // primary (non-option, non-follow-up) route per player; motion leads the chain
+    const chainFor = new Map();
+    routes.forEach(r => {
+        if (!r || !r.points || r.points.length < 2)
+            return;
+        if (r.optionOf || isFollowUp.has(r.id))
+            return;
+        const oid = ownerOf(r);
+        if (!oid)
+            return;
+        const prev = chainFor.get(oid);
+        const isMotion = r.rtype === "preSnapMotion" || r.rtype === "postSnapMotion";
+        if (!prev || (isMotion && !prev.motion))
+            chainFor.set(oid, { route: r, motion: isMotion });
+    });
+    const out = players.map(p => {
+        const entry = chainFor.get(p.id);
+        if (!entry)
+            return p;
+        // concatenate the whole follow-up chain
+        let pts = [...entry.route.points];
+        let cur = fuByParent.get(entry.route.id);
+        const seen = new Set([entry.route.id]);
+        while (cur && !seen.has(cur.id) && cur.points && cur.points.length >= 2) {
+            seen.add(cur.id);
+            pts = pts.concat(cur.points.slice(1));
+            cur = fuByParent.get(cur.id);
+        }
+        if (pts.length < 2)
+            return p;
+        let total = 0;
+        const segs = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+            const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+            segs.push(d);
+            total += d;
+        }
+        if (total < 0.001)
+            return p;
+        let want = Math.max(0, Math.min(1, t)) * total, idx = 0;
+        while (idx < segs.length && want > segs[idx]) {
+            want -= segs[idx];
+            idx++;
+        }
+        if (idx >= segs.length) {
+            const last = pts[pts.length - 1];
+            return { ...p, x: last.x, y: last.y };
+        }
+        const f = segs[idx] > 0 ? want / segs[idx] : 0;
+        const a = pts[idx], b = pts[idx + 1];
+        return { ...p, x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+    });
+    return out;
+}
+function PlayThumbnail({ play, w = 200, h = 132, animT = null }) {
+    const basePlayers = play.players || [];
     const routes = play.routes || [];
     const covs = play.coverages || [];
+    const players = (animT == null) ? basePlayers : thumbAnimPlayers(basePlayers, routes, animT);
+    // Zones are FIELD landmarks — they never move while the play runs.
+    const anchorPlayers = basePlayers;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const acc = (x, y) => { if (x < minX)
         minX = x; if (x > maxX)
@@ -1518,7 +1603,7 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
             return;
         let zcx, zcy;
         if (c.attachedTo) {
-            const ap = players.find(p => p.id === c.attachedTo);
+            const ap = anchorPlayers.find(p => p.id === c.attachedTo);
             if (ap) {
                 zcx = ap.x + (c.offX || 0);
                 zcy = ap.y + (c.offY || 0);
@@ -1535,27 +1620,26 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
         acc(zcx - c.w / 2, zcy - c.h / 2);
         acc(zcx + c.w / 2, zcy + c.h / 2);
     });
-    let vb;
+    const losY = typeof play.losY === "number" ? play.losY : LOS_Y;
+    // FIXED FRAMING — every play is drawn through the same size window, centred
+    // on the ball and the line of scrimmage, so a compact goal-line look and a
+    // four-verts shot render at exactly the same scale and spacing. (This used
+    // to fit each play to its own bounding box, which silently zoomed every play
+    // differently — the same call looked bigger on one card than another.)
     const targetAR = w / h;
-    if (minX === Infinity) {
-        vb = { x: 0, y: FH * 0.30, w: FW, h: FW / targetAR };
+    const STD_W = FW * 0.94; // ≈ full field width
+    const STD_H = 46 * YARD; // ≈ 46 yards of depth
+    let bw, bh;
+    if (STD_W / STD_H < targetAR) {
+        bh = STD_H;
+        bw = bh * targetAR;
     }
     else {
-        const pad = 50;
-        let bx = minX - pad, by = minY - pad, bw = (maxX - minX) + pad * 2, bh = (maxY - minY) + pad * 2;
-        if (bw / bh < targetAR) {
-            const nw = bh * targetAR;
-            bx -= (nw - bw) / 2;
-            bw = nw;
-        }
-        else {
-            const nh = bw / targetAR;
-            by -= (nh - bh) / 2;
-            bh = nh;
-        }
-        vb = { x: bx, y: by, w: bw, h: bh };
+        bw = STD_W;
+        bh = bw / targetAR;
     }
-    const losY = typeof play.losY === "number" ? play.losY : LOS_Y;
+    const ctrX = typeof play.ballX === "number" ? play.ballX : FW / 2;
+    const vb = { x: ctrX - bw / 2, y: losY - bh * 0.62, w: bw, h: bh };
     // Per-instance namespace for marker IDs so multi-thumbnail pages (print sheet
     // with many plays, playbook browser grid) don't collide on `arr-Fly` etc.
     const idBase = play.id || `t${Math.round((vb.x + vb.y) * 1000) % 99999}`;
@@ -1614,7 +1698,7 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
         covs.filter(c => c.ctype === "zone").map((z, i) => {
             let cx, cy;
             if (z.attachedTo) {
-                const ap = players.find(p => p.id === z.attachedTo);
+                const ap = anchorPlayers.find(p => p.id === z.attachedTo);
                 if (ap) {
                     cx = Math.max(z.w / 2, Math.min(FW - z.w / 2, ap.x + (z.offX || 0)));
                     cy = Math.max(z.h / 2, Math.min(FH - z.h / 2, ap.y + (z.offY || 0)));
@@ -1637,7 +1721,7 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
         covs.filter(c => c.ctype === "zone" && c.label).map((z, i) => {
             let cx, cy;
             if (z.attachedTo) {
-                const ap = players.find(p => p.id === z.attachedTo);
+                const ap = anchorPlayers.find(p => p.id === z.attachedTo);
                 if (ap) {
                     cx = Math.max(z.w / 2, Math.min(FW - z.w / 2, ap.x + (z.offX || 0)));
                     cy = Math.max(z.h / 2, Math.min(FH - z.h / 2, ap.y + (z.offY || 0)));
@@ -1675,7 +1759,9 @@ function PlayThumbnail({ play, w = 200, h = 132 }) {
                 React.createElement("text", { x: mx, y: my + 3, textAnchor: "middle", fill: col, fontSize: "8.5", fontWeight: "bold", fontFamily: "'JetBrains Mono', monospace", style: { pointerEvents: "none", userSelect: "none" } }, m.mode === "overTop" ? "O" : "T")));
         }),
         players.map((p, i) => {
-            const R = Math.max(8, Math.min(22, 9.5 * (p.sizeMul || 1)));
+            // Same formula as the field editor so a play looks identical everywhere
+        // and the gaps between players read true.
+        const R = Math.max(6, Math.min(36, 5.75 * (p.sizeMul || 1)));
             const rc = p.color || ROLE_COLORS[p.role] || ROLE_COLORS.default;
             const isOff = p.ptype !== "defense";
             const label = p.label || "";
@@ -3048,7 +3134,44 @@ function PlaybookApp() {
     const [studyScope, setStudyScope] = useState(null);
     const [quizSel, setQuizSel] = useState(() => new Set());
     const [quizZoom, setQuizZoom] = useState(null);
+    // STUDY: the enlarged play animates IN PLACE inside the quiz overlay. It must
+    // never leave study mode — doing so would show the play's name and hand the
+    // player the answer. quizAnimT is the 0→1 progress driven by a rAF loop that
+    // restarts on its own, so PLAY IN ACTION in study always repeats.
+    const [quizAnimOn, setQuizAnimOn] = useState(false);
+    const [quizAnimT, setQuizAnimT] = useState(0);
+    const quizAnimRef = useRef(null);
+    // Drive the in-place study animation. Auto-loops: t runs 0→1 then restarts
+    // after a short beat so the look repeats without the player touching it.
+    useEffect(() => {
+        if (!quizAnimOn) {
+            setQuizAnimT(0);
+            return;
+        }
+        const PLAY_MS = 3200, PAUSE_MS = 550;
+        let start = null, raf = 0;
+        const step = (ts) => {
+            if (start == null)
+                start = ts;
+            const e = ts - start;
+            if (e >= PLAY_MS + PAUSE_MS) {
+                start = ts;
+                setQuizAnimT(0);
+            }
+            else
+                setQuizAnimT(Math.min(1, e / PLAY_MS));
+            raf = requestAnimationFrame(step);
+        };
+        raf = requestAnimationFrame(step);
+        quizAnimRef.current = () => cancelAnimationFrame(raf);
+        return () => cancelAnimationFrame(raf);
+    }, [quizAnimOn]);
     const [quizZoomAll, setQuizZoomAll] = useState(null);
+    // Closing the enlarged view disarms the animation. MUST sit below BOTH
+    // quizZoom and quizZoomAll: a dependency array is evaluated during render,
+    // so naming a state declared further down throws a TDZ ReferenceError.
+    useEffect(() => { if (!quizZoom && !quizZoomAll)
+        setQuizAnimOn(false); }, [quizZoom, quizZoomAll]);
     const [quizBoard, setQuizBoard] = useState(null); // null | {loading, rows, err}
     const [counterRec, setCounterRec] = useState(null); // 🧠 COUNTER result — declared early: the Escape effect below lists it in deps
     const quizAdvRef = useRef(null);
@@ -3371,6 +3494,33 @@ function PlaybookApp() {
     const effRole = realRole;
     const caps = ROLE_CAPS[effRole] || ROLE_CAPS.admin;
     const readOnly = !caps.edit;
+    // VIEWER MODE: a self-imposed lock, separate from `readOnly` (which is the
+    // role permission). Anyone can flip it on to stop accidental dragging while
+    // presenting or thumbing through plays; it never changes what you're allowed
+    // to save. Persisted so it survives a reload on a shared sideline tablet.
+    const [viewerLock, setViewerLock] = useState(() => {
+        try {
+            return localStorage.getItem("gp_viewerLock") === "1";
+        }
+        catch (e) {
+            return false;
+        }
+    });
+    const toggleViewerLock = useCallback(() => {
+        setViewerLock(v => {
+            const nx = !v;
+            try {
+                localStorage.setItem("gp_viewerLock", nx ? "1" : "0");
+            }
+            catch (e) { }
+            return nx;
+        });
+    }, []);
+    // Read through a ref inside the drag callbacks: those are memoised with dep
+    // arrays that don't include viewerLock, so reading the state directly would
+    // capture a stale value and the lock would silently stop working.
+    const viewerLockRef = useRef(false);
+    useEffect(() => { viewerLockRef.current = viewerLock; }, [viewerLock]);
     // fieldReadOnly gates ON-FIELD work; readOnly gates SAVE/EDIT/DELETE. Player
     // & Coach(T) have fieldEdit:true but edit:false — they work the field freely
     // while every Save/Edit/Delete control stays hidden; changes never persist.
@@ -6983,6 +7133,8 @@ function PlaybookApp() {
     // Start LOS drag: snapshot each player's position relative to the LOS so we can
     // reconstruct exact positions on every move (no per-frame delta accumulation).
     const startLosDrag = useCallback((e) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE
         e.stopPropagation();
         if (e.preventDefault)
             e.preventDefault();
@@ -7001,6 +7153,8 @@ function PlaybookApp() {
     // Start ball drag: snapshot every player's x relative to the ball so the whole
     // formation re-spots horizontally with the ball (ball stays between the hashes).
     const startBallDrag = useCallback((e) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE
         e.stopPropagation();
         if (e.preventDefault)
             e.preventDefault();
@@ -7117,6 +7271,8 @@ function PlaybookApp() {
         return { pt, guide: null };
     }, [targetRouteSnap, shadeSnap]);
     const onSVGDown = useCallback((e) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE: look, don't move
         // Link mode: the user is about to click an existing route to
         // connect it to the link source. We must NOT run any tool-driven
         // mousedown logic here — otherwise a route-drawing tool would lay
@@ -7693,6 +7849,8 @@ function PlaybookApp() {
         };
     }, [dragging, draggingLOS, draggingBall, zoneDrag, textDrag, drawingRoute, coverageDraft, panning, alignMode, onSVGUp]);
     const onPlayerDown = useCallback((e, pid) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE: look, don't move
         e.stopPropagation();
         // While the play is animating, every player position is being driven by
         // the RAF loop — short-circuit user interaction so a drag doesn't fight
@@ -7867,6 +8025,8 @@ function PlaybookApp() {
     // (mode 'resize'), or moving its label inside the zone (mode 'labelmove').
     // Start dragging a text annotation (SELECT tool only). Mirrors startZoneDrag.
     const startTextDrag = useCallback((e, t) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE
         if (tool !== "select" && tool !== "text")
             return;
         e.stopPropagation();
@@ -7911,6 +8071,8 @@ function PlaybookApp() {
         .filter(t => t.owner === owner || t.owner === "formation")
         .map(t => ({ text: t.text, color: t.color, size: t.size, shape: t.shape || undefined, dx: Math.round(t.x - ballX), dy: Math.round(t.y - losY) })), [texts, ballX, losY]);
     const startZoneDrag = useCallback((e, z, mode, corner) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE
         if (tool !== "select")
             return; // erase/other tools fall through to the shape's onClick
         e.stopPropagation();
@@ -8035,6 +8197,8 @@ function PlaybookApp() {
     // line connects the dragged badge back to the route, so the order
     // number stays visually associated with its arrow.
     const startOrderDrag = useCallback((e, rid) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE
         if (e.stopPropagation)
             e.stopPropagation();
         if (e.preventDefault)
@@ -8072,6 +8236,8 @@ function PlaybookApp() {
     // ── Drag a single point of an already-drawn route (reshape after drawing) ──
     // Point 0 stays pinned to the player; only bends and the endpoint move.
     const startRoutePointDrag = useCallback((e, rid, idx) => {
+        if (viewerLockRef.current)
+            return; // VIEWER MODE
         if (e.stopPropagation) e.stopPropagation();
         if (e.preventDefault) e.preventDefault();
         if (idx === 0) return;
@@ -9485,6 +9651,41 @@ function PlaybookApp() {
                 idToSlot.set(r.id, { kind: "offensive", index: offensiveRoutes.length - 1 });
             }
         });
+        // Follow-up CHAINS: a follow-up can itself carry a follow-up (block →
+        // release → break, motion → blitz → contain, …). Walk the whole chain and
+        // nest each link inside its parent's entry, so depth is unlimited instead
+        // of stopping at the first link (which silently dropped everything past it).
+        const fuByParent = new Map();
+        routes.forEach(r => {
+            if (r && r.attachedToMotion && r.points && r.points.length >= 2 && !fuByParent.has(r.attachedToMotion)) {
+                fuByParent.set(r.attachedToMotion, r);
+            }
+        });
+        const buildFuChain = (parentRoute, seen) => {
+            if (!parentRoute || !parentRoute.points || parentRoute.points.length === 0)
+                return undefined;
+            const child = fuByParent.get(parentRoute.id);
+            if (!child || seen.has(child.id))
+                return undefined; // cycle guard
+            seen.add(child.id);
+            const pEnd = parentRoute.points[parentRoute.points.length - 1];
+            const offs = child.points.map(pt => ({ dx: pt.x - pEnd.x, dy: pt.y - pEnd.y }));
+            if (offs.length < 2)
+                return undefined;
+            const entry = {
+                rtype: child.rtype || undefined,
+                pointOffsets: offs,
+                order: (child.order == null ? null : child.order),
+                orderOffX: (child.orderOffX == null ? null : child.orderOffX),
+                orderOffY: (child.orderOffY == null ? null : child.orderOffY),
+                showParentEnd: child.showParentEnd || undefined,
+                holdBlock: child.holdBlock || undefined,
+            };
+            const deeper = buildFuChain(child, seen);
+            if (deeper)
+                entry.followUp = deeper;
+            return entry;
+        };
         // Third pass: for each option route, attach it to its parent's saved
         // entry. Option points are stored as offsets from the parent's branch
         // point so they reconstruct correctly on apply.
@@ -9504,15 +9705,9 @@ function PlaybookApp() {
             };
             // An option can carry its own follow-up (option → continuation). Capture
             // it relative to the option's LAST point so it reconnects on apply.
-            const optFuRoute = routes.find(x => x && x.attachedToMotion === r.id && x.points && x.points.length >= 2);
-            if (optFuRoute) {
-                const oEnd = r.points[r.points.length - 1];
-                optEntry.followUp = {
-                    rtype: optFuRoute.rtype || undefined,
-                    pointOffsets: optFuRoute.points.map(pt => ({ dx: pt.x - oEnd.x, dy: pt.y - oEnd.y })),
-                    showParentEnd: optFuRoute.showParentEnd || undefined,
-                };
-            }
+            const optChain = buildFuChain(r, new Set());
+            if (optChain)
+                optEntry.followUp = optChain;
             if (slot.kind === "blitzer")
                 blitzers[slot.index].options.push(optEntry);
             else
@@ -9526,18 +9721,11 @@ function PlaybookApp() {
         // (e.g. a showBlitz that lives at the end of a post-snap motion) so it
         // isn't lost — this was the "post-snap motion deletes the blitz off the
         // end of it" bug.
-        followUpEntries.forEach(({ route: r, motionId }) => {
-            const slot = idToSlot.get(motionId);
-            if (!slot)
-                return; // parent motion wasn't saved (owner not found, etc.)
-            const motionRoute = byId.get(motionId);
-            if (!motionRoute || !motionRoute.points || motionRoute.points.length === 0)
+        idToSlot.forEach((slot, routeId) => {
+            const parentRoute = byId.get(routeId);
+            const fu = buildFuChain(parentRoute, new Set());
+            if (!fu)
                 return;
-            const mEnd = motionRoute.points[motionRoute.points.length - 1];
-            const followUpOffsets = r.points.map(pt => ({ dx: pt.x - mEnd.x, dy: pt.y - mEnd.y }));
-            if (followUpOffsets.length < 2)
-                return;
-            const fu = { rtype: r.rtype || undefined, pointOffsets: followUpOffsets, order: (r.order == null ? null : r.order), orderOffX: (r.orderOffX == null ? null : r.orderOffX), orderOffY: (r.orderOffY == null ? null : r.orderOffY), showParentEnd: r.showParentEnd || undefined };
             if (slot.kind === "blitzer")
                 blitzers[slot.index].followUp = fu;
             else
@@ -9643,6 +9831,8 @@ function PlaybookApp() {
             };
             if (followUp.showParentEnd)
                 fuRoute.showParentEnd = true;
+            if (followUp.holdBlock)
+                fuRoute.holdBlock = true;
             if (followUp.order != null) {
                 fuRoute.order = followUp.order;
                 if (followUp.orderOffX != null)
@@ -9651,6 +9841,9 @@ function PlaybookApp() {
                     fuRoute.orderOffY = followUp.orderOffY;
             }
             newRoutes.push(fuRoute);
+            // Rebuild deeper links of the chain, each anchored to the one before it.
+            if (followUp.followUp)
+                buildFollowUp(fuRoute.id, fuPoints, followUp.followUp, ownerId, fuRoute.rtype);
         };
         // 1) Apply defensive blitzers — preserve each route's saved rtype so a
         // HIDE BLZ route stays HIDE BLZ on re-apply instead of getting promoted
@@ -11217,13 +11410,19 @@ function PlaybookApp() {
                 foundPid = pid; });
             if (!foundPid)
                 return;
-            const combinedPoints = [
-                ...motion.points,
-                ...(followUp.points || []).slice(1),
-            ];
+            // Walk the ENTIRE follow-up chain, not just the first link.
+            const combinedPoints = [...motion.points];
+            let chainCur = followUp, chainLast = followUp;
+            const chainSeen = new Set([motion.id]);
+            while (chainCur && !chainSeen.has(chainCur.id)) {
+                chainSeen.add(chainCur.id);
+                combinedPoints.push(...((chainCur.points || []).slice(1)));
+                chainLast = chainCur;
+                chainCur = followUpByMotion.get(chainCur.id);
+            }
             routeByPlayer.set(foundPid, {
                 ...motion,
-                id: `${motion.id}__chain__${followUp.id}`,
+                id: `${motion.id}__chain__${chainLast.id}`,
                 // Keep the ORIGINAL route id reachable so option lookups (keyed on
                 // optionOf == this motion's real id) still resolve after the chain
                 // rename; otherwise the option is silently dropped once a follow-up exists.
@@ -11341,14 +11540,22 @@ function PlaybookApp() {
             // the player runs stem → option → follow-up as one continuous path. A
             // blocking option with HOLD BLOCK pauses 1s at the junction (holdMs).
             const optFollowUp = followUpByMotion.get(opt.id);
-            let optJunctionIdx = null, optHoldMs = 0;
+            let optJunctionIdx = null, optHoldMs = 0, optChainLast = optFollowUp;
             if (optFollowUp && Array.isArray(optFollowUp.points) && optFollowUp.points.length >= 2) {
                 optJunctionIdx = combined.length - 1; // option ends / follow-up begins
-                combined = [...combined, ...optFollowUp.points.slice(1)];
+                // Walk the whole option→follow-up chain, not just the first link.
+                let oc = optFollowUp;
+                const oSeen = new Set([opt.id]);
+                while (oc && !oSeen.has(oc.id) && Array.isArray(oc.points) && oc.points.length >= 2) {
+                    oSeen.add(oc.id);
+                    combined = [...combined, ...oc.points.slice(1)];
+                    optChainLast = oc;
+                    oc = followUpByMotion.get(oc.id);
+                }
                 optHoldMs = (opt.rtype === "blocking" && optFollowUp.holdBlock) ? 1000 : 0;
             }
             optionRouteByPlayer.set(playerId, {
-                id: `${parentRoute.id}__opt__${opt.id}${optFollowUp ? `__chain__${optFollowUp.id}` : ""}`,
+                id: `${parentRoute.id}__opt__${opt.id}${optChainLast ? `__chain__${optChainLast.id}` : ""}`,
                 points: combined,
                 rtype: opt.rtype || parentRoute.rtype,
                 junctionIdx: optJunctionIdx,
@@ -14397,6 +14604,7 @@ function PlaybookApp() {
                 teamDB && teamId && (notifRecipient || effRole === "admin" || effRole === "coadmin" || notifShares.length > 0) && (React.createElement("button", { className: "sbtn dim", onClick: () => { setNotifPickerOpen(false); setShowNotif(true); loadNotifs(); }, title: "Player questions on installs & practice scripts \u2014 tap one to jump to it", style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", flexShrink: 0, position: "relative" } },
                     React.createElement("span", { style: { fontSize: 14, lineHeight: 1 } }, "\uD83D\uDD14"),
                     bellUnread > 0 && (React.createElement("span", { style: { position: "absolute", top: -5, right: -5, minWidth: 17, height: 17, borderRadius: 99, background: "#ef4444", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1, border: "1px solid #0c0c17" } }, bellUnread > 9 ? "9+" : bellUnread)))),
+                React.createElement("button", { onClick: toggleViewerLock, title: viewerLock ? "Viewer mode is ON — nothing on the play can be dragged. Tap to unlock." : "Viewer mode: lock the play so nothing moves by accident", "aria-pressed": viewerLock, style: { display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", flexShrink: 0, borderRadius: 7, cursor: "pointer", touchAction: "manipulation", border: `1px solid ${viewerLock ? "rgba(251,191,36,0.65)" : "rgba(255,255,255,0.16)"}`, background: viewerLock ? "rgba(251,191,36,0.16)" : "rgba(255,255,255,0.04)", color: viewerLock ? "#fcd34d" : "rgba(255,255,255,0.6)", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.06em" } }, React.createElement("span", { style: { fontSize: 13, lineHeight: 1 } }, viewerLock ? "🔒" : "🔓"), React.createElement("span", null, viewerLock ? "LOCKED" : "VIEW")),
                 React.createElement("button", { className: "sbtn amb", onClick: () => setShowHudl(true), style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", flexShrink: 0 } },
                     React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round" },
                         React.createElement("path", { d: "M4 7h16M4 12h16M4 17h16" })),
@@ -15632,7 +15840,8 @@ function PlaybookApp() {
                                         React.createElement("span", { style: { fontSize: 11 } }, exportingVideo ? "●" : "⬇"),
                                         exportingVideo ? "BUILDING…" : "EXPORT GIF"))));
                             })()),
-                        !readOnly && tool === "select" && selectedId && (() => { const r = routes.find(x => x.id === selectedId); if (!r) return null; const owner = players.find(p => p.id === r.ownerId); const isCombo = owner && owner.ptype !== "defense" && r.rtype !== "blocking" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz" && r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion"; const bs = { padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em", border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.05)", color: "#e2e8f0" }; return (React.createElement(DraggablePanel, { style: { position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", zIndex: 9, pointerEvents: "auto" } }, React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, background: "rgba(8,10,18,0.94)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 9, padding: "6px 10px" } }, React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.5)" } }, "ROUTE", owner ? " · " + (owner.label || owner.role || "") : ""), routeNameEdit && routeNameEdit.id === r.id ? (React.createElement(React.Fragment, null, React.createElement("input", { autoFocus: true, value: routeNameEdit.value, onChange: e => setRouteNameEdit({ id: r.id, value: e.target.value }), onKeyDown: e => { if (e.key === "Enter") { setRouteName(r.id, routeNameEdit.value); setRouteNameEdit(null); } if (e.key === "Escape") setRouteNameEdit(null); }, placeholder: "Name (e.g. Dig, Mesh\u2026)", style: { width: 120, padding: "4px 8px", borderRadius: 6, background: "#15151f", color: "#fff", border: "1px solid rgba(94,234,212,0.5)", fontSize: 12 } }), React.createElement("button", { style: { ...bs, color: "#99f6e4" }, onClick: () => { setRouteName(r.id, routeNameEdit.value); setRouteNameEdit(null); } }, "SAVE"))) : (React.createElement("button", { style: bs, onClick: () => setRouteNameEdit({ id: r.id, value: r.name || "" }), title: "Give this route/scheme a name shown on the field" }, "\u270E ", r.name ? "RENAME" : "NAME")), React.createElement("button", { style: bs, onClick: () => addRoutePointToSelected(r.id), title: "Add a bend point at the end \u2014 then drag it into place" }, "\uFF0B PT"), React.createElement("button", { style: { ...bs, color: "#f87171", borderColor: "rgba(248,113,113,0.5)" }, onClick: () => deleteRouteById(r.id), title: "Delete just this route" }, "\uD83D\uDDD1 DELETE"), isCombo && React.createElement("button", { style: { ...bs, color: "#fca5a5", borderColor: "rgba(248,113,113,0.35)" }, onClick: () => { if (typeof window === "undefined" || window.confirm("Delete every offensive route on the field? (Formation, blocking, motions and defense stay.)")) deleteRouteCombination(); }, title: "Delete the whole route combination \u2014 every offensive pass route on the field" }, "\uD83D\uDDD1 COMBO"), React.createElement("button", { style: bs, onClick: () => setSelectedId(null), title: "Done" }, "\u2713")))); })(),
+                        viewerLock && (React.createElement("div", { onClick: toggleViewerLock, title: "Viewer mode is on \u2014 tap to unlock and edit", style: { position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)", zIndex: 9, display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 20, cursor: "pointer", touchAction: "manipulation", pointerEvents: "auto", background: "rgba(251,191,36,0.14)", border: "1px solid rgba(251,191,36,0.5)", backdropFilter: "blur(6px)" } }, React.createElement("span", { style: { fontSize: 12, lineHeight: 1 } }, "\uD83D\uDD12"), React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.09em", color: "#fcd34d" } }, "VIEWER MODE"), React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.5)" } }, "tap to unlock"))),
+                        !readOnly && !viewerLock && tool === "select" && selectedId && (() => { const r = routes.find(x => x.id === selectedId); if (!r) return null; const owner = players.find(p => p.id === r.ownerId); const isCombo = owner && owner.ptype !== "defense" && r.rtype !== "blocking" && r.rtype !== "showBlitz" && r.rtype !== "hideBlitz" && r.rtype !== "preSnapMotion" && r.rtype !== "postSnapMotion"; const bs = { padding: "5px 11px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.05em", border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.05)", color: "#e2e8f0" }; return (React.createElement(DraggablePanel, { style: { position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", zIndex: 9, pointerEvents: "auto" } }, React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, background: "rgba(8,10,18,0.94)", border: "1px solid rgba(251,191,36,0.4)", borderRadius: 9, padding: "6px 10px" } }, React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.5)" } }, "ROUTE", owner ? " · " + (owner.label || owner.role || "") : ""), routeNameEdit && routeNameEdit.id === r.id ? (React.createElement(React.Fragment, null, React.createElement("input", { autoFocus: true, value: routeNameEdit.value, onChange: e => setRouteNameEdit({ id: r.id, value: e.target.value }), onKeyDown: e => { if (e.key === "Enter") { setRouteName(r.id, routeNameEdit.value); setRouteNameEdit(null); } if (e.key === "Escape") setRouteNameEdit(null); }, placeholder: "Name (e.g. Dig, Mesh\u2026)", style: { width: 120, padding: "4px 8px", borderRadius: 6, background: "#15151f", color: "#fff", border: "1px solid rgba(94,234,212,0.5)", fontSize: 12 } }), React.createElement("button", { style: { ...bs, color: "#99f6e4" }, onClick: () => { setRouteName(r.id, routeNameEdit.value); setRouteNameEdit(null); } }, "SAVE"))) : (React.createElement("button", { style: bs, onClick: () => setRouteNameEdit({ id: r.id, value: r.name || "" }), title: "Give this route/scheme a name shown on the field" }, "\u270E ", r.name ? "RENAME" : "NAME")), React.createElement("button", { style: bs, onClick: () => addRoutePointToSelected(r.id), title: "Add a bend point at the end \u2014 then drag it into place" }, "\uFF0B PT"), React.createElement("button", { style: { ...bs, color: "#f87171", borderColor: "rgba(248,113,113,0.5)" }, onClick: () => deleteRouteById(r.id), title: "Delete just this route" }, "\uD83D\uDDD1 DELETE"), isCombo && React.createElement("button", { style: { ...bs, color: "#fca5a5", borderColor: "rgba(248,113,113,0.35)" }, onClick: () => { if (typeof window === "undefined" || window.confirm("Delete every offensive route on the field? (Formation, blocking, motions and defense stay.)")) deleteRouteCombination(); }, title: "Delete the whole route combination \u2014 every offensive pass route on the field" }, "\uD83D\uDDD1 COMBO"), React.createElement("button", { style: bs, onClick: () => setSelectedId(null), title: "Done" }, "\u2713")))); })(),
                         manEditId && (() => {
                             const ml = coverages.find(c => c.id === manEditId && c.ctype === "man");
                             if (!ml)
@@ -15696,6 +15905,43 @@ function PlaybookApp() {
                                 setSelectedZoneId(z.id);
                                 setEditingZoneId(null);
                             };
+                            // Zones "of the same name" = same label, compared trimmed and
+                            // case-insensitively (so "Hook" and "HOOK" match). Snapping to
+                            // THIS zone lets a coach draw one ⅓ (or HOOK, FLAT…) the way he
+                            // wants it and pull every twin into agreement.
+                            const zKey = (z.label || "").trim().toLowerCase();
+                            const sameName = zKey
+                                ? coverages.filter(c => c && c.ctype === "zone" && c.id !== z.id && (c.label || "").trim().toLowerCase() === zKey)
+                                : [];
+                            // mode "shape": copy w/h + oval-vs-box. mode "level": copy the
+                            // vertical centre. Each twin keeps its own centre on the axis we
+                            // are NOT snapping, so a row of thirds stays spread across the
+                            // field instead of stacking up on this zone.
+                            const snapSameName = (mode) => {
+                                if (!sameName.length)
+                                    return;
+                                const zcx = z.x + z.w / 2, zcy = z.y + z.h / 2;
+                                pushUndo();
+                                setCoverages(prev => prev.map(c => {
+                                    if (!c || c.ctype !== "zone" || c.id === z.id)
+                                        return c;
+                                    if ((c.label || "").trim().toLowerCase() !== zKey)
+                                        return c;
+                                    const ccx = c.x + c.w / 2, ccy = c.y + c.h / 2;
+                                    const next = { ...c };
+                                    if (mode === "shape") {
+                                        next.w = z.w;
+                                        next.h = z.h;
+                                        next.shape = z.shape || "ellipse";
+                                        next.x = ccx - z.w / 2; // keep this zone's own centre
+                                        next.y = ccy - z.h / 2;
+                                    }
+                                    else {
+                                        next.y = zcy - c.h / 2; // same vertical centre = same level
+                                    }
+                                    return next;
+                                }));
+                            };
                             return (React.createElement("div", { ref: editZoneRef, className: "gp-fieldbar", style: { position: "absolute",
                                     ...(editZonePos ? { left: editZonePos.x, top: editZonePos.y } : { top: 14, left: "50%", transform: "translateX(-50%)" }),
                                     background: "rgba(10,10,18,0.94)", border: `1px solid ${z.color}aa`, padding: "7px 11px", borderRadius: 9, backdropFilter: "blur(8px)", zIndex: 6, display: "flex", alignItems: "center", gap: 9, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.85)", flexWrap: "wrap", maxWidth: "94%" } },
@@ -15707,6 +15953,7 @@ function PlaybookApp() {
                                 React.createElement("div", { style: { display: "flex", gap: 4 } }, ZONE_COLORS.map(col => (React.createElement("button", { key: col, onClick: () => setCoverages(prev => prev.map(c => c.id === z.id ? { ...c, color: col } : c)), title: "Zone color", style: { width: 16, height: 16, borderRadius: "50%", cursor: "pointer", background: col,
                                         border: z.color === col ? "2px solid #fff" : "2px solid rgba(0,0,0,0.4)" } })))),
                                 React.createElement("button", { onClick: () => { setEditingZoneId(z.id); setEditingZoneLabel(z.label || ""); }, style: { padding: "3px 9px", borderRadius: 5, cursor: "pointer", border: `1px solid ${z.color}`, background: z.color + "22", color: z.color, fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em" } }, z.label ? "EDIT TEXT" : "ADD TEXT"),
+                                sameName.length > 0 ? (React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "center" } }, React.createElement("span", { style: { color: "rgba(255,255,255,0.4)", fontSize: 10 } }, "MATCH ", sameName.length), React.createElement("button", { onClick: () => snapSameName("shape"), title: `Resize every "${(z.label || "").trim()}" zone to this one's size and shape (each keeps its own spot)`, style: { padding: "3px 9px", borderRadius: 5, cursor: "pointer", border: `1px solid ${z.color}`, background: z.color + "22", color: z.color, fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em" } }, "\u2B0C SHAPE"), React.createElement("button", { onClick: () => snapSameName("level"), title: `Line every "${(z.label || "").trim()}" zone up at this one's depth`, style: { padding: "3px 9px", borderRadius: 5, cursor: "pointer", border: `1px solid ${z.color}`, background: z.color + "22", color: z.color, fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em" } }, "\u2195 LEVEL"))) : null,
                                 z.label && (z.labelOffX || z.labelOffY) ? (React.createElement("button", { onClick: () => setCoverages(prev => prev.map(c => c.id === z.id ? { ...c, labelOffX: 0, labelOffY: 0 } : c)), title: "Move the label back to the zone center", style: { padding: "3px 9px", borderRadius: 5, cursor: "pointer", border: "1px solid rgba(255,255,255,0.25)", background: "transparent", color: "rgba(255,255,255,0.7)", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.08em" } }, "\u21BB CENTER LABEL")) : null,
                                 attP ? (React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "center" } },
                                     React.createElement("button", { onClick: () => setCoverages(prev => prev.map(c => c.id === z.id ? { ...c, lock: !c.lock } : c)), title: z.lock
@@ -16639,15 +16886,16 @@ function PlaybookApp() {
                 isInst ? "install" : "script",
                 ".")))));
 })(),
-            quizZoom && (() => {
+                        quizZoom && (() => {
                 const vw = typeof window !== "undefined" ? window.innerWidth : 800;
                 const vh = typeof window !== "undefined" ? window.innerHeight : 600;
                 const zw = Math.max(200, Math.round(vw * 0.95));
                 const zh = Math.max(200, Math.round(vh * 0.90));
                 return (React.createElement("div", { onClick: () => setQuizZoom(null), title: "Tap anywhere to close", style: { position: "fixed", inset: 0, zIndex: 7300, background: "rgba(4,5,10,0.97)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out", WebkitTapHighlightColor: "transparent" } },
                     React.createElement("div", { style: { borderRadius: 10, overflow: "hidden", boxShadow: "0 10px 60px rgba(0,0,0,0.8)" } },
-                        React.createElement(PlayThumbnail, { play: quizZoom, w: zw, h: zh })),
+                        React.createElement(PlayThumbnail, { play: quizZoom, w: zw, h: zh, animT: quizAnimOn ? quizAnimT : null })),
                     React.createElement("button", { onClick: () => setQuizZoom(null), style: { position: "absolute", top: "max(10px, env(safe-area-inset-top))", right: 10, width: 42, height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)", color: "#fff", cursor: "pointer", fontSize: 17, touchAction: "manipulation" } }, "\u2715"),
+                    React.createElement("button", { onClick: (e) => { e.stopPropagation(); setQuizAnimOn(v => !v); }, title: quizAnimOn ? "Stop the play" : "Run the play right here — it repeats until you stop it", style: { position: "absolute", bottom: "max(46px, calc(env(safe-area-inset-bottom) + 40px))", left: "50%", transform: "translateX(-50%)", padding: "10px 20px", borderRadius: 9, cursor: "pointer", touchAction: "manipulation", border: `1px solid ${quizAnimOn ? "rgba(248,113,113,0.6)" : "rgba(74,222,128,0.55)"}`, background: quizAnimOn ? "rgba(248,113,113,0.18)" : "rgba(74,222,128,0.16)", color: quizAnimOn ? "#fca5a5" : "#86efac", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, letterSpacing: "0.08em" } }, quizAnimOn ? "■ STOP" : "▶ PLAY IN ACTION", quizAnimOn ? "" : ""), quizAnimOn && (React.createElement("span", { className: "mono", style: { position: "absolute", bottom: "max(88px, calc(env(safe-area-inset-bottom) + 82px))", left: 0, right: 0, textAlign: "center", fontSize: 10, color: "#86efac", pointerEvents: "none" } }, "\u21BB LOOPING")),
                     React.createElement("span", { style: { position: "absolute", bottom: "max(10px, env(safe-area-inset-bottom))", left: 0, right: 0, textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.45)", pointerEvents: "none" } }, "tap anywhere to close")));
             })(),
             quizZoomAll && (() => {
@@ -16681,9 +16929,10 @@ function PlaybookApp() {
             React.createElement("span", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 16, letterSpacing: "0.08em", color: "#7dd3fc" } }, "ALL OPTIONS"),
             React.createElement("span", { style: { fontSize: 12, color: "rgba(255,255,255,0.5)" } }, canAnswer ? "Tap the one that matches to answer." : "Tap any to enlarge it fully."),
             React.createElement("div", { style: { flex: 1 } }),
-            React.createElement("button", { onClick: () => setQuizZoomAll(null), style: { width: 42, height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)", color: "#fff", cursor: "pointer", fontSize: 17, touchAction: "manipulation" } }, "\u2715")),
+            React.createElement("button", { onClick: (e) => { e.stopPropagation(); setQuizAnimOn(v => !v); }, title: quizAnimOn ? "Stop all four" : "Run every play here at once — they repeat until you stop them", style: { padding: "8px 14px", borderRadius: 9, cursor: "pointer", touchAction: "manipulation", marginRight: 2, border: `1px solid ${quizAnimOn ? "rgba(248,113,113,0.6)" : "rgba(74,222,128,0.55)"}`, background: quizAnimOn ? "rgba(248,113,113,0.18)" : "rgba(74,222,128,0.16)", color: quizAnimOn ? "#fca5a5" : "#86efac", fontFamily: "'Bebas Neue',sans-serif", fontSize: 13, letterSpacing: "0.07em", whiteSpace: "nowrap" } }, quizAnimOn ? "■ STOP" : "▶ PLAY ALL"),
+                            React.createElement("button", { onClick: () => setQuizZoomAll(null), style: { width: 42, height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(0,0,0,0.5)", color: "#fff", cursor: "pointer", fontSize: 17, touchAction: "manipulation" } }, "\u2715")),
         React.createElement("div", { style: { flex: 1, minHeight: 0, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "0 12px 14px", display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap, alignContent: "start" } }, opts.map(o => (React.createElement("button", { key: o.id, onClick: () => pick(o), style: { padding: 0, border: "1px solid rgba(255,255,255,0.14)", borderRadius: 10, overflow: "hidden", background: "#0a1a0e", cursor: canAnswer ? "pointer" : "zoom-in", touchAction: "manipulation" } },
-            React.createElement(PlayThumbnail, { play: o.play, w: tileW, h: tileH })))))));
+            React.createElement(PlayThumbnail, { play: o.play, w: tileW, h: tileH, animT: quizAnimOn ? quizAnimT : null })))))));
 })(),
             showGuide && (() => {
                 const gSteps = GUIDE_STEPS.filter(s => (!s.need || caps[s.need]) && (!s.viewOnly || !caps.edit));
