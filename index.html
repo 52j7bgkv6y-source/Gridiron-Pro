@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-15z";
+window.__gpBuild = "2026-07-16j";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -2828,11 +2828,15 @@ function PlaybookApp() {
     // ball reaches the spot, so the throw lands as the receiver arrives.
     const animCatchCapRef = useRef(null);
     const ballCatchArriveRef = useRef(null);
+    // ballCatchWhoRef: ballPlan step id → the player who catches that spot-throw.
+    const ballCatchWhoRef = useRef(null);
     // ballHandTimeRef: ballPlan step id → ball-time (0..1) of the mesh point — the
     // moment the ball carrier crosses the handoff giver's path. The ball stays
     // with the giver until then, transfers at the mesh, and rides the carrier
     // after, so a handoff reads as a real exchange (not a thrown ball).
     const ballHandTimeRef = useRef(null);
+    // ballAfterRouteRef: step id → ball-time the CURRENT HOLDER finishes his route.
+    const ballAfterRouteRef = useRef(null);
     // QB dropback for the animation: { qbId, depth (units), dropMs } or null.
     const animDropbackRef = useRef(null);
     const animHasPreSnapRef = useRef(false);
@@ -3338,7 +3342,7 @@ function PlaybookApp() {
         setCounterRec(gpRecommendCounter(a, names, plays));
     };
     const applyCounterFormation = (name) => {
-        loadFormation(name.replace(/^★ /, ""), "offense", false, true);
+        loadFormation(name.replace(/^★ /, ""), "offense", false, true, true);
         setCounterRec(null);
     };
     // Map a recommendation label onto a real Front dropdown entry.
@@ -3356,7 +3360,7 @@ function PlaybookApp() {
             alert('Couldn\'t match "' + label + '" to a front in your dropdown — pick it there by hand.');
             return;
         }
-        loadFormation(key, "defense", false, true);
+        loadFormation(key, "defense", false, true, true);
         setCounterRec(null);
     };
     // Offense drawn → defensive answer, presented in the unified COUNTER cards.
@@ -3519,6 +3523,14 @@ function PlaybookApp() {
     // Read through a ref inside the drag callbacks: those are memoised with dep
     // arrays that don't include viewerLock, so reading the state directly would
     // capture a stale value and the lock would silently stop working.
+    // ── SAVE INTO ── Chosen install(s) and practice-script period(s) that a
+    // SAVE should drop the play into. Kept for the session so building an
+    // install from scratch is: pick the target once, then just keep saving.
+    const [saveToInstalls, setSaveToInstalls] = useState([]);
+    const [saveToPeriods, setSaveToPeriods] = useState([]); // "scriptId::periodId"
+    const [saveTargetOpen, setSaveTargetOpen] = useState(false);
+    const [saveFormNameInto, setSaveFormNameInto] = useState("");
+    const [saveFormSides, setSaveFormSides] = useState([]);
     const viewerLockRef = useRef(false);
     useEffect(() => { viewerLockRef.current = viewerLock; }, [viewerLock]);
     // fieldReadOnly gates ON-FIELD work; readOnly gates SAVE/EDIT/DELETE. Player
@@ -3605,7 +3617,22 @@ function PlaybookApp() {
     // none (e.g. a defense/special-teams look, or an O-line-only set), there's
     // nobody to snap to, so the ball mechanics auto-off. The user can also force
     // it off with the "No snap" toggle in the Ball panel.
-    const ballSnapCandidates = () => (players || []).filter(p => ["QB", "WR", "TE", "HB", "FB", "RB", "K", "P"].includes(p.role));
+    // Anyone on the offensive side can take the snap — including linemen, a
+    // Wildcat back, or a player whose role was never set. Excludes the stamped
+    // O-line reference (olRef) that a defensive look draws to align against:
+    // that isn't a real offense, and counting it would stop the ball turning
+    // itself off on defense-only plays.
+    const SNAP_ROLE_ORDER = ["QB", "HB", "RB", "FB", "WR", "TE", "K", "P", "OL"];
+    const ballSnapCandidates = () => (players || [])
+        .filter(p => p && p.ptype !== "defense" && !p.olRef)
+        .slice()
+        .sort((a, b) => {
+        const ai = SNAP_ROLE_ORDER.indexOf(a.role), bi = SNAP_ROLE_ORDER.indexOf(b.role);
+        const av = ai === -1 ? SNAP_ROLE_ORDER.length : ai, bv = bi === -1 ? SNAP_ROLE_ORDER.length : bi;
+        if (av !== bv)
+            return av - bv;
+        return String(a.label || "").localeCompare(String(b.label || ""));
+    });
     const ballSnapOff = () => !!ballPlan.noSnap || ballSnapCandidates().length === 0;
     const ballSnapId = () => {
         if (ballPlan.snapTo)
@@ -3726,10 +3753,23 @@ function PlaybookApp() {
                     // catch point (set in startAnim), then leave the ball at the spot.
                     const synced = ballCatchArriveRef.current && ballCatchArriveRef.current.get(step.id);
                     const arrive = (typeof synced === "number") ? synced : e;
-                    if (bt >= arrive)
-                        return target;
+                    if (bt >= arrive) {
+                        // Caught: ride the receiver as he runs it out.
+                        const who = ballCatchWhoRef.current && ballCatchWhoRef.current.get(step.id);
+                        const wp = who ? live(who) : null;
+                        return wp || target;
+                    }
                     const fd = Math.min(0.20, Math.max(0.05, (arrive - s) * 0.6)), fs = arrive - fd;
                     return bt < fs ? (holderSpot || live(holderId) || startPos) : ballLerp(startPos, target, (bt - fs) / fd);
+                }
+                // "After route": hold the ball with the carrier until he has finished
+                // his drawn path, then make the exchange in the time that's left.
+                const tAfter = ballAfterRouteRef.current && ballAfterRouteRef.current.get(step.id);
+                if (step.afterRoute && typeof tAfter === "number") {
+                    if (bt < tAfter)
+                        return startPos; // riding the holder
+                    const xd2 = Math.min(0.10, Math.max(0.02, (e - tAfter) * 0.6)), xe3 = tAfter + xd2;
+                    return bt < xe3 ? ballLerp(startPos, tgtPos, (bt - tAfter) / xd2) : (tgtSpot || live(step.toId) || tgtPos);
                 }
                 // Handoff: stay glued to the giver until the carrier crosses his path
                 // (the precomputed mesh time), make a quick exchange there, then ride
@@ -3750,8 +3790,10 @@ function PlaybookApp() {
                     holderId = null;
                 }
                 else if (tgtSpot) {
-                    holderSpot = tgtSpot;
-                    holderId = null;
+                    // A spot-throw bound to a receiver leaves HIM holding the ball.
+                    const who = ballCatchWhoRef.current && ballCatchWhoRef.current.get(step.id);
+                    if (who) { holderId = who; holderSpot = null; }
+                    else { holderSpot = tgtSpot; holderId = null; }
                 }
                 else {
                     holderId = step.toId;
@@ -3999,7 +4041,9 @@ function PlaybookApp() {
                     const last = route.points[route.points.length - 1];
                     return { ...p, x: last.x, y: last.y };
                 }
-                const e = easeFn(localT);
+                // Jet motion = constant full speed (linear); get-set keeps the ease.
+                            const isJet = (route.motionStyle || "set") === "moving";
+                            const e = isJet ? localT : easeFn(localT);
                 const pos = pointOnPolyline(route.points, e);
                 return pos ? { ...p, x: pos.x, y: pos.y } : p;
             });
@@ -4055,7 +4099,7 @@ function PlaybookApp() {
             const moving = animMovingByPlayerRef.current && animMovingByPlayerRef.current.get(p.id);
             if (moving && postElapsed <= moving.mainMs) {
                 const f = moving.snapFrac + (postElapsed / moving.mainMs) * (1 - moving.snapFrac);
-                const pos = pointOnPolyline(moving.route.points, easeFn(Math.min(1, f)));
+                const pos = pointOnPolyline(moving.route.points, Math.min(1, f)); // linear: same speed as before the snap
                 return pos ? { ...p, x: pos.x, y: pos.y } : p;
             }
             const pe = moving ? Math.max(0, localElapsed - moving.mainMs) : localElapsed;
@@ -4112,8 +4156,17 @@ function PlaybookApp() {
                 }
                 const lp = Math.min(1, le / Math.max(1, dur));
                 let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp) : easeFn(lp);
-                if (catchCap)
-                    t = Math.min(catchCap.cf, t);
+                if (catchCap) {
+                    // Before the ball arrives he runs the paced route (so he and the
+                    // ball meet). After it, he keeps running the remainder — and any
+                    // chained run-route — at his natural pace instead of freezing.
+                    if (le <= catchCap.catchMs)
+                        t = Math.min(catchCap.cf, t);
+                    else {
+                        const racMs = Math.max(1, (1 - catchCap.cf) * (catchCap.natDur || ANIM_DURATION_MS));
+                        t = Math.min(1, catchCap.cf + (1 - catchCap.cf) * Math.min(1, (le - catchCap.catchMs) / racMs));
+                    }
+                }
                 const pos = pointOnPolyline(route.points, t);
                 return pos ? { ...p, x: pos.x, y: pos.y } : p;
             }
@@ -5160,7 +5213,7 @@ function PlaybookApp() {
         (players || []).forEach((p, i) => idToIdx.set(p.id, i));
         const ball = ballSnapOff() ? { off: true, snapIdx: -1, steps: [] } : {
             snapIdx: idToIdx.has(ballSnapId()) ? idToIdx.get(ballSnapId()) : -1,
-            steps: (ballPlan.steps || []).map(s => ({ action: s.action, fake: !!s.fake, toIdx: (s.toId != null && idToIdx.has(s.toId)) ? idToIdx.get(s.toId) : -1, toPoint: s.toPoint || null, bounce: s.bounce || null })),
+            steps: (ballPlan.steps || []).map(s => ({ action: s.action, fake: !!s.fake, toIdx: (s.toId != null && idToIdx.has(s.toId)) ? idToIdx.get(s.toId) : -1, toPoint: s.toPoint || null, bounce: s.bounce || null, catchIdx: (() => { const w = ballCatchWhoRef.current && ballCatchWhoRef.current.get(s.id); return (w != null && idToIdx.has(w)) ? idToIdx.get(w) : -1; })() })),
         };
         const numMotion = out.filter(p => p.motionPath).length;
         const motionFrac = numMotion > 0 ? Math.min(0.45, 0.15 + 0.12 * numMotion) : 0;
@@ -6562,7 +6615,7 @@ function PlaybookApp() {
             return prev.slice(0, -1);
         });
     }, []);
-    const loadFormation = useCallback((fname, toverride, forceBuiltIn, keepOther) => {
+    const loadFormation = useCallback((fname, toverride, forceBuiltIn, keepOther, withTexts) => {
         var _a, _b;
         const t = toverride || tab;
         const builtIn = (_a = FORMATIONS[t]) === null || _a === void 0 ? void 0 : _a[fname];
@@ -6570,8 +6623,12 @@ function PlaybookApp() {
         // (used right after deleting an override, before the state update lands).
         const customDef = forceBuiltIn ? null : (_b = customForms[t]) === null || _b === void 0 ? void 0 : _b[fname];
         // A custom formation with the same name OVERRIDES the built-in of that name.
-        const def = customDef || builtIn;
-        if (!def)
+        const defRaw = customDef || builtIn;
+        if (!defRaw)
+            return;
+        const def = Array.isArray(defRaw) ? defRaw : (Array.isArray(defRaw.players) ? defRaw.players : []);
+        const defTexts = (!Array.isArray(defRaw) && Array.isArray(defRaw.texts)) ? defRaw.texts : [];
+        if (!def.length)
             return;
         // MINE-scope label override: when a built-in defensive formation loads
         // while the active scope is "personal", swap default labels (DE/DT/MLB/...)
@@ -6633,6 +6690,24 @@ function PlaybookApp() {
         setSelectedBlitz("");
         setSelectedCoverage("");
         setSelectedMotion("");
+        // Swap this formation's own text notes in place of the previous
+        // formation's. Inlined rather than calling swapOwnedTexts/presetTextsToField
+        // — those are declared BELOW this callback, so naming them in the dep array
+        // would be a temporal-dead-zone crash at render.
+        if (withTexts) {
+            const incoming = defTexts.map(t => ({
+                id: uid(), owner: "formation",
+                text: t.text != null ? t.text : "Text",
+                color: t.color || "#ffffff",
+                size: t.size || 18,
+                shape: t.shape || undefined,
+                x: ballX + (t.dx || 0),
+                y: losY + (t.dy || 0),
+            }));
+            setTexts(prev => [...prev.filter(t => t.owner !== "formation"), ...incoming]);
+            setSelectedTextId(null);
+            setEditingTextId(null);
+        }
     }, [tab, losY, ballX, customForms]);
     // Add OPPOSING formation onto the field without clearing current players
     const addOpposingFormation = useCallback((fname, sideOverride) => {
@@ -6642,8 +6717,12 @@ function PlaybookApp() {
             return;
         const builtIn = (_a = FORMATIONS[oppTab]) === null || _a === void 0 ? void 0 : _a[fname];
         const customDef = (_b = customForms[oppTab]) === null || _b === void 0 ? void 0 : _b[fname];
-        const def = customDef || builtIn;
-        if (!def)
+        const defRaw = customDef || builtIn;
+        if (!defRaw)
+            return;
+        const def = Array.isArray(defRaw) ? defRaw : (Array.isArray(defRaw.players) ? defRaw.players : []);
+        const defTexts = (!Array.isArray(defRaw) && Array.isArray(defRaw.texts)) ? defRaw.texts : [];
+        if (!def.length)
             return;
         pushUndo(players, routes);
         const applyMineOverride = !!builtIn && !customDef && scopeRef.current === "personal";
@@ -6662,6 +6741,22 @@ function PlaybookApp() {
         setPlayers(prev => [...prev.filter(p => p.ptype !== oppPtype), ...np]);
         setRoutes(prev => prev.filter(r => !(r.ownerId && removedIds.has(r.ownerId))));
         setSelectedId(null);
+        // Selecting a vs-look swaps its text notes in, replacing the previous
+        // formation's — inlined for the same TDZ reason as loadFormation.
+        {
+            const incoming = defTexts.map(t => ({
+                id: uid(), owner: "formation",
+                text: t.text != null ? t.text : "Text",
+                color: t.color || "#ffffff",
+                size: t.size || 18,
+                shape: t.shape || undefined,
+                x: ballX + (t.dx || 0),
+                y: losY + (t.dy || 0),
+            }));
+            setTexts(prev => [...prev.filter(t => t.owner !== "formation"), ...incoming]);
+            setSelectedTextId(null);
+            setEditingTextId(null);
+        }
     }, [tab, losY, ballX, customForms, players, routes, pushUndo]);
     // Open the "Save Formation" dialog (replaces window.prompt — those don't run in the artifact iframe)
     const openSaveFormation = useCallback((sideArg) => {
@@ -6703,14 +6798,16 @@ function PlaybookApp() {
             return;
         }
         const def = teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY), ...(p.color ? { color: p.color } : {}), ...(p.sizeMul && p.sizeMul !== 1 ? { sizeMul: p.sizeMul } : {}) }));
-        setCustomForms(prev => ({ ...prev, [side]: { ...(prev[side] || {}), [trimmed]: def } }));
+        const fTexts = texts.filter(t => t.owner === "formation")
+            .map(t => ({ text: t.text, color: t.color, size: t.size, shape: t.shape || undefined, dx: Math.round(t.x - ballX), dy: Math.round(t.y - losY) }));
+        setCustomForms(prev => ({ ...prev, [side]: { ...(prev[side] || {}), [trimmed]: { players: def, texts: fTexts } } }));
         if (saveFormSide)
             setVsSel(v => ({ ...v, [side]: trimmed }));
         else
             setFormation(trimmed);
         setShowSaveForm(false);
         setSaveFormSide(null);
-    }, [tab, players, losY, ballX, customForms, saveFormName, saveFormSide]);
+    }, [tab, players, losY, ballX, customForms, saveFormName, saveFormSide, texts]);
     // Hard-protected delete — only ever runs against a custom formation
     const doDeleteFormation = useCallback((fname, sideArg) => {
         var _a, _b;
@@ -6770,9 +6867,11 @@ function PlaybookApp() {
             const tabCustom = { ...(prev[eSide] || {}) };
             // If user opted in, snapshot the current field positions as the new layout;
             // otherwise keep the existing stored layout (renaming only).
-            const newLayout = (editFormReplaceLayout && teamPlayers.length > 0)
+            const priorRaw = tabCustom[oldName];
+        const priorTexts = (priorRaw && !Array.isArray(priorRaw) && Array.isArray(priorRaw.texts)) ? priorRaw.texts : [];
+        const newLayout = (editFormReplaceLayout && teamPlayers.length > 0)
                 ? teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY), ...(p.color ? { color: p.color } : {}), ...(p.sizeMul && p.sizeMul !== 1 ? { sizeMul: p.sizeMul } : {}) }))
-                : tabCustom[oldName];
+                : priorRaw;
             if (newName !== oldName)
                 delete tabCustom[oldName];
             tabCustom[newName] = newLayout;
@@ -8736,7 +8835,41 @@ function PlaybookApp() {
             return u;
         } return [...prev, play]; });
         setCurrentPlay(play);
-    }, [playName, tab, formation, personnel, personnelLooks, playTypes, players, routes, coverages, texts, ballX, losY, ballPlan, playNotes, positionNotes, showNotes, currentPlay, selectedCoverage, selectedBlitz, autoAssign, assignZonesToDefenders, sortPrefs]);
+        // Drop it into any chosen install / script period. ADD ONLY — re-saving a
+        // play must never pull it back out, and a play already in the target is
+        // left where it sits (no duplicate, no reorder).
+        if (saveToInstalls.length) {
+            setInstalls(prev => prev.map(i => (saveToInstalls.indexOf(i.id) === -1 || i.playIds.includes(play.id))
+                ? i : { ...i, playIds: [...i.playIds, play.id] }));
+        }
+        // Store the alignment as a formation for each ticked side. Same shape as
+        // the SAVE FORMATION dialog: that side's players as offsets from the ball
+        // and the LOS, so it loads correctly at any spot on the field.
+        const formIntoName = (saveFormNameInto || "").trim();
+        if (formIntoName && saveFormSides.length) {
+            setCustomForms(prev => {
+                const next = { ...prev };
+                saveFormSides.forEach(side => {
+                    const teamPlayers = players.filter(p => p.ptype === side);
+                    if (!teamPlayers.length)
+                        return;
+                    const def = teamPlayers.map(p => ({ id: p.origId || p.id, label: p.label, role: p.role || "default", dx: Math.round(p.x - ballX), dy: Math.round(p.y - losY), ...(p.color ? { color: p.color } : {}), ...(p.sizeMul && p.sizeMul !== 1 ? { sizeMul: p.sizeMul } : {}) }));
+                    const fTx = texts.filter(t => t.owner === "formation")
+            .map(t => ({ text: t.text, color: t.color, size: t.size, shape: t.shape || undefined, dx: Math.round(t.x - ballX), dy: Math.round(t.y - losY) }));
+                    next[side] = { ...(next[side] || {}), [formIntoName]: { players: def, texts: fTx } };
+                });
+                return next;
+            });
+        }
+        if (saveToPeriods.length) {
+            setScripts(prev => prev.map(s => {
+                if (!s.periods || !s.periods.some(per => saveToPeriods.indexOf(s.id + "::" + per.id) !== -1))
+                    return s;
+                return { ...s, periods: s.periods.map(per => (saveToPeriods.indexOf(s.id + "::" + per.id) === -1 || per.playIds.includes(play.id))
+                        ? per : { ...per, playIds: [...per.playIds, play.id] }) };
+            }));
+        }
+    }, [playName, tab, formation, personnel, personnelLooks, playTypes, players, routes, coverages, texts, ballX, losY, ballPlan, playNotes, positionNotes, showNotes, currentPlay, selectedCoverage, selectedBlitz, autoAssign, assignZonesToDefenders, sortPrefs, saveToInstalls, saveToPeriods, setInstalls, setScripts, saveFormNameInto, saveFormSides, setCustomForms, ballX]);
     const loadPlay = useCallback((play) => {
         setCurrentPlay(play);
         setPlayName(play.name);
@@ -11809,7 +11942,8 @@ function PlaybookApp() {
         // point (so they don't run past it or finish the route), and time the
         // throw so the ball arrives exactly as they reach it — caught in stride.
         const catchCapByPlayer = new Map(); // playerId -> catch fraction (0..1)
-        const ballCatchArrive = new Map(); // step id -> ball-time (0..1) ball reaches spot
+        const ballCatchArrive = new Map();
+        const ballCatchWho = new Map(); // step id -> playerId who catches it there // step id -> ball-time (0..1) ball reaches spot
         const easeInv = (c) => c <= 0 ? 0 : c >= 1 ? 1 : (c <= 0.5 ? Math.sqrt(c / 2) : 1 - Math.sqrt(2 * (1 - c)) / 2);
         const nearestFracOnRoute = (pts, pt) => {
             if (!pts || pts.length < 2)
@@ -11868,19 +12002,21 @@ function PlaybookApp() {
                         let arrive = (bestDur / ANIM_DURATION_MS) * easeInv(bestCf);
                         arrive = Math.max(sliceStart + Math.min(0.12, (sliceEnd - sliceStart) * 0.4), Math.min(sliceEnd, arrive));
                         ballCatchArrive.set(step.id, arrive);
+                        ballCatchWho.set(step.id, bestPid);
                         // Pace the receiver so the catch fraction lands exactly at `arrive`.
                         // No fake → this equals their natural pace; a play-action fake pushes
                         // the throw later, so this stretches their route timing to match,
                         // instead of letting them finish early and wait for the ball.
                         const eInv = easeInv(Math.max(0.05, bestCf));
                         const effDur = Math.max(1, (arrive * ANIM_DURATION_MS) / eInv);
-                        catchCapByPlayer.set(bestPid, { cf: bestCf, dur: effDur });
+                        catchCapByPlayer.set(bestPid, { cf: bestCf, dur: effDur, catchMs: arrive * ANIM_DURATION_MS, natDur: bestDur });
                     }
                 });
             }
         }
         animCatchCapRef.current = catchCapByPlayer;
         ballCatchArriveRef.current = ballCatchArrive;
+        ballCatchWhoRef.current = ballCatchWho;
         // ── Handoff mesh points ──────────────────────────────────────────────
         // A handoff isn't a thrown ball: the giver holds it until the carrier
         // crosses his path, hands it off at that mesh point, then both keep moving.
@@ -11980,6 +12116,39 @@ function PlaybookApp() {
         setPlayingAnim(true);
         // Blitz order → staggered post-snap rush (shared helper; see blitzStaggerMap).
         const blitzStaggerByRoute = blitzStaggerMap(routes, ANIM_HOLD_MS);
+        // For each step marked "after route", work out when the player holding the
+        // ball finishes his own drawn path. Route time is on the main clock, so
+        // ball-time = (route duration + its blitz stagger) / ANIM_DURATION_MS.
+        // Clamped just inside the step's window end so the toss still happens.
+        const ballAfterRoute = new Map();
+        {
+            const bSteps2 = ballPlan.steps || [];
+            if (bSteps2.length && !ballSnapOff()) {
+                const wins2 = ballStepWindows(bSteps2);
+                let holder2 = ballSnapId();
+                bSteps2.forEach((step, k) => {
+                    if (step.afterRoute && holder2) {
+                        const r = routeByPlayer.get(holder2);
+                        if (r && r.points && r.points.length >= 2) {
+                            const dur = durations.get(r.id) || ANIM_DURATION_MS;
+                            const delay = blitzStaggerByRoute.get(r.id) || 0;
+                            const done = (dur + delay) / ANIM_DURATION_MS;
+                            const w = wins2[k];
+                            // Never past the window (the ball must still change hands), and
+                            // never before the window opens.
+                            ballAfterRoute.set(step.id, Math.max(w.s, Math.min(w.e - 0.02, done)));
+                        }
+                    }
+                    if (!step.fake) {
+                        if (step.toId)
+                            holder2 = step.toId;
+                        else if (step.toPoint)
+                            holder2 = null;
+                    }
+                });
+            }
+        }
+        ballAfterRouteRef.current = ballAfterRoute;
         // Smooth ease-in-out — accelerates from rest, decelerates to a stop.
         const ease = (t) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
         // Constant-speed position along a polyline at progress t (0..1).
@@ -12075,7 +12244,8 @@ function PlaybookApp() {
                         const last = route.points[route.points.length - 1];
                         return { ...p, x: last.x, y: last.y };
                     }
-                    const e = ease(localT);
+                    const isJet = (route.motionStyle || "set") === "moving";
+                        const e = isJet ? localT : ease(localT);
                     const pos = pointOnRoute(route.points, e);
                     return pos ? { ...p, x: pos.x, y: pos.y } : p;
                 }));
@@ -12164,7 +12334,7 @@ function PlaybookApp() {
                     const moving = animMovingByPlayerRef.current && animMovingByPlayerRef.current.get(p.id);
                     if (moving && postElapsed <= moving.mainMs) {
                         const f = moving.snapFrac + (postElapsed / moving.mainMs) * (1 - moving.snapFrac);
-                        const pos = pointOnRoute(moving.route.points, ease(Math.min(1, f)));
+                        const pos = pointOnRoute(moving.route.points, Math.min(1, f)); // linear: same speed as before the snap
                         return pos ? { ...p, x: pos.x, y: pos.y } : p;
                     }
                     const pe = moving ? Math.max(0, localElapsed - moving.mainMs) : localElapsed;
@@ -12232,8 +12402,17 @@ function PlaybookApp() {
                         }
                         const lp = Math.min(1, le / Math.max(1, dur));
                         let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp) : ease(lp);
-                        if (catchCap)
-                            t = Math.min(catchCap.cf, t);
+                        if (catchCap) {
+                            // Before the ball arrives he runs the paced route (so he and the
+                            // ball meet). After it, he keeps running the remainder — and any
+                            // chained run-route — at his natural pace instead of freezing.
+                            if (le <= catchCap.catchMs)
+                                t = Math.min(catchCap.cf, t);
+                            else {
+                                const racMs = Math.max(1, (1 - catchCap.cf) * (catchCap.natDur || ANIM_DURATION_MS));
+                                t = Math.min(1, catchCap.cf + (1 - catchCap.cf) * Math.min(1, (le - catchCap.catchMs) / racMs));
+                            }
+                        }
                         const pos = pointOnRoute(route.points, t);
                         return pos ? { ...p, x: pos.x, y: pos.y } : p;
                     }
@@ -14693,7 +14872,7 @@ function PlaybookApp() {
                         React.createElement("input", { className: "inp", value: playName, onChange: e => setPlayName(e.target.value), placeholder: "Play Name", style: { width: 130 } }),
                         React.createElement("button", { className: "sbtn dim", onClick: () => cyclePlay(1), disabled: filteredPlays.length < 2, title: "Load the next saved play in this list", style: { padding: "7px 9px", fontSize: 15, lineHeight: 1, opacity: filteredPlays.length < 2 ? 0.35 : 1, cursor: filteredPlays.length < 2 ? "default" : "pointer" } }, "\u203A"),
                         React.createElement(SearchSelect, { value: formation, width: 140, placeholder: tab === "defense" ? "Front" : "Formation", title: tab === "defense" ? "Front — type to search built-in or custom fronts" : "Formation — type to search built-in or custom", options: [...formNames.filter(f => { var _a; return !((_a = customForms[tab]) === null || _a === void 0 ? void 0 : _a[f]); }).map(f => ({ value: f, label: f })), ...orderedNames(Object.keys(customForms[tab] || {}), catSortPref("formations")).map(f => ({ value: f, label: "★ " + f }))], onPick: f => { if (!f)
-                                return; pushUndo(); setTexts(prev => prev.filter(t => !["blitz", "coverage", "formation"].includes(t.owner))); setSelectedTextId(null); setEditingTextId(null); setFormation(f); loadFormation(f, undefined, undefined, true); } }),
+                                return; pushUndo(); setTexts(prev => prev.filter(t => !["blitz", "coverage", "formation"].includes(t.owner))); setSelectedTextId(null); setEditingTextId(null); setFormation(f); loadFormation(f, undefined, undefined, true, true); } }),
                         !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => openSaveFormation(), title: "Save current layout as custom formation", style: { padding: "7px 9px" } }, "\uD83D\uDCBE")),
                         !readOnly && (React.createElement("button", { className: "sbtn dim", onClick: () => setIsScout(v => !v), title: "Scout look — files this play under 🕵️ SCOUT at the bottom of the library and keeps it out of COUNTER picks and the All-plays quiz.", style: { padding: "7px 10px", color: isScout ? "#c4b5fd" : undefined, borderColor: isScout ? "rgba(196,181,253,0.6)" : undefined, background: isScout ? "rgba(196,181,253,0.12)" : undefined } }, "🕵️", isScout ? " SCOUT ✓" : " SCOUT")),
                         React.createElement("div", { style: { position: "relative" } },
@@ -14903,6 +15082,7 @@ function PlaybookApp() {
                             "\uD83D\uDCCB NOTES",
                             showNotes ? " ●" : ""),
                         !readOnly && React.createElement("button", { className: "sbtn grn", onClick: savePlay }, "SAVE"),
+                        !readOnly && (() => { const nTargets = saveToInstalls.length + saveToPeriods.length + ((saveFormNameInto || "").trim() && saveFormSides.length ? saveFormSides.length : 0); const fin = (saveFormNameInto || "").trim(); const clash = fin ? saveFormSides.filter(sd => customForms[sd] && customForms[sd][fin]) : []; const formIntoWarn = (saveFormSides.length && !fin) ? "Name it to save the alignment." : (clash.length ? `Replaces the existing ${clash.join(" + ")} formation "${fin}".` : ""); return (React.createElement("div", { style: { position: "relative", display: "inline-flex" } }, React.createElement("button", { onClick: () => setSaveTargetOpen(v => !v), title: "Choose an install or practice-script period to drop this play into when you save", style: { padding: "5px 10px", borderRadius: 6, cursor: "pointer", touchAction: "manipulation", border: `1px solid ${nTargets ? "rgba(74,222,128,0.6)" : "rgba(255,255,255,0.16)"}`, background: nTargets ? "rgba(74,222,128,0.15)" : "rgba(255,255,255,0.04)", color: nTargets ? "#86efac" : "rgba(255,255,255,0.6)", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.06em", whiteSpace: "nowrap" } }, "\uFF0B INTO", nTargets ? ` · ${nTargets}` : ""), saveTargetOpen && (React.createElement("div", { style: { position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 60, minWidth: 250, maxWidth: 320, maxHeight: 320, overflowY: "auto", background: "rgba(10,12,20,0.97)", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 10, padding: "8px 10px", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" } }, React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.45)", lineHeight: 1.5, marginBottom: 6 } }, "SAVE drops this play into whatever is ticked. Stays ticked so you can build a set play by play."), React.createElement("div", { className: "hd", style: { fontSize: 10, letterSpacing: "0.14em", color: "#fcd34d", margin: "4px 0 3px" } }, "INSTALLS"), installs.length === 0 ? React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.35)" } }, "None yet.") : installs.map(i => { const on = saveToInstalls.indexOf(i.id) !== -1; return (React.createElement("div", { key: i.id, onClick: () => setSaveToInstalls(l => on ? l.filter(x => x !== i.id) : l.concat([i.id])), style: { display: "flex", alignItems: "center", gap: 7, padding: "4px 2px", cursor: "pointer" } }, React.createElement("span", { style: { width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, border: `1px solid ${on ? "rgba(74,222,128,0.75)" : "rgba(255,255,255,0.25)"}`, background: on ? "rgba(74,222,128,0.28)" : "transparent", color: "#bbf7d0" } }, on ? "✓" : ""), React.createElement("span", { style: { fontSize: 12, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, i.name || "Untitled install"))); }), React.createElement("div", { className: "hd", style: { fontSize: 10, letterSpacing: "0.14em", color: "#c4b5fd", margin: "8px 0 3px" } }, "PRACTICE SCRIPTS"), scripts.length === 0 ? React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.35)" } }, "None yet.") : scripts.map(s => (React.createElement("div", { key: s.id, style: { marginBottom: 4 } }, React.createElement("div", { className: "mono", style: { fontSize: 10, color: "rgba(255,255,255,0.5)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, s.name || "Untitled script"), (s.periods || []).length === 0 ? React.createElement("div", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.3)", paddingLeft: 10 } }, "no periods") : (s.periods || []).map(per => { const key = s.id + "::" + per.id; const on = saveToPeriods.indexOf(key) !== -1; return (React.createElement("div", { key: per.id, onClick: () => setSaveToPeriods(l => on ? l.filter(x => x !== key) : l.concat([key])), style: { display: "flex", alignItems: "center", gap: 7, padding: "3px 2px 3px 10px", cursor: "pointer" } }, React.createElement("span", { style: { width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, border: `1px solid ${on ? "rgba(167,139,250,0.75)" : "rgba(255,255,255,0.25)"}`, background: on ? "rgba(167,139,250,0.28)" : "transparent", color: "#ddd6fe" } }, on ? "✓" : ""), React.createElement("span", { style: { fontSize: 12, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, per.name || "Period"))); })))), "                      ", React.createElement("div", { className: "hd", style: { fontSize: 10, letterSpacing: "0.14em", color: "#7dd3fc", margin: "8px 0 3px" } }, "FORMATION"), React.createElement("input", { value: saveFormNameInto, onChange: e => setSaveFormNameInto(e.target.value), placeholder: "Save alignment as\u2026 (name)", style: { width: "100%", boxSizing: "border-box", padding: "5px 8px", borderRadius: 6, background: "#15151f", color: "#fff", border: "1px solid rgba(255,255,255,0.18)", fontSize: 12, marginBottom: 5 } }), React.createElement("div", { style: { display: "flex", gap: 5 } }, ["offense", "defense"].map(sd => { const on = saveFormSides.indexOf(sd) !== -1; const col = sd === "defense" ? ["rgba(248,113,113,0.6)", "rgba(248,113,113,0.16)", "#fca5a5"] : ["rgba(74,222,128,0.6)", "rgba(74,222,128,0.16)", "#86efac"]; const n = players.filter(p => p.ptype === sd).length; return (React.createElement("button", { key: sd, onClick: () => setSaveFormSides(l => on ? l.filter(x => x !== sd) : l.concat([sd])), disabled: n === 0, title: n === 0 ? `No ${sd} players on the field` : `Save the ${sd} alignment (${n} players) under this name`, style: { flex: 1, padding: "4px 0", borderRadius: 5, cursor: n === 0 ? "not-allowed" : "pointer", opacity: n === 0 ? 0.35 : 1, border: `1px solid ${on ? col[0] : "rgba(255,255,255,0.14)"}`, background: on ? col[1] : "transparent", color: on ? col[2] : "rgba(255,255,255,0.5)", fontFamily: "'Bebas Neue',sans-serif", fontSize: 11, letterSpacing: "0.06em" } }, on ? "✓ " : "", sd === "defense" ? "DEFENSE" : "OFFENSE", n ? ` · ${n}` : "")); })), formIntoWarn ? (React.createElement("div", { className: "mono", style: { fontSize: 9, color: "#fcd34d", marginTop: 4, lineHeight: 1.45 } }, formIntoWarn)) : null, React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 8 } }, React.createElement("button", { onClick: () => { setSaveToInstalls([]); setSaveToPeriods([]); setSaveFormNameInto(""); setSaveFormSides([]); }, className: "sbtn dim", style: { fontSize: 11, padding: "4px 9px" } }, "CLEAR"), React.createElement("div", { style: { flex: 1 } }), React.createElement("button", { onClick: () => setSaveTargetOpen(false), className: "sbtn dim", style: { fontSize: 11, padding: "4px 9px" } }, "DONE")))))); })(),
                         React.createElement("button", { className: "sbtn dim", onClick: newFromCurrent, title: "New \u2014 duplicates the current play so you can save a copy" }, "NEW"),
                         React.createElement("button", { className: "sbtn dim", onClick: clearPlay, title: "Clear \u2014 wipe the field and drop in this tab's default look (Tornado Front on defense, Deuce Right on offense), staying on the tab you're on" }, "CLEAR"),
                         React.createElement("button", { className: "sbtn dim", onClick: () => clearSide("offense"), disabled: !players.some(p => p.ptype !== "defense"), title: "Clear the offense only \u2014 remove every offensive player and their routes (and reset the ball); the defense and its coverages stay put", style: { padding: "7px 9px", color: "#86efac", borderColor: "rgba(74,222,128,0.35)" } }, "CLR O"),
@@ -16114,7 +16294,7 @@ function PlaybookApp() {
                             React.createElement("button", { className: "tbtn", style: { borderColor: "rgba(239,68,68,0.3)", color: "rgba(239,68,68,0.6)", flexShrink: 0 }, onClick: () => { pushUndo(players, routes); setPlayers([]); setRoutes([]); setCoverages([]); setTexts([]); setSelectedTextId(null); setEditingTextId(null); } },
                                 React.createElement("span", { style: { fontSize: 17 } }, "\uD83D\uDDD1"),
                                 "CLEAR"),
-                            React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true); } },
+                            React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true, true); } },
                                 React.createElement("span", { style: { fontSize: 17 } }, "\u21BA"),
                                 "RESET"),
                             React.createElement("button", { className: "tbtn", style: { flexShrink: 0 }, onClick: undo },
@@ -16145,7 +16325,7 @@ function PlaybookApp() {
                     React.createElement("button", { className: "tbtn", style: { borderColor: "rgba(239,68,68,0.28)", color: "rgba(239,68,68,0.55)" }, onClick: () => { pushUndo(players, routes); setPlayers([]); setRoutes([]); setCoverages([]); setTexts([]); setSelectedTextId(null); setEditingTextId(null); } },
                         React.createElement("span", { style: { fontSize: 16 } }, "\uD83D\uDDD1"),
                         "CLEAR"),
-                    React.createElement("button", { className: "tbtn", onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true); } },
+                    React.createElement("button", { className: "tbtn", onClick: () => { pushUndo(); loadFormation(formation, undefined, undefined, true, true); } },
                         React.createElement("span", { style: { fontSize: 16 } }, "\u21BA"),
                         "RESET"),
                     React.createElement("button", { className: "tbtn", onClick: undo },
@@ -17119,16 +17299,16 @@ function PlaybookApp() {
                     React.createElement("button", { onClick: () => setShowBallPanel(false), style: { border: "none", background: "transparent", color: "#888", fontSize: 18, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
                 React.createElement("div", { style: { fontSize: 10, letterSpacing: "0.12em", color: "#777", marginBottom: 5 } },
                     "SNAP TO ",
-                    React.createElement("span", { style: { color: "#555" } }, "\u00B7 default QB; pick another for a direct snap")),
+                    React.createElement("span", { style: { color: "#555" } }, "\u00B7 default QB; pick any offensive player for a direct snap")),
                 React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginBottom: ballSnapCandidates().length === 0 ? 6 : 12 } },
                     React.createElement("button", { onClick: () => setBallPlan(bp => ({ ...bp, noSnap: !bp.noSnap })), title: "Turn the ball/snap off for this play (e.g. defense or special teams)", style: { padding: "4px 9px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, border: `1px solid ${ballPlan.noSnap ? "#f87171" : "rgba(255,255,255,0.14)"}`, background: ballPlan.noSnap ? "rgba(248,113,113,0.18)" : "rgba(255,255,255,0.05)", color: ballPlan.noSnap ? "#fca5a5" : "#cbd5e1" } }, "\u2715 No snap"),
-                    players.filter(p => ["QB", "WR", "TE", "HB", "FB", "RB"].includes(p.role)).map(p => {
+                    ballSnapCandidates().map(p => {
                         const active = !ballPlan.noSnap && ballSnapId() === p.id;
                         return React.createElement("button", { key: p.id, disabled: ballPlan.noSnap, onClick: () => setBallPlan(bp => ({ ...bp, snapTo: p.id, noSnap: false })), style: { padding: "4px 9px", borderRadius: 6, cursor: ballPlan.noSnap ? "default" : "pointer", fontSize: 12, fontWeight: 600, opacity: ballPlan.noSnap ? 0.4 : 1, border: `1px solid ${active ? "#daa520" : "rgba(255,255,255,0.14)"}`, background: active ? "rgba(218,165,32,0.2)" : "rgba(255,255,255,0.05)", color: active ? "#fde68a" : "#cbd5e1" } },
                             p.label || p.role,
                             p.role === "QB" ? " (QB)" : "");
                     })),
-                ballSnapCandidates().length === 0 && React.createElement("div", { style: { fontSize: 10.5, color: "#f59e0b", marginBottom: 12, fontStyle: "italic" } }, "No QB or skill players here \u2014 ball/snap is off automatically (defense / special teams / O-line-only)."),
+                ballSnapCandidates().length === 0 && React.createElement("div", { style: { fontSize: 10.5, color: "#f59e0b", marginBottom: 12, fontStyle: "italic" } }, "No offensive players on the field \u2014 ball/snap is off automatically (defense-only looks)."),
                 React.createElement("div", { style: { fontSize: 10, letterSpacing: "0.12em", color: "#777", marginBottom: 5 } },
                     "QB DROPBACK ",
                     React.createElement("span", { style: { color: "#555" } }, "\u00B7 depth the QB drops before throwing")),
@@ -17212,7 +17392,7 @@ function PlaybookApp() {
                                 isPass && React.createElement("option", { value: "__spot__", style: { background: "#000", color: "#fff" } }, "\uD83D\uDCCD Spot on field")),
                             React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1" } },
                                 React.createElement("input", { type: "checkbox", checked: !!s.fake, onChange: e => ballUpdateStep(s.id, { fake: e.target.checked }), style: { accentColor: "#f59e0b" } }),
-                                " fake"))),
+                                " fake"), !s.fake && (React.createElement("label", { title: "Hold the ball with whoever has it until he finishes his drawn route, then make this pitch / handoff / throw.", style: { display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: s.afterRoute ? "#86efac" : "#cbd5e1" } }, React.createElement("input", { type: "checkbox", checked: !!s.afterRoute, onChange: e => ballUpdateStep(s.id, { afterRoute: e.target.checked }), style: { accentColor: "#4ade80" } }), " after route")))),
                         ((isPass && s.toPoint) || (isKick && s.toPoint)) && (React.createElement("div", { style: { marginTop: 7, paddingTop: 7, borderTop: "1px dashed rgba(255,255,255,0.1)" } },
                             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 5 } },
                                 React.createElement("span", { style: { fontSize: 10, color: "#888", width: 62 } }, isKick ? "Land (yd)" : "Depth (yd)"),
@@ -19944,12 +20124,14 @@ function Walkthrough3D({ data, onClose }) {
                         const xd = Math.min(0.12, w * 0.5), xe = s0 + xd;
                         if (t < xe)
                             return fin(lerp3(startG, tgtG, (t - s0) / xd));
+                        if (step.toPoint && step.catchIdx >= 0)
+                            return fin(figGround(step.catchIdx, tLoop) || pointGround(step.toPoint));
                         return fin(step.toPoint ? pointGround(step.toPoint) : (figGround(step.toIdx, tLoop) || tgtG));
                     }
                     if (!step.fake) {
                         if (step.toPoint) {
-                            holderSpot = step.toPoint;
-                            holderIdx = -1;
+                            if (step.catchIdx >= 0) { holderIdx = step.catchIdx; holderSpot = null; }
+                            else { holderSpot = step.toPoint; holderIdx = -1; }
                         }
                         else {
                             holderIdx = step.toIdx;
