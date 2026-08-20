@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-16j";
+window.__gpBuild = "2026-07-16k";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -4879,6 +4879,7 @@ function PlaybookApp() {
     }, [teamDB, loadShareData]);
     const [runSeen, setRunSeen] = useState([]); // play_ids the player has viewed in the running install (for auto-completion %)
     const [zoom, setZoom] = useState(1);
+    const pinchRef = useRef(null); // active two-finger pinch: { d0, z0, at }
     const [viewCenter, setViewCenter] = useState({ x: FW / 2, y: LOS_Y });
     const [panning, setPanning] = useState(false);
     const [panStart, setPanStart] = useState(null);
@@ -15207,7 +15208,21 @@ function PlaybookApp() {
                                     fsVbRef.current = fsVB; // remember the rest frame to freeze during PLAY IN ACTION
                                 }
                             }
-                            return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: fsVB || `${vbX} ${vbY} ${vbW} ${vbH}`, preserveAspectRatio: "xMidYMid meet", style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); onSVGUp(e); } },
+                            // Zoom/pan ON TOP of the auto-fit fullscreen frame. At 100% the
+                        // frame is untouched (fit the whole play); above that we shrink
+                        // the window around the view centre, clamped inside the frame so
+                        // you can never pan off the play.
+                        if (fsVB && zoom > 1.001) {
+                            const bp = fsVB.split(" ").map(Number);
+                            if (bp.length === 4 && bp.every(n => isFinite(n))) {
+                                const [bx, by, bw, bh] = bp;
+                                const zw = bw / zoom, zh = bh / zoom;
+                                const cx = Math.max(bx + zw / 2, Math.min(bx + bw - zw / 2, (viewCenter && viewCenter.x) || bx + bw / 2));
+                                const cy = Math.max(by + zh / 2, Math.min(by + bh - zh / 2, (viewCenter && viewCenter.y) || by + bh / 2));
+                                fsVB = `${cx - zw / 2} ${cy - zh / 2} ${zw} ${zh}`;
+                            }
+                        }
+                        return (React.createElement("svg", { ref: svgRef, className: "field-svg", viewBox: fsVB || `${vbX} ${vbY} ${vbW} ${vbH}`, preserveAspectRatio: "xMidYMid meet", style: { maxWidth: "100%", maxHeight: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,0.07)", cursor: tool === "select" ? "default" : tool === "erase" ? "cell" : tool === "pan" ? (panning ? "grabbing" : "grab") : "crosshair", userSelect: "none", display: "block", aspectRatio: `${aspectW}/${aspectH}`, touchAction: "none" }, onMouseDown: onSVGDown, onMouseMove: onSVGMove, onMouseUp: onSVGUp, onWheel: e => { e.preventDefault(); const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12; const minZ = 1.0; setZoom(z => Math.max(minZ, Math.min(4, z * dir))); }, onTouchStart: e => { e.preventDefault(); if (e.touches && e.touches.length >= 2) { const [a, b] = [e.touches[0], e.touches[1]]; const mid = { clientX: (a.clientX + b.clientX) / 2, clientY: (a.clientY + b.clientY) / 2 }; pinchRef.current = { d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, z0: zoom, at: getSVGPt(mid), }; setDrawingRoute(false); setRoutePoints([]); setGestureStartPos(null); setFreeDrawingGesture(false); setHoverPoint(null); setSnapGuide(null); return; } onSVGDown(e); }, onTouchMove: e => { e.preventDefault(); const pr = pinchRef.current; if (pr && e.touches && e.touches.length >= 2) { const [a, b] = [e.touches[0], e.touches[1]]; const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1; const nz = Math.max(1, Math.min(4, pr.z0 * (d / pr.d0))); setZoom(nz); if (nz > 1.001 && pr.at) setViewCenter({ x: pr.at.x, y: pr.at.y }); return; } if (pr) return; onSVGMove(e); }, onTouchEnd: e => { e.preventDefault(); if (pinchRef.current) { if (!e.touches || e.touches.length === 0) pinchRef.current = null; return; } onSVGUp(e); } },
                                 React.createElement("defs", null,
                                     Object.entries(ROUTE_CFG).map(([rt, cfg]) => cfg.endStyle === "block" ? (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "4", markerHeight: "4", refX: "0.5", refY: "2", orient: "auto" },
                                         React.createElement("line", { x1: "0.5", y1: "0.4", x2: "0.5", y2: "3.6", stroke: cfg.color, strokeWidth: "1.4", strokeLinecap: "round" }))) : (React.createElement("marker", { key: rt, id: `arr-${rt}`, markerWidth: "5", markerHeight: "5", refX: "3.6", refY: "1.8", orient: "auto" },
