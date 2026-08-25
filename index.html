@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-16k";
+window.__gpBuild = "2026-07-16p";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -367,6 +367,24 @@ function flipSavedPlayLR(play) {
         players: f.players, routes: f.routes, coverages: f.coverages, ballX: f.ballX,
         texts: (play.texts || []).map(t => (typeof t.x === "number" ? { ...t, x: fx(t.x) } : t)),
         ballPlan: play.ballPlan ? { ...play.ballPlan, steps: (play.ballPlan.steps || []).map(st => (st.toPoint && typeof st.toPoint.x === "number") ? { ...st, toPoint: { ...st.toPoint, x: fx(st.toPoint.x) } } : st) } : play.ballPlan,
+    };
+}
+// Full vertical mirror of a SAVED play object, across ITS OWN line of
+// scrimmage — the twin of flipSavedPlayLR. Everything the run viewer draws
+// moves together: players (and their side), routes, zones, text chips and the
+// ball path. The LOS itself is the mirror axis, so it stays put and the play
+// simply runs the other way.
+function flipSavedPlayUD(play) {
+    const L = typeof play.losY === "number" ? play.losY : LOS_Y;
+    const fy = (y) => 2 * L - y;
+    const f = flipPartsAcrossLOS({
+        players: play.players || [], routes: play.routes || [], coverages: play.coverages || [], losY: L,
+    });
+    return {
+        ...play,
+        players: f.players, routes: f.routes, coverages: f.coverages,
+        texts: (play.texts || []).map(t => (typeof t.y === "number" ? { ...t, y: fy(t.y) } : t)),
+        ballPlan: play.ballPlan ? { ...play.ballPlan, steps: (play.ballPlan.steps || []).map(st => (st.toPoint && typeof st.toPoint.y === "number") ? { ...st, toPoint: { ...st.toPoint, y: fy(st.toPoint.y) } } : st) } : play.ballPlan,
     };
 }
 function flipPartsCall({ players = [], routes = [], coverages = [], texts = [], ballPlan, ballX }) {
@@ -2837,6 +2855,8 @@ function PlaybookApp() {
     const ballHandTimeRef = useRef(null);
     // ballAfterRouteRef: step id → ball-time the CURRENT HOLDER finishes his route.
     const ballAfterRouteRef = useRef(null);
+    // animHandoffWaitRef: routeId → ms the BALL GIVER stays put for a fly sweep.
+    const animHandoffWaitRef = useRef(null);
     // QB dropback for the animation: { qbId, depth (units), dropMs } or null.
     const animDropbackRef = useRef(null);
     const animHasPreSnapRef = useRef(false);
@@ -4148,7 +4168,7 @@ function PlaybookApp() {
             }
             if (route) {
                 const dur = (catchCap && catchCap.dur) ? catchCap.dur : ((durs && durs.get(route.id)) || ANIM_DURATION_MS);
-                const delay = gifBlitzStagger.get(route.id) || 0;
+                const delay = (gifBlitzStagger.get(route.id) || 0) + ((animHandoffWaitRef.current && animHandoffWaitRef.current.get(route.id)) || 0);
                 const le = pe - delay;
                 if (le <= 0) {
                     const sp = route.points[0];
@@ -4585,10 +4605,11 @@ function PlaybookApp() {
     const [runFrom, setRunFrom] = useState(null);
     // Run-viewer field/boundary flip. Resets on every step because loadPlay
     // reloads the saved play fresh — the flip is for THIS rep only, never saved.
-    const [runFlip, setRunFlip] = useState(false); // current play idx in flattened sequence
+    const [runFlip, setRunFlip] = useState(false);
+    const [runFlipUD, setRunFlipUD] = useState(false); // run mode: mirror across the LOS // current play idx in flattened sequence
     // Whenever the play changes (or a run starts/stops), drop back to the field —
     // the notes screen is always reached by advancing PAST the play.
-    useEffect(() => { setRunNotesShown(false); setRunFlip(false); }, [runStepIdx, runningInstallId, runningScriptId]);
+    useEffect(() => { setRunNotesShown(false); setRunFlip(false); setRunFlipUD(false); }, [runStepIdx, runningInstallId, runningScriptId]);
     // ── Question notifications (bell). Only admin-picked coaches (rows in
     // notify_recipients) get the badge; admins/co-admins always see the bell so
     // they can reach the recipient picker. Delivery is 60s polling — matches the
@@ -12024,6 +12045,92 @@ function PlaybookApp() {
         // For each real handoff step, walk both players' live tracks across the
         // step's window and find the ball-time where they're closest — that's the
         // exchange instant. (Pitches keep their quick toss; spots can't mesh.)
+        // ── Fly-sweep hold ───────────────────────────────────────────────────
+        // If the ball goes (or is faked) to a man running a MOVING pre-snap motion,
+        // the giver waits for him to cross. We sample the sweeper along the rest of
+        // his motion and take the moment his x passes the giver's — that's "he's
+        // gone by". The giver's route then starts from there, so the mesh happens
+        // in front of him at full speed instead of both drifting together.
+        const handoffWait = new Map(); // routeId → hold ms
+        {
+            const bSteps3 = ballPlan.steps || [];
+            if (bSteps3.length && !ballSnapOff()) {
+                const ptOnPts = (pts, t) => {
+                    if (!pts || !pts.length)
+                        return null;
+                    if (pts.length === 1 || t <= 0)
+                        return pts[0];
+                    if (t >= 1)
+                        return pts[pts.length - 1];
+                    let total = 0;
+                    const seg = [];
+                    for (let i = 1; i < pts.length; i++) {
+                        const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+                        seg.push(d);
+                        total += d;
+                    }
+                    if (total === 0)
+                        return pts[0];
+                    let tgt = total * t;
+                    for (let i = 0; i < seg.length; i++) {
+                        if (tgt <= seg[i]) {
+                            const k = seg[i] === 0 ? 0 : tgt / seg[i];
+                            return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * k, y: pts[i].y + (pts[i + 1].y - pts[i].y) * k };
+                        }
+                        tgt -= seg[i];
+                    }
+                    return pts[pts.length - 1];
+                };
+                let giver3 = ballSnapId();
+                bSteps3.forEach(step => {
+                    // Fakes count: a fly-sweep FAKE only sells if the QB lets him go by.
+                    const isHandoffish = step.action !== "pass" && step.action !== "kick" && step.toId;
+                    if (isHandoffish && giver3 && giver3 !== step.toId) {
+                        const mv = movingByPlayer.get(step.toId);
+                        const gRoute = routeByPlayer.get(giver3);
+                        const gPl = players.find(p => p.id === giver3);
+                        if (mv && mv.route && mv.route.points && gRoute && gPl) {
+                            const pts = mv.route.points;
+                            // Walk the sweeper across the rest of his motion and find where he
+                            // is CLOSEST to the giver — that's the mesh. The giver holds his
+                            // spot until then, so the sweeper arrives at full speed and goes
+                            // by in front instead of the two drifting downfield together.
+                            // The giver holds until the sweeper is PAST him — measured along
+                            // the motion's own direction of travel, and past by a body's
+                            // width so they aren't still level. (Closest-approach was wrong:
+                            // it fires while the sweeper is right on top of the QB, so the QB
+                            // took off alongside him.) If the sweeper is already clear at the
+                            // snap there's nothing to wait for and the hold stays 0.
+                            const CLEAR_BY = 14; // ≈ a body's width
+                            const a0 = pts[0], aN = pts[pts.length - 1];
+                            const dir = Math.sign((aN.x - a0.x)) || 1; // which way he's running
+                            let waitMs = 0;
+                            const N = 40;
+                            for (let i = 0; i <= N; i++) {
+                                const f = mv.snapFrac + (1 - mv.snapFrac) * (i / N);
+                                const pp = ptOnPts(pts, f);
+                                if (!pp)
+                                    continue;
+                                if (dir * (pp.x - gPl.x) >= CLEAR_BY) {
+                                    waitMs = mv.mainMs * (i / N);
+                                    break;
+                                }
+                            }
+                            // Cap it so an odd motion can never freeze him for the whole play.
+                            if (waitMs > 0)
+                                handoffWait.set(gRoute.id, Math.min(ANIM_DURATION_MS * 0.45, waitMs));
+                        }
+                    }
+                    if (!step.fake) {
+                        if (step.toId)
+                            giver3 = step.toId;
+                        else if (step.toPoint)
+                            giver3 = null;
+                    }
+                });
+            }
+        }
+        animHandoffWaitRef.current = handoffWait;
         const ballHandTime = new Map(); // step id → ball-time (0..1) of the exchange
         {
             const bSteps = ballPlan.steps || [];
@@ -12056,17 +12163,31 @@ function PlaybookApp() {
                     }
                     return pts[pts.length - 1];
                 };
+                // Where the player REALLY is at ball-time bt. Two things the plain
+                // route lookup missed, both of which threw the mesh off on a fly sweep:
+                //   • a MOVING motion man is still finishing that motion for the first
+                //     mainMs after the snap — he isn't on his main route yet;
+                //   • the giver may be holding still while the sweeper clears him.
                 const posAt = (pid, bt) => {
                     const pl = players.find(p => p.id === pid);
+                    const ms = bt * ANIM_DURATION_MS;
+                    const mv = movingByPlayer.get(pid);
+                    if (mv && mv.route && mv.route.points && ms < mv.mainMs) {
+                        const f = mv.snapFrac + (1 - mv.snapFrac) * (mv.mainMs > 0 ? ms / mv.mainMs : 1);
+                        return ptAt(mv.route.points, Math.min(1, f)); // linear: full speed, as drawn
+                    }
                     const route = routeByPlayer.get(pid);
                     if (!route || !route.points || route.points.length < 2)
                         return pl ? { x: pl.x, y: pl.y } : null;
                     const dur = durations.get(route.id) || ANIM_DURATION_MS;
-                    return ptAt(route.points, easeH(Math.min(1, (bt * ANIM_DURATION_MS) / dur)));
+                    const shifted = mv ? (ms - mv.mainMs) : (ms - (handoffWait.get(route.id) || 0));
+                    if (shifted <= 0)
+                        return route.points[0]; // still held / not started
+                    return ptAt(route.points, easeH(Math.min(1, shifted / dur)));
                 };
                 let giverId = ballSnapId();
                 bSteps.forEach((step, k) => {
-                    const isHand = !step.fake && step.action !== "pass" && step.action !== "kick" && step.action !== "pitch" && step.toId;
+                    const isHand = step.action !== "pass" && step.action !== "kick" && step.action !== "pitch" && step.toId;
                     if (isHand && giverId) {
                         const w = winsH[k], N = 48;
                         let bestT = w.s, bestD = Infinity;
@@ -12395,7 +12516,7 @@ function PlaybookApp() {
                         // ordered blitzers rush in sequence (they hold at the line until
                         // their turn). Routes with no blitz order have delay 0 (unchanged).
                         const dur = (catchCap && catchCap.dur) ? catchCap.dur : ((durs && durs.get(route.id)) || ANIM_DURATION_MS);
-                        const delay = blitzStaggerByRoute.get(route.id) || 0;
+                        const delay = (blitzStaggerByRoute.get(route.id) || 0) + ((animHandoffWaitRef.current && animHandoffWaitRef.current.get(route.id)) || 0);
                         const le = pe - delay;
                         if (le <= 0) {
                             const sp = route.points[0];
@@ -18620,6 +18741,7 @@ function PlaybookApp() {
                 // scripts flatten across periods (with period name + play index
                 // in that period); installs flatten as a plain ordered list.
                 let title = "", subtitle = "", flat = [];
+        const runSections = []; // install subsections: { id, name, startIdx }
                 if (runningScriptId) {
                     const script = scripts.find(s => s.id === runningScriptId);
                     if (!script)
@@ -18642,14 +18764,33 @@ function PlaybookApp() {
                     if (!inst)
                         return null;
                     title = inst.name;
+                    // Walk the plays in order, carrying the most recent subsection header
+                    // forward. "__start__" pins a header above the first play.
+                    const secsByBefore = new Map();
+                    (inst.sections || []).forEach(sec => {
+                        const key = (sec.beforePlayId != null ? sec.beforePlayId : sec.afterPlayId);
+                        if (key != null)
+                            secsByBefore.set(key, sec);
+                    });
+                    let curSec = secsByBefore.get("__start__") || null;
                     inst.playIds.forEach((pid, i) => {
+                        const hit = secsByBefore.get(pid);
+                        if (hit)
+                            curSec = hit;
                         const p = plays.find(pp => pp.id === pid);
-                        if (p)
+                        if (p) {
+                            if (curSec && (!runSections.length || runSections[runSections.length - 1].id !== curSec.id)) {
+                                runSections.push({ id: curSec.id, name: curSec.name || "Section", startIdx: flat.length });
+                            }
                             flat.push({
                                 play: p,
                                 contextLabel: `Play ${i + 1} of ${inst.playIds.length}`,
+                                sectionId: curSec ? curSec.id : null,
+                                sectionName: curSec ? (curSec.name || "Section") : null,
                             });
+                        }
                     });
+                    subtitle = "Install";
                     subtitle = "Install";
                 }
                 if (flat.length === 0) {
@@ -18768,7 +18909,9 @@ function PlaybookApp() {
                 const vAnimating = playingAnim;
                 // ⇆ FLIP mirrors the play we DRAW. (The button also mirrors live state,
                 // so PLAY IN ACTION animates the same way round.)
-                const dPlay = runFlip ? flipSavedPlayLR(step.play) : step.play;
+                let dPlay = runFlip ? flipSavedPlayLR(step.play) : step.play;
+                if (runFlipUD)
+                    dPlay = flipSavedPlayUD(dPlay);
                 const vPlayers = vAnimating ? players : (dPlay.players || []);
                 const vRoutes = vAnimating ? routes : (dPlay.routes || []);
                 const vCoverages = vAnimating ? coverages : (dPlay.coverages || []);
@@ -18781,7 +18924,7 @@ function PlaybookApp() {
                             React.createElement("div", { className: "hd", style: { fontSize: 20, color: "#fff", letterSpacing: "0.1em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, step.play.name),
                             React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 3 } },
                                 playFormations(step.play)[0] || "—",
-                                toTypeArr(step.play.type).length > 0 ? "  .  " + toTypeArr(step.play.type).join(" / ") : "")),
+                                toTypeArr(step.play.type).length > 0 ? "  .  " + toTypeArr(step.play.type).join(" / ") : ""), step.sectionName ? (React.createElement("div", { className: "hd", style: { fontSize: 12, letterSpacing: "0.12em", color: "#7dd3fc", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, "\u00A7 ", step.sectionName)) : null),
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
                             React.createElement("div", { className: "mono", style: { fontSize: 13, color: "rgba(255,255,255,0.65)", fontWeight: 600 } },
                                 idx + 1,
@@ -18792,6 +18935,7 @@ function PlaybookApp() {
                             // flipLR the editor's ⇆ uses. It is not saved — stepping to another
                             // play reloads from the playbook, which restores the original.
                             !readOnly && (React.createElement("button", { onClick: () => { setRunFlip(f => !f); flipLR(); setTexts(ts => ts.map(t => (typeof t.x === "number" ? { ...t, x: FW - t.x } : t))); }, title: "Flip this play left ⇄ right for this rep (field/boundary). Not saved — the next play reloads clean.", className: "sbtn dim", style: { padding: "6px 12px", ...(runFlip ? { borderColor: "rgba(125,211,252,0.7)", color: "#7dd3fc" } : null) } }, "\u21C6 FLIP", runFlip ? " \u2713" : "")),
+                            !readOnly && (React.createElement("button", { onClick: () => { setRunFlipUD(f => !f); flipTeams(); setTexts(ts => ts.map(t => (typeof t.y === "number" ? { ...t, y: 2 * losY - t.y } : t))); }, title: "Flip this play up \u21C5 down for this rep \u2014 run it the other direction. Not saved; the next play reloads clean.", className: "sbtn dim", style: { padding: "6px 12px", ...(runFlipUD ? { borderColor: "rgba(125,211,252,0.7)", color: "#7dd3fc" } : null) } }, "\u21C5 FLIP", runFlipUD ? " ✓" : "")),
                             React.createElement("button", { onClick: exit, className: "sbtn dim", style: { padding: "6px 14px" } }, "EXIT"))),
                     React.createElement("div", { style: { flex: 1, position: "relative", overflow: "hidden", background: "#0d1f12" } },
                         React.createElement("svg", { viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, preserveAspectRatio: "xMidYMid meet", style: { width: "100%", height: "100%", display: "block" } },
@@ -18964,7 +19108,8 @@ function PlaybookApp() {
                                     React.createElement("line", { x1: bp.x - 6, y1: bp.y, x2: bp.x + 6, y2: bp.y, stroke: "#f5deb3", strokeWidth: "0.8" }),
                                     React.createElement("line", { x1: bp.x, y1: bp.y - 4, x2: bp.x, y2: bp.y + 4, stroke: "#f5deb3", strokeWidth: "0.8" })));
                             })(), vTexts.map(t => gpTextChipSVG(t, "run")))),
-                    React.createElement("div", { style: { padding: "12px 22px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+                    runSections.length > 1 && (React.createElement("div", { style: { padding: "8px 16px 0", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center" } }, React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.1em" } }, "JUMP TO"), runSections.map(sec => { const on = step.sectionId === sec.id; return (React.createElement("button", { key: sec.id, onClick: () => { setRunNotesShown(false); setRunStepIdx(sec.startIdx); }, title: `Jump to "${sec.name}"`, style: { padding: "4px 11px", borderRadius: 6, cursor: "pointer", touchAction: "manipulation", maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.07em", border: `1px solid ${on ? "rgba(125,211,252,0.75)" : "rgba(255,255,255,0.15)"}`, background: on ? "rgba(125,211,252,0.16)" : "rgba(255,255,255,0.04)", color: on ? "#7dd3fc" : "rgba(255,255,255,0.6)" } }, sec.name)); }))),
+                            React.createElement("div", { style: { padding: "12px 22px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
                         React.createElement("button", { onClick: prev, disabled: idx === 0, title: "Previous play  (\u2190  or  P)", style: { padding: "9px 22px", borderRadius: 7, cursor: idx === 0 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${idx === 0 ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.25)"}`,
                                 background: idx === 0 ? "transparent" : "rgba(255,255,255,0.05)",
@@ -20050,7 +20195,7 @@ function Walkthrough3D({ data, onClose }) {
                     const slice0 = (1 - 0.08) / stp.length;
                     let gIdx = ballData.snapIdx;
                     stp.forEach((step, k) => {
-                        const isHand = !step.fake && step.action !== "pass" && step.action !== "kick" && step.action !== "pitch" && step.toIdx >= 0;
+                        const isHand = step.action !== "pass" && step.action !== "kick" && step.action !== "pitch" && step.toIdx >= 0;
                         if (isHand && gIdx >= 0) {
                             const s0 = 0.08 + k * slice0, e0 = s0 + slice0, N = 48;
                             let bestT = s0, bestD = Infinity;
