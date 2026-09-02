@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-16p";
+window.__gpBuild = "2026-07-16y";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -2857,6 +2857,8 @@ function PlaybookApp() {
     const ballAfterRouteRef = useRef(null);
     // animHandoffWaitRef: routeId → ms the BALL GIVER stays put for a fly sweep.
     const animHandoffWaitRef = useRef(null);
+    // ballNoMeshRef: steps where the two never came within handing distance.
+    const ballNoMeshRef = useRef(null);
     // QB dropback for the animation: { qbId, depth (units), dropMs } or null.
     const animDropbackRef = useRef(null);
     const animHasPreSnapRef = useRef(false);
@@ -3746,6 +3748,42 @@ function PlaybookApp() {
         };
         const wins = ballStepWindows(steps);
         let holderId = snapId, holderSpot = null;
+        // A FAKE is shown when the two players actually pass, which may fall
+        // outside the slot the step was allotted. Check those first, from the
+        // hands of whoever is carrying the ball at that moment.
+        for (let k = 0; k < steps.length; k++) {
+            const step = steps[k];
+            if (!step.fake)
+                continue;
+            const tF = ballHandTimeRef.current && ballHandTimeRef.current.get(step.id);
+            if (typeof tF !== "number")
+                continue;
+            if (ballNoMeshRef.current && ballNoMeshRef.current.has(step.id))
+                continue;
+            const half = 0.05;
+            if (bt <= tF - half || bt >= tF + half)
+                continue;
+            // Whoever holds the ball at this instant is the one selling it.
+            let hId = snapId, hSpot = null;
+            for (let m = 0; m < steps.length; m++) {
+                if (wins[m].e <= tF - half && !steps[m].fake) {
+                    if (steps[m].toId) {
+                        hId = steps[m].toId;
+                        hSpot = null;
+                    }
+                    else if (steps[m].toPoint) {
+                        hSpot = steps[m].toPoint;
+                        hId = null;
+                    }
+                }
+            }
+            const from = hSpot || live(hId) || snapPos;
+            const to = step.toPoint || live(step.toId) || from;
+            const peak = ballLerp(from, to, 0.6);
+            return bt < tF
+                ? ballLerp(from, peak, (bt - (tF - half)) / half)
+                : ballLerp(peak, from, (bt - tF) / half);
+        }
         for (let k = 0; k < steps.length; k++) {
             const s = wins[k].s, e = wins[k].e, step = steps[k];
             const startPos = holderSpot || live(holderId) || snapPos;
@@ -3754,6 +3792,14 @@ function PlaybookApp() {
             if (bt >= s && bt < e) {
                 const w = e - s;
                 if (step.fake) {
+                    // The timed pass above draws this fake. Reaching here means either
+                    // it isn't the moment yet, it was never close enough to sell, or the
+                    // target has no route to mesh with — in the last case keep the old
+                    // centred arc so something still shows.
+                    const tF = ballHandTimeRef.current && ballHandTimeRef.current.get(step.id);
+                    const noMesh = ballNoMeshRef.current && ballNoMeshRef.current.has(step.id);
+                    if (typeof tF === "number" || noMesh)
+                        return startPos;
                     const mid = s + w * 0.5, peak = ballLerp(startPos, tgtPos, 0.6);
                     return bt < mid ? ballLerp(startPos, peak, (bt - s) / (w * 0.5)) : ballLerp(peak, startPos, (bt - mid) / (w * 0.5));
                 }
@@ -4175,7 +4221,8 @@ function PlaybookApp() {
                     return sp ? { ...p, x: sp.x, y: sp.y } : p;
                 }
                 const lp = Math.min(1, le / Math.max(1, dur));
-                let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp) : easeFn(lp);
+                let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp)
+                                : (route.junctionIdx != null ? lp : easeFn(lp));
                 if (catchCap) {
                     // Before the ball arrives he runs the paced route (so he and the
                     // ball meet). After it, he keeps running the remainder — and any
@@ -5956,7 +6003,7 @@ function PlaybookApp() {
                                     const lib = JSON.parse(value);
                                     if (lib && typeof lib === "object") {
                                         delete lib.v;
-                                        lib.playbookScope = "personal";
+                                        lib.playbookScope = (key === MINE_ALL_SHARED_KEY ? "shared" : "personal");
                                     }
                                     setSaveLifeline(JSON.stringify({ app: "Gridiron Pro", version: 1, kind: "mine-backup", exported: new Date().toISOString(), data: lib }, null, 2));
                                 }
@@ -6413,12 +6460,16 @@ function PlaybookApp() {
             await new Promise(res => setTimeout(res, 250));
             try {
                 let probeSize = 256 * 1024;
-                try {
-                    const cur = await storageGetMaybeChunked(MINE_ALL_PERSONAL_KEY, true);
-                    if (cur)
-                        probeSize = Math.max(probeSize, cur.length);
-                }
-                catch (_) { }
+        // Size the probe off whichever library is actually bigger, so the test
+        // reflects the real payload (this build's data lives in SHARED).
+        for (const K of [MINE_ALL_SHARED_KEY, MINE_ALL_PERSONAL_KEY]) {
+            try {
+                const cur = await storageGetMaybeChunked(K, true);
+                if (cur)
+                    probeSize = Math.max(probeSize, cur.length);
+            }
+            catch (_) { }
+        }
                 const big = "x".repeat(probeSize);
                 const res = await storageSetMaybeChunked("gridiron:__probebig", big, true);
                 const back = await storageGetMaybeChunked("gridiron:__probebig", true);
@@ -6439,9 +6490,13 @@ function PlaybookApp() {
             // 3) What's actually stored now — the consolidated key (reassembled if it
             //    was split into chunks).
             await new Promise(res => setTimeout(res, 250));
-            lines.push("— Your saved library —");
+            // ALWAYS report the library this playbook actually uses: the shared
+            // "team Default" key. (An earlier version read the unused personal key
+            // and printed it as "Your saved library", which made a perfectly healthy
+            // playbook look nearly empty.)
+            lines.push("— Your saved library (team Default) —");
             try {
-                const v = await storageGetMaybeChunked(MINE_ALL_PERSONAL_KEY, true);
+                const v = await storageGetMaybeChunked(MINE_ALL_SHARED_KEY, true);
                 if (v) {
                     let d = null;
                     try {
@@ -6451,16 +6506,17 @@ function PlaybookApp() {
                     const kb = Math.round(v.length / 1024);
                     const nChunks = Math.ceil(v.length / STORAGE_CHUNK_LIMIT);
                     if (d) {
-                        for (const [field, , kind, label] of MINE_TYPES)
-                            lines.push("• " + label + ": " + countItems(d[field], kind));
+                        for (const [field, , kind, lbl] of MINE_TYPES)
+                            lines.push("• " + lbl + ": " + countItems(d[field], kind));
                         lines.push(nChunks > 1 ? "(" + kb + " KB total, saved across " + nChunks + " chunks)" : "(" + kb + " KB total, one key)");
                     }
                     else {
-                        lines.push("Stored, but couldn't parse (" + kb + " KB).");
+                        lines.push("Stored, but couldn't parse (" + kb + " KB) — download a backup before changing anything.");
                     }
                 }
                 else {
-                    lines.push("Nothing under the consolidated key yet (it is written the first time you make or restore a change).");
+                    lines.push("EMPTY — nothing stored under your playbook's key.");
+                    lines.push("If your plays are missing, restore your backup file from the RESTORE box above.");
                 }
             }
             catch (e) {
@@ -10988,9 +11044,17 @@ function PlaybookApp() {
         const renameInstallSection = useCallback((installId, sectionId, name) => {
             if (!capsRef.current.edit)
                 return;
-            const nm = (name || "").trim();
+            const nm = String(name == null ? "" : name);
             setInstalls(prev => prev.map(i => i.id !== installId ? i
-                : { ...i, sections: (i.sections || []).map(sec => sec.id !== sectionId ? sec : { ...sec, name: nm || sec.name }) }));
+                : { ...i, sections: (i.sections || []).map(sec => sec.id !== sectionId ? sec : { ...sec, name: nm }) }));
+        }, [setInstalls]);
+        // Blur: trim, and fall back to a sensible label if it was left blank.
+        const commitInstallSectionName = useCallback((installId, sectionId) => {
+            if (!capsRef.current.edit)
+                return;
+            setInstalls(prev => prev.map(i => i.id !== installId ? i
+                : { ...i, sections: (i.sections || []).map(sec => sec.id !== sectionId ? sec
+                        : { ...sec, name: (sec.name || "").trim() || "New Section" }) }));
         }, [setInstalls]);
         const deleteInstallSection = useCallback((installId, sectionId) => {
             if (!capsRef.current.edit)
@@ -11186,7 +11250,15 @@ function PlaybookApp() {
         }
         setScripts(prev => prev.map(s => s.id !== scriptId ? s : {
             ...s,
-            periods: s.periods.map(per => per.id !== periodId ? per : { ...per, name: newName.trim() || per.name }),
+            periods: s.periods.map(per => per.id !== periodId ? per : { ...per, name: String(newName == null ? "" : newName) }),
+        }));
+    }, [setScripts]);
+    const commitPeriodName = useCallback((scriptId, periodId) => {
+        if (!capsRef.current.edit)
+            return;
+        setScripts(prev => prev.map(s => s.id !== scriptId ? s : {
+            ...s,
+            periods: s.periods.map(per => per.id !== periodId ? per : { ...per, name: (per.name || "").trim() || "Period" }),
         }));
     }, [setScripts]);
     const deletePeriod = useCallback((scriptId, periodId) => {
@@ -12131,7 +12203,8 @@ function PlaybookApp() {
             }
         }
         animHandoffWaitRef.current = handoffWait;
-        const ballHandTime = new Map(); // step id → ball-time (0..1) of the exchange
+        const ballHandTime = new Map();
+        const ballNoMesh = new Set(); // steps whose players never got close enough // step id → ball-time (0..1) of the exchange
         {
             const bSteps = ballPlan.steps || [];
             if (bSteps.length && !ballSnapOff()) {
@@ -12186,11 +12259,21 @@ function PlaybookApp() {
                     return ptAt(route.points, easeH(Math.min(1, shifted / dur)));
                 };
                 let giverId = ballSnapId();
+                let meshFloor = 0; // exchanges resolve in order, never backwards
                 bSteps.forEach((step, k) => {
                     const isHand = step.action !== "pass" && step.action !== "kick" && step.action !== "pitch" && step.toId;
                     if (isHand && giverId) {
-                        const w = winsH[k], N = 48;
-                        let bestT = w.s, bestD = Infinity;
+                        // A fake doesn't move the ball, so it isn't bound to its slot: look
+                        // across the rest of the play for where these two actually pass.
+                        // meshFloor keeps exchanges in order.
+                        const wRaw = winsH[k];
+                        const w = step.fake
+                            ? { s: Math.max(wRaw.s, meshFloor), e: 1 }
+                            : wRaw;
+                        const N = 48;
+                        let bestT = w.s, bestD = Infinity; // fallback: closest approach
+                        let crossT = null, crossD = Infinity; // preferred: they actually cross
+                        let prevSign = 0, prevBt = w.s;
                         for (let i = 0; i <= N; i++) {
                             const bt = w.s + (w.e - w.s) * (i / N);
                             const a = posAt(giverId, bt), b = posAt(step.toId, bt);
@@ -12201,8 +12284,33 @@ function PlaybookApp() {
                                 bestD = d;
                                 bestT = bt;
                             }
+                            // Crossing = the target moves from one side of the giver to the
+                            // other. Compare along whichever axis they separate on most, so
+                            // it works for a sweep across the formation and for a back
+                            // running past front-to-back.
+                            const dx = b.x - a.x, dy = b.y - a.y;
+                            const sign = Math.abs(dx) >= Math.abs(dy) ? Math.sign(dx) : Math.sign(dy);
+                            if (i > 0 && sign !== 0 && prevSign !== 0 && sign !== prevSign && crossT == null) {
+                                crossT = (bt + prevBt) / 2; // midpoint of the flip
+                                crossD = d;
+                            }
+                            if (sign !== 0) {
+                                prevSign = sign;
+                                prevBt = bt;
+                            }
                         }
-                        ballHandTime.set(step.id, bestT);
+                        // Prefer the crossing; keep closest-approach for paths that never
+                        // cross (a back meshing in front of the QB and peeling off).
+                        if (crossT != null) {
+                            bestT = crossT;
+                            bestD = Math.min(bestD, crossD);
+                        }
+                        // Arm's reach — you can't hand a ball to someone three yards away.
+                        const HAND_NEAR = 2.2 * YARD;
+                        if (bestD <= HAND_NEAR)
+                            { ballHandTime.set(step.id, bestT); meshFloor = Math.max(meshFloor, bestT); }
+                        else
+                            ballNoMesh.add(step.id);
                     }
                     // carry the ball forward to the next giver
                     if (!step.fake) {
@@ -12215,6 +12323,7 @@ function PlaybookApp() {
             }
         }
         ballHandTimeRef.current = ballHandTime;
+        ballNoMeshRef.current = ballNoMesh;
         // QB dropback — the QB drops straight back this depth after the snap before
         // throwing. Only on pass plays (incl. play-action); the ball, held by the
         // QB, follows the drop and the throw originates from the dropback spot.
@@ -12523,7 +12632,8 @@ function PlaybookApp() {
                             return sp ? { ...p, x: sp.x, y: sp.y } : p;
                         }
                         const lp = Math.min(1, le / Math.max(1, dur));
-                        let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp) : ease(lp);
+                        let t = (route.holdMs && route.junctionIdx != null) ? holdArcFrac(route, lp)
+                            : (route.junctionIdx != null ? lp : ease(lp));
                         if (catchCap) {
                             // Before the ball arrives he runs the paced route (so he and the
                             // ball meet). After it, he keeps running the remainder — and any
@@ -18060,27 +18170,27 @@ function PlaybookApp() {
                     kind: "mine-backup",
                     exported: new Date().toISOString(),
                     data: {
-                        plays: personalPlays,
-                        customForms: personalCustomForms,
-                        installs: personalInstalls,
-                        scripts: personalScripts,
-                        coveragePresets: personalCoveragePresets,
-                        blitzPresets: personalBlitzPresets,
-                        schemePresets: personalSchemePresets,
-                        motionPresets: personalMotionPresets,
-                        sortPrefs: personalSortPrefs,
-                        playbookScope: "personal",
+                        plays: plays,
+                        customForms: customForms,
+                        installs: installs,
+                        scripts: scripts,
+                        coveragePresets: coveragePresets,
+                        blitzPresets: blitzPresets,
+                        schemePresets: schemePresets,
+                        motionPresets: motionPresets,
+                        sortPrefs: sortPrefs,
+                        playbookScope: playbookScope,
                     },
                 }, null, 2);
                 const counts = [
-                    personalPlays.length + " play" + (personalPlays.length === 1 ? "" : "s"),
-                    (Object.keys(personalCustomForms.offense || {}).length + Object.keys(personalCustomForms.defense || {}).length + Object.keys(personalCustomForms.special || {}).length) + " formation",
-                    Object.keys(personalCoveragePresets).length + " coverage",
-                    Object.keys(personalBlitzPresets).length + " blitz",
-                    Object.keys(personalMotionPresets).length + " motion",
-                    Object.keys(personalSchemePresets).length + " scheme",
-                    personalInstalls.length + " install",
-                    personalScripts.length + " script",
+                    plays.length + " play" + (plays.length === 1 ? "" : "s"),
+                    (Object.keys(customForms.offense || {}).length + Object.keys(customForms.defense || {}).length + Object.keys(customForms.special || {}).length) + " formation",
+                    Object.keys(coveragePresets).length + " coverage",
+                    Object.keys(blitzPresets).length + " blitz",
+                    Object.keys(motionPresets).length + " motion",
+                    Object.keys(schemePresets).length + " scheme",
+                    installs.length + " install",
+                    scripts.length + " script",
                 ].join(" \u00B7 ");
                 const copyToClipboard = async () => {
                     const ta = backupTextareaRef.current;
@@ -19322,7 +19432,7 @@ function PlaybookApp() {
                                     const playsNotInPeriod = plays.filter(p => !per.playIds.includes(p.id));
                                     return (React.createElement("div", { key: per.id, style: { background: "#161623", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 9, padding: "10px 12px" } },
                                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 8 } },
-                                            React.createElement("input", { value: per.name, onChange: e => renamePeriod(openScript.id, per.id, e.target.value), style: { flex: 1, minWidth: 0, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "4px 8px", color: "#fff", fontWeight: 600, fontSize: 13, outline: "none" } }),
+                                            React.createElement("input", { value: per.name, onChange: e => renamePeriod(openScript.id, per.id, e.target.value), onBlur: () => commitPeriodName(openScript.id, per.id), onKeyDown: e => { if (e.key === "Enter") e.currentTarget.blur(); }, style: { flex: 1, minWidth: 0, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "4px 8px", color: "#fff", fontWeight: 600, fontSize: 13, outline: "none" } }),
                                             React.createElement("button", { onClick: () => movePeriod(openScript.id, per.id, -1), disabled: perIdx === 0, title: "Move period up", style: { padding: "3px 7px", borderRadius: 4, cursor: perIdx === 0 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.6)", opacity: perIdx === 0 ? 0.35 : 1, fontSize: 12 } }, "\u2191"),
                                             React.createElement("button", { onClick: () => movePeriod(openScript.id, per.id, 1), disabled: perIdx === openScript.periods.length - 1, title: "Move period down", style: { padding: "3px 7px", borderRadius: 4, cursor: perIdx === openScript.periods.length - 1 ? "not-allowed" : "pointer", border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.6)", opacity: perIdx === openScript.periods.length - 1 ? 0.35 : 1, fontSize: 12 } }, "\u2193"),
                                             React.createElement("button", { onClick: () => {
@@ -19458,7 +19568,7 @@ function PlaybookApp() {
                   return null;
               return (React.createElement("div", { key: "sec-" + sec.id, style: { display: "flex", alignItems: "center", gap: 6, marginTop: aid === "__start__" ? 0 : 8, marginBottom: 2, padding: "3px 6px", background: "rgba(250,204,21,0.09)", borderLeft: "3px solid #facc15", borderRadius: 4 } },
                   React.createElement("span", { style: { fontSize: 11 } }, "\u25B8"),
-                  readOnly ? (React.createElement("span", { style: { flex: 1, fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", color: "#fde68a" } }, sec.name)) : (React.createElement("input", { value: sec.name, onChange: e => renameInstallSection(openInst.id, sec.id, e.target.value), style: { flex: 1, background: "transparent", border: "none", borderBottom: "1px solid rgba(250,204,21,0.3)", color: "#fde68a", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", padding: "1px 2px", outline: "none" } })),
+                  readOnly ? (React.createElement("span", { style: { flex: 1, fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", color: "#fde68a" } }, sec.name)) : (React.createElement("input", { value: sec.name, onChange: e => renameInstallSection(openInst.id, sec.id, e.target.value), onBlur: () => commitInstallSectionName(openInst.id, sec.id), onKeyDown: e => { if (e.key === "Enter") e.currentTarget.blur(); }, style: { flex: 1, background: "transparent", border: "none", borderBottom: "1px solid rgba(250,204,21,0.3)", color: "#fde68a", fontSize: 12, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", padding: "1px 2px", outline: "none" } })),
                   !readOnly && (React.createElement("button", { onClick: () => deleteInstallSection(openInst.id, sec.id), title: "Remove this subsection header", style: { padding: "0 5px", borderRadius: 3, cursor: "pointer", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "rgba(248,113,113,0.7)", fontSize: 11 } }, "\u00D7"))));
           };
                     const allFormationNames = ["offense", "defense", "special"].flatMap(cat => [
