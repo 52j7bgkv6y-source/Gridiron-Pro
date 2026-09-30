@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-16y";
+window.__gpBuild = "2026-07-17a";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -88,6 +88,65 @@ if ("serviceWorker" in navigator) {
 })();
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<script>
+/* ── INSTALLED-APP DETECTION (v2) ─────────────────────────────────────────
+   Adds class "gp-app" to <html> only when this page is running as an
+   INSTALLED app (home-screen icon / desktop PWA window), never in a normal
+   browser tab. The phone stylesheet in <head> hangs off that one class, so
+   the website is unaffected by it.
+
+   When installed it also rewrites the viewport meta above:
+   · viewport-fit=cover — lets the app fill the whole screen and makes
+     env(safe-area-inset-*) report real values (without it iOS letterboxes
+     the app below the status bar and every inset reads 0).
+   · maximum-scale=1, iOS ONLY — stops iOS zooming the whole app when a text
+     box under 16px is tapped (the install search, question box, subsection
+     names, NOTES fields). iOS 10+ still lets people pinch-zoom regardless.
+     Not applied on Android, where the same setting WOULD block pinch-zoom.
+   And it exposes the running build to CSS (--gp-build) for the boot splash.
+
+   Must sit after the viewport meta above: it edits that element. */
+(function () {
+  var MQ = ["(display-mode: standalone)", "(display-mode: fullscreen)", "(display-mode: minimal-ui)"];
+  function installed() {
+    if (navigator.standalone === true) return true;              /* iOS home-screen app */
+    if (typeof window.matchMedia !== "function") return false;
+    for (var i = 0; i < MQ.length; i++) {
+      try { if (window.matchMedia(MQ[i]).matches) return true; } catch (e) {}
+    }
+    return false;
+  }
+  function apply() {
+    var on = installed();
+    window.__gpStandalone = on;
+    try { document.documentElement.classList.toggle("gp-app", on); } catch (e) {}
+    if (!on) return;
+    try { document.documentElement.style.setProperty("--gp-build", JSON.stringify(String(window.__gpBuild || ""))); } catch (e) {}
+    try {
+      var v = document.querySelector('meta[name="viewport"]');
+      if (v && v.content.indexOf("viewport-fit") === -1) {
+        /* Replace the node rather than mutate .content — replacing forces a
+           clean re-read of the viewport on every browser. */
+        var n = document.createElement("meta");
+        n.setAttribute("name", "viewport");
+        n.setAttribute("content", v.content + ", viewport-fit=cover" +
+          (navigator.standalone === true ? ", maximum-scale=1" : ""));
+        v.parentNode.replaceChild(n, v);
+      }
+    } catch (e) {}
+  }
+  apply();
+  /* display-mode can flip without a reload — installing from the tab that is
+     already open, or a desktop PWA window changing mode. */
+  try {
+    for (var i = 0; i < MQ.length; i++) {
+      var m = window.matchMedia(MQ[i]);
+      if (m.addEventListener) m.addEventListener("change", apply);
+      else if (m.addListener) m.addListener(apply);
+    }
+  } catch (e) {}
+})();
+</script>
 <title>Gridiron Pro — Sign In</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -16577,7 +16636,7 @@ function PlaybookApp() {
                     React.createElement("button", { className: "tbtn", onClick: undo },
                         React.createElement("span", { style: { fontSize: 16 } }, "\u21A9"),
                         "UNDO"))),
-            mobilePanel === "lib" && (React.createElement("div", { style: { position: "fixed", bottom: 0, left: 0, right: 0, height: "60vh", background: "#0f0f1c", borderTop: "1px solid rgba(255,255,255,0.08)", borderTopLeftRadius: 16, borderTopRightRadius: 16, display: "flex", flexDirection: "column", zIndex: 200, overflow: "hidden" } },
+            mobilePanel === "lib" && (React.createElement("div", { className: "gp-mob-lib", style: { position: "fixed", bottom: 0, left: 0, right: 0, height: "60vh", background: "#0f0f1c", borderTop: "1px solid rgba(255,255,255,0.08)", borderTopLeftRadius: 16, borderTopRightRadius: 16, display: "flex", flexDirection: "column", zIndex: 200, overflow: "hidden" } },
                 React.createElement("div", { style: { padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" } },
                     React.createElement("span", { className: "hd", style: { fontSize: 14, color: "#888", letterSpacing: "0.12em" } }, "PLAY LIBRARY"),
                     React.createElement("div", { style: { display: "flex", gap: 8 } },
@@ -17470,7 +17529,7 @@ function PlaybookApp() {
             show3D && walk3dData && React.createElement(Walkthrough3D, { data: walk3dData, onClose: () => { setShow3D(false); setWalk3dData(null); } }),
             showDefRec && (() => {
                 const rec = getDefenseRec();
-                return (React.createElement("div", { ref: defRecRef, className: "mobsheet", style: { position: "fixed", ...(defRecPos ? { left: defRecPos.x, top: defRecPos.y } : { top: 70, left: 14 }), zIndex: 2650, width: 338, maxHeight: "calc(100vh - 100px)", display: "flex", flexDirection: "column", background: "#0b0f1c", border: "1px solid rgba(96,165,250,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.55)", fontFamily: "system-ui,sans-serif", overflow: "hidden" } },
+                return (React.createElement("div", { ref: defRecRef, className: "mobsheet", style: { position: "fixed", ...(defRecPos ? { left: defRecPos.x, top: defRecPos.y } : { top: "calc(70px + var(--gp-sat, 0px))", left: 14 }), zIndex: 2650, width: 338, maxHeight: "calc(100vh - 100px - var(--gp-sat, 0px) - var(--gp-sab, 0px))", display: "flex", flexDirection: "column", background: "#0b0f1c", border: "1px solid rgba(96,165,250,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.55)", fontFamily: "system-ui,sans-serif", overflow: "hidden" } },
                     React.createElement("div", { onMouseDown: (e) => startPanelDrag(e, defRecRef, setDefRecPos), onTouchStart: (e) => startPanelDrag(e, defRecRef, setDefRecPos), style: { display: "flex", alignItems: "center", gap: 8, padding: "11px 13px", cursor: "move", touchAction: "none", borderBottom: "1px solid rgba(255,255,255,0.07)", userSelect: "none" } },
                         React.createElement("span", { style: { color: "rgba(255,255,255,0.35)", fontSize: 14, letterSpacing: "-1px" } }, "\u283F"),
                         React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: "0.06em", color: "#fcd34d", flex: 1 } }, "🧠 COUNTER — DEFENSIVE ANSWER"),
@@ -17537,7 +17596,7 @@ function PlaybookApp() {
                         })(),
                         React.createElement("div", { style: { marginTop: 8, fontSize: 10, color: "rgba(255,255,255,0.35)", lineHeight: 1.45, fontStyle: "italic" } }, "A starting point \u2014 adjust to your personnel and game plan."))))));
             })(),
-            showBallPanel && (React.createElement("div", { ref: ballPanelRef, className: "mobsheet", style: { position: "fixed", ...(ballPanelPos ? { left: ballPanelPos.x, top: ballPanelPos.y } : { top: 70, right: 14 }), zIndex: 2600, width: 300, maxHeight: "calc(100vh - 100px)", overflowY: "auto", background: "#0c0c16", border: "1px solid rgba(218,165,32,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.5)", padding: 14, fontFamily: "system-ui,sans-serif" } },
+            showBallPanel && (React.createElement("div", { ref: ballPanelRef, className: "mobsheet", style: { position: "fixed", ...(ballPanelPos ? { left: ballPanelPos.x, top: ballPanelPos.y } : { top: "calc(70px + var(--gp-sat, 0px))", right: 14 }), zIndex: 2600, width: 300, maxHeight: "calc(100vh - 100px - var(--gp-sat, 0px) - var(--gp-sab, 0px))", overflowY: "auto", background: "#0c0c16", border: "1px solid rgba(218,165,32,0.35)", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.5)", padding: 14, fontFamily: "system-ui,sans-serif" } },
                 React.createElement("div", { onMouseDown: (e) => startPanelDrag(e, ballPanelRef, setBallPanelPos), onTouchStart: (e) => startPanelDrag(e, ballPanelRef, setBallPanelPos), title: "Drag to move this panel", style: { display: "flex", alignItems: "center", marginBottom: 10, cursor: "move", touchAction: "none" } },
                     React.createElement("span", { style: { color: "rgba(255,255,255,0.32)", fontSize: 14, lineHeight: 1, letterSpacing: "-1px", userSelect: "none", marginRight: 6 } }, "\u283F"),
                     React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: "0.06em", color: "#fde68a" } }, "\uD83C\uDFC8 BALL MECHANICS"),
@@ -17737,9 +17796,9 @@ function PlaybookApp() {
                             React.createElement("button", { onClick: doPrint, disabled: printCount === 0, className: "sbtn grn", style: { flex: 1, opacity: printCount === 0 ? 0.4 : 1, cursor: printCount === 0 ? "not-allowed" : "pointer" } }, "\uD83D\uDDA8 PRINT / SAVE AS PDF"),
                             React.createElement("button", { onClick: () => setShowPrint(false), className: "sbtn dim" }, "CANCEL")))));
             })(),
-            fieldFullscreen && (React.createElement("button", { onClick: () => setFieldFullscreen(false), title: "Exit full screen", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
+            fieldFullscreen && (React.createElement("button", { onClick: () => setFieldFullscreen(false), title: "Exit full screen", className: "gp-fs-exit", style: { position: "fixed", top: 10, right: 10, zIndex: 2147483600, display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(10,10,18,0.88)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2715 EXIT FULL SCREEN")),
             false,
-            readOnly && (React.createElement("div", { style: { position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 9997, background: "rgba(180,83,9,0.94)", color: "#fff", borderRadius: 8, padding: "4px 14px", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", boxShadow: "0 4px 16px rgba(0,0,0,0.45)", whiteSpace: "nowrap", maxWidth: "94vw", overflow: "hidden", textOverflow: "ellipsis" } },
+            readOnly && (React.createElement("div", { className: "gp-ro-banner", style: { position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 9997, background: "rgba(180,83,9,0.94)", color: "#fff", borderRadius: 8, padding: "4px 14px", fontSize: 11, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.06em", boxShadow: "0 4px 16px rgba(0,0,0,0.45)", whiteSpace: "nowrap", maxWidth: "94vw", overflow: "hidden", textOverflow: "ellipsis" } },
                 "\u270E ",
                 ROLE_LABELS_APP[effRole],
                 " can move players & draw routes/zones to run plays \u2014 changes are live only and won't save")),
@@ -19027,15 +19086,15 @@ function PlaybookApp() {
                 const vCoverages = vAnimating ? coverages : (dPlay.coverages || []);
                 const vTexts = vAnimating ? texts : (dPlay.texts || []);
                 const vLosY = vAnimating ? losY : (typeof dPlay.losY === "number" ? dPlay.losY : LOS_Y);
-                return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "#0a0a14", zIndex: 2147483646, display: "flex", flexDirection: "column" } },
-                    typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", style: { position: "fixed", left: 10, top: 10, zIndex: 2147483647, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2190 Dashboard")),
-                    React.createElement("div", { style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
-                        React.createElement("div", { style: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center", maxWidth: "66%", pointerEvents: "none" } },
+                return (React.createElement("div", { className: "gp-safe-fill", style: { position: "fixed", inset: 0, background: "#0a0a14", zIndex: 2147483646, display: "flex", flexDirection: "column" } },
+                    typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", className: "gp-run-dash", style: { position: "fixed", left: 10, top: 10, zIndex: 2147483647, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer", backdropFilter: "blur(5px)", boxShadow: "0 3px 14px rgba(0,0,0,0.5)" } }, "\u2190 Dashboard")),
+                    React.createElement("div", { className: "gp-run-top", style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
+                        React.createElement("div", { className: "gp-run-title", style: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center", maxWidth: "66%", pointerEvents: "none" } },
                             React.createElement("div", { className: "hd", style: { fontSize: 20, color: "#fff", letterSpacing: "0.1em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, step.play.name),
                             React.createElement("div", { className: "mono", style: { fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 3 } },
                                 playFormations(step.play)[0] || "—",
                                 toTypeArr(step.play.type).length > 0 ? "  .  " + toTypeArr(step.play.type).join(" / ") : ""), step.sectionName ? (React.createElement("div", { className: "hd", style: { fontSize: 12, letterSpacing: "0.12em", color: "#7dd3fc", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, "\u00A7 ", step.sectionName)) : null),
-                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+                        React.createElement("div", { className: "gp-run-actions", style: { display: "flex", alignItems: "center", gap: 12 } },
                             React.createElement("div", { className: "mono", style: { fontSize: 13, color: "rgba(255,255,255,0.65)", fontWeight: 600 } },
                                 idx + 1,
                                 " / ",
@@ -19218,8 +19277,8 @@ function PlaybookApp() {
                                     React.createElement("line", { x1: bp.x - 6, y1: bp.y, x2: bp.x + 6, y2: bp.y, stroke: "#f5deb3", strokeWidth: "0.8" }),
                                     React.createElement("line", { x1: bp.x, y1: bp.y - 4, x2: bp.x, y2: bp.y + 4, stroke: "#f5deb3", strokeWidth: "0.8" })));
                             })(), vTexts.map(t => gpTextChipSVG(t, "run")))),
-                    runSections.length > 1 && (React.createElement("div", { style: { padding: "8px 16px 0", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center" } }, React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.1em" } }, "JUMP TO"), runSections.map(sec => { const on = step.sectionId === sec.id; return (React.createElement("button", { key: sec.id, onClick: () => { setRunNotesShown(false); setRunStepIdx(sec.startIdx); }, title: `Jump to "${sec.name}"`, style: { padding: "4px 11px", borderRadius: 6, cursor: "pointer", touchAction: "manipulation", maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.07em", border: `1px solid ${on ? "rgba(125,211,252,0.75)" : "rgba(255,255,255,0.15)"}`, background: on ? "rgba(125,211,252,0.16)" : "rgba(255,255,255,0.04)", color: on ? "#7dd3fc" : "rgba(255,255,255,0.6)" } }, sec.name)); }))),
-                            React.createElement("div", { style: { padding: "12px 22px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+                    runSections.length > 1 && (React.createElement("div", { className: "gp-run-jump", style: { padding: "8px 16px 0", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center" } }, React.createElement("span", { className: "mono", style: { fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.1em" } }, "JUMP TO"), runSections.map(sec => { const on = step.sectionId === sec.id; return (React.createElement("button", { key: sec.id, onClick: () => { setRunNotesShown(false); setRunStepIdx(sec.startIdx); }, title: `Jump to "${sec.name}"`, style: { padding: "4px 11px", borderRadius: 6, cursor: "pointer", touchAction: "manipulation", maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Bebas Neue',sans-serif", fontSize: 12, letterSpacing: "0.07em", border: `1px solid ${on ? "rgba(125,211,252,0.75)" : "rgba(255,255,255,0.15)"}`, background: on ? "rgba(125,211,252,0.16)" : "rgba(255,255,255,0.04)", color: on ? "#7dd3fc" : "rgba(255,255,255,0.6)" } }, sec.name)); }))),
+                            React.createElement("div", { className: "gp-run-foot", style: { padding: "12px 22px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
                         React.createElement("button", { onClick: prev, disabled: idx === 0, title: "Previous play  (\u2190  or  P)", style: { padding: "9px 22px", borderRadius: 7, cursor: idx === 0 ? "not-allowed" : "pointer", fontSize: 13, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.1em",
                                 border: `1px solid ${idx === 0 ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.25)"}`,
                                 background: idx === 0 ? "transparent" : "rgba(255,255,255,0.05)",
@@ -19290,13 +19349,13 @@ function PlaybookApp() {
                                     React.createElement("span", { style: { flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 30, height: 30, borderRadius: 7, background: p.color || "#475569", color: "#0a0a14", fontFamily: "'Bebas Neue',sans-serif", fontSize: 15, fontWeight: 700, padding: "0 7px" } }, p.label || p.role || "?"),
                                     React.createElement("span", { style: { flex: 1, color: "#e8e8ee", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, lineHeight: 1.5, whiteSpace: "pre-wrap", paddingTop: 5 } }, pn[p.id][field]))));
                         };
-                        return (React.createElement("div", { style: { position: "absolute", inset: 0, background: "#0a0a14", zIndex: 5, display: "flex", flexDirection: "column" } },
-                            typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", style: { position: "absolute", left: 10, top: 10, zIndex: 6, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer" } }, "\u2190 Dashboard")),
-                            React.createElement("div", { style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
-                                React.createElement("div", { style: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center", maxWidth: "66%", pointerEvents: "none" } },
+                        return (React.createElement("div", { className: "gp-safe-fill", style: { position: "absolute", inset: 0, background: "#0a0a14", zIndex: 5, display: "flex", flexDirection: "column" } },
+                            typeof window !== "undefined" && window.__gridironReturnToDash && (React.createElement("button", { onClick: () => { exit(); window.__gridironReturnToDash(); }, title: "Back to team dashboard", className: "gp-run-dash", style: { position: "absolute", left: 10, top: 10, zIndex: 6, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(10,10,18,0.9)", color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 14, letterSpacing: "0.07em", cursor: "pointer" } }, "\u2190 Dashboard")),
+                            React.createElement("div", { className: "gp-run-top", style: { position: "relative", padding: "12px 22px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", justifyContent: "flex-end", minHeight: 56 } },
+                                React.createElement("div", { className: "gp-run-title", style: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center", maxWidth: "66%", pointerEvents: "none" } },
                                     React.createElement("div", { className: "hd", style: { fontSize: 20, color: "#fff", letterSpacing: "0.1em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, pl.name),
                                     React.createElement("div", { className: "mono", style: { fontSize: 11, color: "#fcd34d", marginTop: 3, letterSpacing: "0.08em" } }, "POSITION NOTES")),
-                                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+                                React.createElement("div", { className: "gp-run-actions", style: { display: "flex", alignItems: "center", gap: 12 } },
                                     React.createElement("div", { className: "mono", style: { fontSize: 13, color: "rgba(255,255,255,0.65)", fontWeight: 600 } },
                                         idx + 1,
                                         " / ",
@@ -20636,7 +20695,7 @@ function Walkthrough3D({ data, onClose }) {
         catch (e) { }
     }, [ui.perf]);
     const apply = (patch) => { Object.assign(stateRef.current, patch); force(n => n + 1); };
-    return (React.createElement("div", { style: { position: "fixed", inset: 0, zIndex: 4000, background: "#06080f", display: "flex", flexDirection: "column" } },
+    return (React.createElement("div", { className: "gp-safe-fill", style: { position: "fixed", inset: 0, zIndex: 4000, background: "#06080f", display: "flex", flexDirection: "column" } },
         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", flexWrap: "wrap" } },
             React.createElement("div", { style: { fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: "0.08em", color: "#a7f3d0" } },
                 "\uD83C\uDFAC 3D WALKTHROUGH",
@@ -20742,6 +20801,238 @@ if (typeof window !== "undefined")
     text-align:center;color:var(--muted);font-size:13px;line-height:1.6}
   a{color:var(--cyan)}
   @media (prefers-reduced-motion: reduce){*{transition:none!important}}
+
+  /* ══════════════════════════════════════════════════════════════════════
+     INSTALLED-APP (PWA) OPTIMISATIONS — v2 (build 2026-07-17a)
+
+     Every rule is scoped to html.gp-app. The head script adds that class
+     ONLY when the page runs as an installed app (display-mode standalone /
+     fullscreen / minimal-ui, or iOS navigator.standalone). In a browser tab
+     the class is absent and none of these rules match — the website renders
+     exactly as before.
+
+     v2 was measured against the REAL app (shell + editor + a real playbook)
+     rendered at phone size with emulated safe-area insets. It replaces v1
+     (2026-07-16z), which was tested only against a hand-built skeleton and
+     shipped three regressions: the field collapsed to ~2px on phones; the
+     editor became a new stacking context, so the Dashboard button floated
+     over modals; and every edge-pinned control ended up under the clock or
+     on the home-indicator swipe zone once viewport-fit=cover was on.
+     ══════════════════════════════════════════════════════════════════════ */
+
+  /* Inset variables for the two inline-styled floating panels (defence
+     recommendation, ball). Undefined outside the app, so their
+     var(--gp-sat, 0px) fallbacks compute to exactly what the website has. */
+  html.gp-app{
+    --gp-sat:env(safe-area-inset-top);
+    --gp-sab:env(safe-area-inset-bottom);
+    -webkit-tap-highlight-color:transparent;
+    overscroll-behavior:none;
+    touch-action:manipulation;          /* no double-tap zoom; pinch still works */
+  }
+  html.gp-app body{overscroll-behavior:none;}
+
+  /* ── SIGN-IN + TEAM DASHBOARD ───────────────────────────────────────────
+     These screens flow in <body>, whose 32px top padding sat under the
+     status bar once the app filled the screen. Keep at least the original
+     spacing; add the inset where the notch needs more. */
+  html.gp-app body{
+    padding-top:max(32px, calc(env(safe-area-inset-top) + 14px));
+    padding-bottom:max(32px, calc(env(safe-area-inset-bottom) + 14px));
+    padding-left:max(16px, calc(env(safe-area-inset-left) + 10px));
+    padding-right:max(16px, calc(env(safe-area-inset-right) + 10px));
+  }
+  /* The boot splash shows the build that is actually running (the static
+     label is not kept up to date). --gp-build is set by the head script. */
+  html.gp-app #gp-splash-build{font-size:0!important;}
+  html.gp-app #gp-splash-build::after{content:"build " var(--gp-build, "?");font-size:10px;}
+
+  /* ── EDITOR SHELL ───────────────────────────────────────────────────────
+     The whole editor sits inside the safe area. Padding the shell (rather
+     than the header) also keeps the save-error banners, which render ABOVE
+     the header, out from under the clock. The strip behind the status bar
+     is painted in the header's colour so the two read as one bar.
+     Deliberately NOT position:fixed (v1 was): the shell already mounts the
+     editor in a fixed full-screen wrapper, and a fixed .app-screen created
+     a new stacking context that changed which overlays cover which. */
+  html.gp-app .app-screen{
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)!important;
+    background:linear-gradient(#0c0c17,#0c0c17) top/100% env(safe-area-inset-top) no-repeat,#090912!important;
+    -webkit-touch-callout:none;
+  }
+
+  /* ── CONTROLS FEEL NATIVE ───────────────────────────────────────────────
+     No "Copy / Look Up" bubble or text magnifier from a long press on a
+     control. Text inputs opt straight back in, so the backup textarea can
+     still be selected and copied. */
+  html.gp-app button,html.gp-app .tab,html.gp-app .tbtn,html.gp-app .sbtn,
+  html.gp-app .pitem,html.gp-app .rtbtn,html.gp-app .mini,html.gp-app .badge,
+  html.gp-app .pill,html.gp-app label{
+    -webkit-touch-callout:none;-webkit-user-select:none;user-select:none;
+    touch-action:manipulation;
+  }
+  html.gp-app input,html.gp-app textarea,html.gp-app select,
+  html.gp-app [contenteditable]{
+    -webkit-user-select:auto!important;user-select:auto!important;
+    -webkit-touch-callout:default!important;
+  }
+
+  /* ── MODALS ──────────────────────────────────────────────────────────── */
+  html.gp-app .mover{
+    padding-top:env(safe-area-inset-top)!important;
+    padding-bottom:env(safe-area-inset-bottom)!important;
+  }
+  html.gp-app .mbox{
+    max-height:calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px)!important;
+    overscroll-behavior:contain!important;
+  }
+  html.gp-app .mobsheet{overscroll-behavior:contain!important;}
+
+  /* ── FULL-SCREEN "SHOW OFF" MODE ────────────────────────────────────────
+     The shell padding keeps the play inside the safe area; the SVG is sized
+     to that box instead of the whole screen. The overlay control panels are
+     positioned inside the field, so they come along automatically. */
+  html.gp-app .field-fs .field-svg{
+    width:calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right))!important;
+    height:calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom))!important;
+    max-width:none!important;max-height:none!important;
+  }
+  html.gp-app .gp-fs-exit{
+    top:calc(10px + env(safe-area-inset-top))!important;
+    right:calc(10px + env(safe-area-inset-right))!important;
+  }
+  /* "Show off" means no chrome: the shell's Dashboard button stays out. */
+  html.gp-app .app-screen.field-fs ~ #gp-dash-btn{display:none!important;}
+
+  /* ── RUN MODE, ITS POSITION-NOTES SCREEN, 3D WALKTHROUGH ────────────────
+     Full-screen overlays that start at the very top edge. Their own padding
+     keeps top bars under the clock and footers off the home-indicator
+     swipe zone (PREV / NEXT used to sit right on it). */
+  html.gp-app .gp-safe-fill{
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)!important;
+  }
+  html.gp-app .gp-run-dash{
+    top:calc(10px + env(safe-area-inset-top))!important;
+    left:calc(10px + env(safe-area-inset-left))!important;
+  }
+
+  /* ── EDGE-PINNED BITS ────────────────────────────────────────────────── */
+  html.gp-app #gp-dash-btn{
+    bottom:calc(10px + env(safe-area-inset-bottom))!important;
+    left:calc(10px + env(safe-area-inset-left))!important;
+  }
+  html.gp-app .gp-ro-banner{top:calc(8px + env(safe-area-inset-top))!important;}
+  html.gp-app .gp-mob-lib{padding-bottom:env(safe-area-inset-bottom)!important;}
+
+  /* ══ PHONE-SIZED WINDOWS ═════════════════════════════════════════════════
+     Same 768px breakpoint as the app's own mobile layout. */
+  @media (max-width:768px){
+
+    /* On a phone the bottom edge belongs to the fixed toolbar, which pads
+       itself; the shell only pads the bottom in full-screen, where the
+       toolbar is hidden. */
+    html.gp-app .app-screen{padding-bottom:0!important;}
+    html.gp-app .app-screen.field-fs{padding-bottom:env(safe-area-inset-bottom)!important;}
+
+    /* ── TOOLBAR + FIELD COLUMN ──
+       Toolbar height = 8 + 48 (.tbtn) + 8 + inset + 1px border = 65 + inset.
+       The column reserves exactly that (the website reserves a flat 62px). */
+    html.gp-app .mob-toolbar{
+      padding-bottom:calc(8px + env(safe-area-inset-bottom))!important;
+      overscroll-behavior:contain!important;
+    }
+    html.gp-app .field-col{
+      padding-bottom:calc(65px + env(safe-area-inset-bottom))!important;
+      overscroll-behavior:contain!important;
+    }
+    html.gp-app .field-fs .field-col{padding-bottom:0!important;}
+
+    /* ── FIELD SIZE ──
+       Same layout as the website: controls, then the field, in one
+       scrolling column. The website caps the field at 74vh; here the cap is
+       the visible column (header 50 + tabs 49 + toolbar 65 + field padding
+       16 = 180, plus the insets), so a tall view exactly fills the screen
+       when scrolled to and never runs under the toolbar. */
+    html.gp-app .field-svg{
+      max-height:calc(100dvh - 180px - env(safe-area-inset-top) - env(safe-area-inset-bottom))!important;
+    }
+
+    /* ── TOUCH TARGETS ──
+       44px on primary navigation. The dense editor rows keep the website's
+       34px so the field isn't pushed further down the column. */
+    html.gp-app .tab{min-height:44px;}
+    html.gp-app .gp-mobtabs{padding:2px 8px!important;}
+    html.gp-app .app-header button{min-height:44px;}
+
+    /* ── DASHBOARD BUTTON ──
+       Bottom-left it sat on top of SELECT and OFF + in the toolbar. Here it
+       is a compact ← over the decorative logo tile: clear of the toolbar,
+       off the home-indicator zone, and under every panel and modal (z 100). */
+    html.gp-app #gp-dash-btn{
+      top:calc(env(safe-area-inset-top) + 3px)!important;
+      left:calc(env(safe-area-inset-left) + 3px)!important;
+      bottom:auto!important;
+      width:44px;height:44px;padding:0!important;gap:0!important;
+      justify-content:center;font-size:0!important;z-index:100!important;
+    }
+    html.gp-app #gp-dash-btn::before{content:"\2190";font-size:20px;line-height:1;font-family:system-ui,sans-serif;}
+    /* …and the tile itself is hidden, so its orange doesn't glow through the
+       button's translucent background. It keeps its space in the row. */
+    html.gp-app .app-header > div:first-child{visibility:hidden;}
+
+    /* ── RUN MODE / POSITION NOTES TOP BAR ──
+       The centred play name was drawn over the Dashboard, FLIP and EXIT
+       buttons on a phone. The buttons take the first row; the name gets its
+       own row under them. */
+    html.gp-app .gp-run-top{
+      flex-wrap:wrap!important;row-gap:4px;padding:8px 10px!important;min-height:0!important;
+    }
+    html.gp-app .gp-run-title{
+      position:static!important;transform:none!important;order:2;
+      width:100%;max-width:100%!important;
+    }
+    html.gp-app .gp-run-actions{order:1;gap:8px!important;margin-left:auto;}
+    /* 44px first row, with the fixed ← aligned to it — otherwise the taller
+       ← hangs ~7px into the play-name row below. */
+    html.gp-app .gp-run-actions button{min-height:44px;}
+    html.gp-app .gp-run-dash{top:calc(8px + env(safe-area-inset-top))!important;}
+    html.gp-app .gp-run-dash{
+      width:44px;height:44px;padding:0!important;gap:0!important;
+      justify-content:center;font-size:0!important;
+    }
+    html.gp-app .gp-run-dash::before{content:"\2190";font-size:20px;line-height:1;font-family:system-ui,sans-serif;}
+    html.gp-app .gp-run-foot{padding:10px 12px!important;gap:8px!important;}
+    html.gp-app .gp-run-foot button{min-height:44px;}
+    html.gp-app .gp-run-jump{padding:8px 10px 0!important;}
+    html.gp-app .gp-run-jump button{min-height:40px;}
+
+    /* ── FULL-SCREEN EXIT ── a compact ✕, so it can't collide with the
+       SNAP / ALIGN cluster that shares the top of the screen. */
+    html.gp-app .gp-fs-exit{
+      width:44px;height:44px;padding:0!important;gap:0!important;
+      justify-content:center;font-size:0!important;
+    }
+    html.gp-app .gp-fs-exit::before{content:"\2715";font-size:18px;line-height:1;font-family:system-ui,sans-serif;}
+  }
+
+  /* ══ PHONE HELD SIDEWAYS ═════════════════════════════════════════════════
+     Wider than 768px, so the desktop layout applies. The run-mode title
+     moves into the gap between the Dashboard button and the actions: one
+     row, no overlap, and the field keeps its height. */
+  @media (min-width:769px) and (max-height:500px){
+    /* 64 = 10 gap + 44 button + 10 gap; the run container already pads the
+       side inset, so it is not added again here. */
+    html.gp-app .gp-run-top{padding-left:64px!important;}
+    html.gp-app .gp-run-title{
+      position:static!important;transform:none!important;flex:1;min-width:0;
+      max-width:none!important;text-align:left!important;margin-right:12px;
+    }
+    html.gp-app .gp-run-dash{
+      width:44px;height:44px;padding:0!important;gap:0!important;
+      justify-content:center;font-size:0!important;
+    }
+    html.gp-app .gp-run-dash::before{content:"\2190";font-size:20px;line-height:1;font-family:system-ui,sans-serif;}
+  }
 </style>
 </head>
 <body>
@@ -20750,7 +21041,7 @@ if (typeof window !== "undefined")
      ReactDOM.createRoot(...).render() replaces #root's children on the shell's
      first render, so this needs no removal code at all. --><div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a14;gap:16px">
 <div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:46px;letter-spacing:0.16em;color:#e8fff1">GRIDIRON</div>
-<div style="font-family:monospace;font-size:10px;color:rgba(255,255,255,0.28);letter-spacing:0.08em">build 2026-07-14a</div>
+<div id="gp-splash-build" style="font-family:monospace;font-size:10px;color:rgba(255,255,255,0.28);letter-spacing:0.08em">build 2026-07-14a</div>
 <div style="width:130px;height:3px;background:rgba(255,255,255,0.12);border-radius:2px;overflow:hidden"><div style="width:38%;height:100%;background:#34d399;border-radius:2px;animation:gpSplashSlide 1.05s ease-in-out infinite"></div></div>
 </div></div>
 
