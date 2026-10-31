@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-19b";
+window.__gpBuild = "2026-07-19c";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -613,7 +613,7 @@ const HELP_GUIDE = [
             { t: "Blitzes", d: "Pick a blitz to add pressure paths to the front. Re-selecting the same blitz re-applies it." },
             { t: "⚡ Flash blitzes", d: "Numbered blitz badges can pulse to draw the eye to the pressure. Toggle ⚡ FLASH BLZ on or off in the VIEW bar; the setting is remembered. It shows on the live field including full screen (static play cards and GIFs stay steady)." },
             { t: "🧠 COUNTER", d: "🧠 COUNTER (next to 🎬 3D; 🧠 in the phone app's play row) — the tab you're on is YOUR side. On DEFENSE, put their offense on the field (+ vs OFF look, a 🕵️ scout card, or draw it) and COUNTER reads it — personnel, formation, routes, run or pass — then answers with a defense. On OFFENSE it reads their defense (front, box, shell, pressure) and answers with an offense; on SPECIAL it reads their unit and answers with yours. 📚 MY PLAYS picks your 2–3 best saved plays; 🧩 BUILD ONE mixes new ones from your dropdowns (front + coverage + blitz, or formation + routes + scheme + motion). PUT IT ON THE FIELD keeps their look, swaps in your side, and starts a new unsaved play — SAVE keeps it, UNDO takes it back." },
-            { t: "☁ Team film", d: "In 🎬 Film, ☁ TEAM FILM keeps clips in your team's own free Cloudflare storage, so every coach and player can watch them on any device. ⬇ IMPORT FROM HUDL brings in a whole game: pick Hudl's Export Data Excel and the game's clip download (zip or clips) — each play arrives with its breakdown (down, distance, formation, play, result…), then pick a game and ＋ FILTER by any column (e.g. DN: 3, OFF FORM: Trips Rt) and PLAY ALL for that cut-up. Re-export after more tagging → ⬇ UPDATE BREAKDOWN refreshes the data without re-uploading video. Coaches also upload any clips (full games go up in pieces), rename, tag (formation, coverage, down & distance…), add notes, link a clip to the play that's open, and delete; players watch. A play with linked film shows 🔗 LINKED in the Film bar — one tap plays it. PLAY ALL / PLAY SELECTED loads a reel into the film player, overlay and grading included. First time: ⚙ walks a coach through the one-time Cloudflare setup." },
+            { t: "☁ Team film", d: "In 🎬 Film, ☁ TEAM FILM keeps clips in your team's own free Cloudflare storage, so every coach and player can watch them on any device. ⬇ IMPORT FROM HUDL brings in a whole game: pick Hudl's Export Data Excel and the game's clip download (zip or clips) — each play arrives with its breakdown (down, distance, formation, play, result…), then pick a game and ＋ FILTER by any column (e.g. DN: 3, OFF FORM: Trips Rt) and PLAY ALL for that cut-up. Re-export after more tagging → ⬇ UPDATE BREAKDOWN refreshes the data without re-uploading video. Team film counts its own use and stops before any free limit (storage, uploads, watching, AI) could cost money. 📊 SCOUTING REPORT turns the breakdown into an opponent (or self-scout) tendency report — down & distance, formations, plays, field zone, hash, fronts, coverages, pressure, special teams — tap ▶ on any line to watch those plays, 🖨 PRINT it, and ✨ WRITE AI KEYS for a short coaching summary (free Cloudflare AI). Coaches also upload any clips (full games go up in pieces), rename, tag (formation, coverage, down & distance…), add notes, link a clip to the play that's open, and delete; players watch. A play with linked film shows 🔗 LINKED in the Film bar — one tap plays it. PLAY ALL / PLAY SELECTED loads a reel into the film player, overlay and grading included. First time: ⚙ walks a coach through the one-time Cloudflare setup." },
             { t: "Zones", d: "Draw a coverage zone with the Zone tool, then select it to resize or recolor it. The Zone tool now works on every tab — coverage on defense, landmarks and read areas on offense or special teams." },
             { t: "Man coverage", d: "Draw a link from a defender to the receiver he's responsible for with the Man tool. It works on every tab now — cover the vs-look receivers on the offense tab, or mark gunner/jammer matchups on special teams. The link always starts on a defender." },
             { t: "Spread a zone (2× / 3× / 4×)", d: "Select a field zone and use SPREAD to copy it evenly across the field at the same level — 2× makes thirds (3 zones), 3× fourths (4), 4× fifths (5). One deep zone becomes a Cover-3/4/5 shell in a tap." },
@@ -3447,6 +3447,7 @@ function TeamFilm({ onClose, onPlay, playId, playName, plays, canEdit, localClip
     const [imp, setImp] = useState(null); // { preset } while the Hudl import is open
     const [gameEdit, setGameEdit] = useState(null);
     const [armGame, setArmGame] = useState(null);
+    const [scout, setScout] = useState(() => !!(gpScoutView.open && gpScoutView.team === env.team));
     const fileRef = useRef(null);
     const may = !!(canEdit && cloud && cloud.canEdit);
     const load = async () => {
@@ -3733,6 +3734,7 @@ function TeamFilm({ onClose, onPlay, playId, playName, plays, canEdit, localClip
                     React.createElement("div", { style: { display: "flex", gap: 8 } },
                         React.createElement("button", { style: B, onClick: () => { setPhase("loading"); load(); } }, "TRY AGAIN"),
                         canEdit && React.createElement("button", { style: B, onClick: () => setPhase("nosetup") }, "\u2699 SETUP"))),
+                phase === "ready" && scout && games.length > 0 && gpFilmPortal(React.createElement(ScoutReport, { games: games, clips: clips, canEdit: may, S: { B, G, card }, startGames: selGame ? [selGame.id] : [games[0].id], onClose: () => setScout(false), onPlayList: (list) => playList(list, 0) })),
                 phase === "ready" && (React.createElement(React.Fragment, null,
                     setup && setupBox,
                     err && React.createElement("div", { style: { ...card, borderColor: "rgba(248,113,113,0.4)", color: "#fca5a5", fontSize: 13, display: "flex", gap: 10, alignItems: "center" } },
@@ -3756,6 +3758,19 @@ function TeamFilm({ onClose, onPlay, playId, playName, plays, canEdit, localClip
                             "Link uploads to \u201C",
                             playName || "this play",
                             "\u201D"),
+                        cloud && cloud.usage && (() => {
+                            const u = cloud.usage, pc = (a, b) => (b ? Math.min(100, Math.round((100 * a) / b)) : 0);
+                            const items = [["storage", pc(used, max)], ["uploads & changes", pc(u.a, u.maxA)], ["watching", pc(u.b, u.maxB)]];
+                            const hot = items.some(x => x[1] >= 80) || u.ai >= u.maxAi;
+                            return React.createElement("div", { className: "gp-tf-usage", style: { fontSize: 11.5, marginTop: 8, lineHeight: 1.5, color: hot ? "#fcd34d" : "rgba(255,255,255,0.45)" } },
+                                "Free limits this month: ",
+                                items.map(x => x[0] + " " + x[1] + "%").join(" · "),
+                                " \u00B7 AI today ",
+                                u.ai,
+                                "/",
+                                u.maxAi,
+                                ". Team film stops itself before anything could be billed.");
+                        })(),
                         React.createElement("div", { style: { fontSize: 11.5, color: "rgba(255,255,255,0.45)", marginTop: 8, lineHeight: 1.5 } },
                             "Cut clips play best. Big files (full games) go up in pieces \u2014 keep the app open until it finishes. iPhone: Settings \u2192 Camera \u2192 Formats \u2192 ",
                             React.createElement("b", null, "Most Compatible"),
@@ -3783,7 +3798,8 @@ function TeamFilm({ onClose, onPlay, playId, playName, plays, canEdit, localClip
                                 "Other clips (",
                                 plainCount,
                                 ")")),
-                        dataCols.length > 0 && React.createElement("button", { style: adding ? G : B, onClick: () => setAdding(a => a ? null : { col: "" }) }, "\uFF0B FILTER"))),
+                        dataCols.length > 0 && React.createElement("button", { style: adding ? G : B, onClick: () => setAdding(a => a ? null : { col: "" }) }, "\uFF0B FILTER"),
+                        games.length > 0 && React.createElement("button", { style: G, onClick: () => { gpScoutView.sel = null; setScout(true); } }, "\uD83D\uDCCA SCOUTING REPORT"))),
                     selGame && may && (React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" } }, gameEdit && gameEdit.id === selGame.id ? (React.createElement(React.Fragment, null,
                         React.createElement("input", { style: { ...inp, flex: "1 1 200px", width: "auto" }, value: gameEdit.name, onChange: e => setGameEdit({ ...gameEdit, name: e.target.value }), "aria-label": "Game name" }),
                         React.createElement("button", { style: G, onClick: saveGameName }, "SAVE"),
@@ -4298,6 +4314,11 @@ function HudlImport({ onClose, cloud, setCloud, games, presetGame, S }) {
                 const j = await gpFilmCall("POST", "/games", JSON.stringify({ name: gname.trim(), cols: sheet.cols }));
                 game = j.game;
                 setCloud(cur => { const c = cur || blank; return { ...c, games: [game, ...(c.games || [])] }; });
+                // every row (plays without video too) — the scouting report reads these
+                try {
+                    await gpFilmCall("POST", "/games/" + game.id + "/data", JSON.stringify({ cols: sheet.cols, rows: sheet.rows }));
+                }
+                catch (x) { }
             }
             else {
                 const j = await gpFilmCall("POST", "/games/" + game.id + "/data", JSON.stringify({ cols: sheet.cols, rows: sheet.rows }));
@@ -4326,7 +4347,7 @@ function HudlImport({ onClose, cloud, setCloud, games, presetGame, S }) {
                     }
                     catch (x) {
                         last = x;
-                        if (/full|free space/i.test(String(x.message)))
+                        if (/full|free space|allowance/i.test(String(x.message)))
                             break;
                         await new Promise(r => setTimeout(r, 1500 * (t + 1)));
                     }
@@ -4337,7 +4358,7 @@ function HudlImport({ onClose, cloud, setCloud, games, presetGame, S }) {
                 }
                 else if (!cancelRef.current) {
                     st.failed.push("Play " + gpPlayLabel(p.row) + (p.angle ? " " + p.angle : "") + " (" + p.vid.base + "): " + (last ? last.message : "didn't upload"));
-                    if (last && /full|free space/i.test(String(last.message)))
+                    if (last && /full|free space|allowance/i.test(String(last.message)))
                         break;
                 }
                 upd();
@@ -4518,6 +4539,414 @@ function HudlImport({ onClose, cloud, setCloud, games, presetGame, S }) {
                     : React.createElement("button", { style: G, onClick: () => onClose(run.game || null) }, run.phase === "error" ? "CLOSE" : "SEE THE GAME"),
                 !running && run.phase !== "done" && React.createElement("button", { style: B, onClick: () => setRun(null) }, "BACK"))))));
 }
+// ═══ 📊 SCOUTING REPORT — tendencies from the Hudl breakdown, + free AI keys ═══
+// Every number comes from the breakdown rows (all plays, video or not). Each
+// tendency row plays its clips. Opponent = their offense on your D snaps and
+// their defense on your O snaps; SELF-SCOUT flips it.
+const gpN = (v) => { const n = parseFloat(String(v == null ? "" : v).replace(/[^\d.\-]/g, "")); return isFinite(n) ? n : null; };
+const gpPct = (n, d) => (d ? Math.round((100 * n) / d) + "%" : "–");
+const gpOrd = (n) => (["1st", "2nd", "3rd", "4th"][n - 1] || n + "th");
+function gpPlayKind(d) {
+    const t = (gpField(d, "PLAY TYPE", "RUN/PASS", "PLAY CATEGORY", "TYPE") + " " + gpField(d, "RESULT", "PLAY RESULT")).toLowerCase();
+    if (/penalty/.test(t) && !/run|rush|pass|sack/.test(gpField(d, "PLAY TYPE", "RUN/PASS").toLowerCase()))
+        return "pen";
+    if (/\b(ko|kick ?off|punt|fg|field goal|pat|xp|extra pt|onside|kick)\b/.test(t) && !/\b(run|rush|pass)\b/.test(gpField(d, "PLAY TYPE").toLowerCase()))
+        return "kick";
+    if (/pass|sack|scramble|complete|incomplete|interception|\bint\b/.test(t))
+        return "pass";
+    if (/run|rush|option|sweep|draw/.test(t))
+        return "run";
+    return "";
+}
+function gpRowFacts(r) {
+    const d = r.data || {};
+    const odk = (gpField(d, "ODK") || "").trim().toUpperCase().charAt(0);
+    const dn = parseInt(gpField(d, "DN", "DOWN"), 10) || 0;
+    const dist = gpN(gpField(d, "DIST", "DISTANCE"));
+    const gain = gpN(gpField(d, "GN/LS", "GAIN/LOSS", "GAIN"));
+    const yl = gpN(gpField(d, "YARD LN", "YARD LINE", "YDLN"));
+    const kind = gpPlayKind(d);
+    const penRes = /penalty/i.test(gpField(d, "RESULT", "PLAY RESULT"));
+    const hash = (gpField(d, "HASH") || "").trim().toUpperCase().charAt(0);
+    const dir = (gpField(d, "PLAY DIR", "RUN DIRECTION", "DIRECTION") || "").trim().toUpperCase().charAt(0);
+    let succ = null;
+    if (penRes)
+        return { odk, dn, dist, gain: null, yl, kind, hash, dir, succ: null, expl: false, dd: "", zone: "", side: "", pen: true };
+    if ((kind === "run" || kind === "pass") && dn && dist != null && gain != null)
+        succ = gain >= (dn === 1 ? 0.4 : dn === 2 ? 0.6 : 1) * dist;
+    if ((kind === "run" || kind === "pass") && /td|touchdown/i.test(gpField(d, "RESULT")))
+        succ = true;
+    const ex = gpField(d, "EXPLOSIVE");
+    const expl = ex ? /^(y|yes|x|1|true)/i.test(ex) : (gain != null && ((kind === "run" && gain >= 10) || (kind === "pass" && gain >= 15)));
+    let dd = "";
+    if (dn === 1)
+        dd = "1st down";
+    else if (dn === 2 || dn === 3)
+        dd = gpOrd(dn) + (dist == null ? "" : dist <= 3 ? " & short (1-3)" : dist <= 6 ? " & medium (4-6)" : " & long (7+)");
+    else if (dn === 4)
+        dd = "4th down";
+    let zone = "";
+    if (yl != null) {
+        const a = Math.abs(yl);
+        zone = yl < 0 ? (a <= 10 ? "Backed up (own 1-10)" : "Own 11-49") : a >= 50 ? "Own 11-49" : a > 20 ? "Plus territory (49-21)" : "Red zone (20 and in)";
+    }
+    let side = "";
+    if (dir === "L" || dir === "R") {
+        if (hash === "M")
+            side = "Middle of field";
+        else if (hash === "L" || hash === "R")
+            side = dir === hash ? "To the boundary" : "To the field";
+    }
+    return { odk, dn, dist, gain, yl, kind, hash, dir, succ, expl: !!expl, dd, zone, side };
+}
+const GP_DD_ORDER = ["1st down", "2nd & long (7+)", "2nd & medium (4-6)", "2nd & short (1-3)", "3rd & long (7+)", "3rd & medium (4-6)", "3rd & short (1-3)", "4th down"];
+const GP_ZONE_ORDER = ["Backed up (own 1-10)", "Own 11-49", "Plus territory (49-21)", "Red zone (20 and in)"];
+function gpStat(rows) {
+    const rp = rows.filter(r => r.f.kind === "run" || r.f.kind === "pass");
+    const run = rp.filter(r => r.f.kind === "run").length;
+    const g = rp.filter(r => r.f.gain != null);
+    const sv = rp.filter(r => r.f.succ != null);
+    return { n: rows.length, rp: rp.length, run, pass: rp.length - run, runPct: gpPct(run, rp.length), passPct: gpPct(rp.length - run, rp.length),
+        ypp: g.length ? (g.reduce((a, r) => a + r.f.gain, 0) / g.length).toFixed(1) : "–", succ: gpPct(sv.filter(r => r.f.succ).length, sv.length), succN: sv.length, expl: rp.filter(r => r.f.expl).length };
+}
+function gpTop(rows, keys, k) {
+    const c = {};
+    let tagged = 0;
+    rows.forEach(r => { const v = gpField(r.data, ...keys); if (v) {
+        c[v] = (c[v] || 0) + 1;
+        tagged++;
+    } });
+    return Object.keys(c).sort((a, b) => c[b] - c[a] || gpNatCmp(a, b)).slice(0, k || 3).map(v => ({ v, n: c[v], pct: gpPct(c[v], tagged) }));
+}
+function gpGroup(rows, fn, order) {
+    const m = {};
+    rows.forEach(r => { const k = fn(r); if (k)
+        (m[k] = m[k] || []).push(r); });
+    const keys = order ? order.filter(k => m[k]) : Object.keys(m).sort((a, b) => m[b].length - m[a].length || gpNatCmp(a, b));
+    return keys.map(k => ({ key: k, rows: m[k] }));
+}
+const gpTopTxt = (t) => t.map(x => x.v + " " + x.pct).join(", ");
+const gpTagged = (rows, keys) => rows.filter(r => gpField(r.data, ...keys)).length;
+const F_FORM = ["OFF FORM", "FORMATION"], F_PLAY = ["OFF PLAY", "PLAY"], F_FRONT = ["DEF FRONT", "DEFENSIVE FRONT", "FRONT"], F_COV = ["COVERAGE", "DEFENSIVE COVERAGE", "COV"];
+const F_BLITZ = ["BLITZ"], F_PRESS = ["PRESSURE"], F_PERS = ["PERSONNEL", "PERS"], F_BACK = ["BACKFIELD"], F_MOTION = ["MOTION"];
+const gpIsBlitz = (r) => { const b = gpField(r.data, ...F_BLITZ); return !!b && !/^(no|n|none|-|0)$/i.test(b); };
+// rows: [{ key, data }] (key = "<game>|<play>") → the whole report
+function gpScoutCompute(allRows, side) {
+    const rows = allRows.map(r => ({ ...r, f: gpRowFacts(r) }));
+    const offK = side === "self" ? "O" : "D", defK = side === "self" ? "D" : "O";
+    const O = rows.filter(r => r.f.odk === offK), D = rows.filter(r => r.f.odk === defK), K = rows.filter(r => r.f.odk === "K" || r.f.kind === "kick");
+    const Orp = O.filter(r => r.f.kind !== "pen" && !r.f.pen), Drp = D.filter(r => r.f.kind !== "pen" && !r.f.pen);
+    const offense = {
+        n: O.length, stat: gpStat(Orp),
+        tagged: { form: gpTagged(O, F_FORM), play: gpTagged(O, F_PLAY), type: O.filter(r => r.f.kind).length, dd: O.filter(r => r.f.dd).length },
+        dd: gpGroup(Orp, r => r.f.dd, GP_DD_ORDER).map(g => ({ ...g, stat: gpStat(g.rows), form: gpTop(g.rows, F_FORM, 2), play: gpTop(g.rows, F_PLAY, 2) })),
+        forms: gpGroup(Orp, r => gpField(r.data, ...F_FORM)).slice(0, 14).map(g => ({ ...g, stat: gpStat(g.rows), play: gpTop(g.rows, F_PLAY, 3),
+            dirs: gpTop(g.rows, ["PLAY DIR", "RUN DIRECTION"], 2), pers: gpTop(g.rows, F_PERS, 1) })),
+        plays: gpGroup(Orp, r => gpField(r.data, ...F_PLAY)).slice(0, 16).map(g => ({ ...g, stat: gpStat(g.rows), form: gpTop(g.rows, F_FORM, 2), dd: gpTop(g.rows.map(r => ({ data: { X: r.f.dd } })), ["X"], 1) })),
+        zones: gpGroup(Orp, r => r.f.zone, GP_ZONE_ORDER).map(g => ({ ...g, stat: gpStat(g.rows), form: gpTop(g.rows, F_FORM, 2), play: gpTop(g.rows, F_PLAY, 2) })),
+        hash: gpGroup(Orp, r => ({ L: "Left hash", M: "Middle", R: "Right hash" })[r.f.hash] || "", ["Left hash", "Middle", "Right hash"]).map(g => ({ ...g, stat: gpStat(g.rows), side: gpTop(g.rows.map(r => ({ data: { X: r.f.side } })), ["X"], 2), form: gpTop(g.rows, F_FORM, 1) })),
+        extras: [["Personnel", F_PERS], ["Backfield", F_BACK], ["Motion", F_MOTION]].map(([label, keys]) => ({ label, groups: gpGroup(Orp, r => gpField(r.data, ...keys)).slice(0, 8).map(g => ({ ...g, stat: gpStat(g.rows) })) })).filter(x => x.groups.length),
+    };
+    const dStat = gpStat(Drp);
+    const defense = {
+        n: D.length, stat: dStat, blitz: gpPct(D.filter(gpIsBlitz).length, D.length), blitzN: D.filter(gpIsBlitz).length,
+        tagged: { front: gpTagged(D, F_FRONT), cov: gpTagged(D, F_COV), blitz: gpTagged(D, F_BLITZ), press: gpTagged(D, F_PRESS) },
+        fronts: gpGroup(D, r => gpField(r.data, ...F_FRONT)).slice(0, 12).map(g => ({ ...g, stat: gpStat(g.rows.filter(r => r.f.kind !== "pen")), cov: gpTop(g.rows, F_COV, 2) })),
+        covs: gpGroup(D, r => gpField(r.data, ...F_COV)).slice(0, 12).map(g => ({ ...g, stat: gpStat(g.rows.filter(r => r.f.kind !== "pen")), front: gpTop(g.rows, F_FRONT, 2) })),
+        press: gpGroup(D, r => gpField(r.data, ...F_PRESS) || (gpIsBlitz(r) ? "Blitz: " + gpField(r.data, ...F_BLITZ) : "")).slice(0, 10).map(g => ({ ...g, stat: gpStat(g.rows.filter(r => r.f.kind !== "pen")), dd: gpTop(g.rows.map(r => ({ data: { X: r.f.dd } })), ["X"], 2) })),
+        dd: gpGroup(D, r => r.f.dd, GP_DD_ORDER).map(g => ({ ...g, stat: gpStat(g.rows.filter(r => r.f.kind !== "pen")), front: gpTop(g.rows, F_FRONT, 2), cov: gpTop(g.rows, F_COV, 2), blitz: gpPct(g.rows.filter(gpIsBlitz).length, g.rows.length) })),
+        vsForm: gpGroup(D, r => gpField(r.data, ...F_FORM)).slice(0, 12).map(g => ({ ...g, front: gpTop(g.rows, F_FRONT, 2), cov: gpTop(g.rows, F_COV, 2), stat: gpStat(g.rows.filter(r => r.f.kind !== "pen")) })),
+    };
+    const special = {
+        n: K.length,
+        types: gpGroup(K, r => gpField(r.data, "PLAY TYPE") || "Kick").map(g => {
+            const ky = g.rows.map(r => gpN(gpField(r.data, "KICK YARDS"))).filter(x => x != null), ry = g.rows.map(r => gpN(gpField(r.data, "RET YARDS"))).filter(x => x != null);
+            return { ...g, kick: ky.length ? (ky.reduce((a, b) => a + b, 0) / ky.length).toFixed(1) : "–", ret: ry.length ? (ry.reduce((a, b) => a + b, 0) / ry.length).toFixed(1) : "–", result: gpTop(g.rows, ["RESULT"], 3) };
+        }),
+    };
+    return { total: rows.length, offense, defense, special };
+}
+// Compact plain-text numbers for the AI (and nothing else).
+function gpScoutFacts(rep, label, gameNames, ours) {
+    const W = ours ? "OUR" : "THEIR";
+    const L = [];
+    const st = (s) => s.n + " snaps, run " + s.runPct + " / pass " + s.passPct + ", " + s.ypp + " yds/play, success " + s.succ + (s.expl ? ", " + s.expl + " explosive" : "");
+    L.push("SCOUTING REPORT ON: " + label + " — from " + gameNames.join(", ") + " (" + rep.total + " tagged plays).");
+    const o = rep.offense;
+    L.push("", W + " OFFENSE: " + st(o.stat) + ". Tagging: formation on " + o.tagged.form + "/" + o.n + ", play on " + o.tagged.play + "/" + o.n + ".");
+    o.dd.forEach(g => L.push("  " + g.key + ": " + st(g.stat) + (g.form.length ? "; formations " + gpTopTxt(g.form) : "") + (g.play.length ? "; plays " + gpTopTxt(g.play) : "")));
+    L.push(" Formations:");
+    o.forms.slice(0, 10).forEach(g => L.push("  " + g.key + " (" + gpPct(g.rows.length, o.n) + " of snaps): " + st(g.stat) + (g.play.length ? "; plays " + gpTopTxt(g.play) : "") + (g.dirs.length ? "; direction " + gpTopTxt(g.dirs) : "")));
+    if (o.plays.length) {
+        L.push(" Plays:");
+        o.plays.slice(0, 12).forEach(g => L.push("  " + g.key + ": " + st(g.stat) + (g.form.length ? "; from " + gpTopTxt(g.form) : "")));
+    }
+    L.push(" Field zones:");
+    o.zones.forEach(g => L.push("  " + g.key + ": " + st(g.stat) + (g.play.length ? "; plays " + gpTopTxt(g.play) : "")));
+    o.hash.forEach(g => L.push("  " + g.key + ": " + st(g.stat) + (g.side.length ? "; " + gpTopTxt(g.side) : "")));
+    o.extras.forEach(x => L.push("  " + x.label + ": " + x.groups.slice(0, 5).map(g => g.key + " " + g.rows.length + " (run " + g.stat.runPct + ")").join(", ")));
+    const d = rep.defense;
+    L.push("", W + " DEFENSE: " + d.n + " snaps, allowed " + d.stat.ypp + " yds/play, offense success vs them " + d.stat.succ + ", blitz tagged on " + d.blitz + ". Tagging: front on " + d.tagged.front + "/" + d.n + ", coverage on " + d.tagged.cov + "/" + d.n + ", pressure on " + d.tagged.press + "/" + d.n + ".");
+    if (d.fronts.length)
+        L.push(" Fronts: " + d.fronts.slice(0, 8).map(g => g.key + " " + g.rows.length + " (" + g.stat.ypp + " yds allowed" + (g.cov.length ? "; with " + gpTopTxt(g.cov) : "") + ")").join("; "));
+    if (d.covs.length)
+        L.push(" Coverages: " + d.covs.slice(0, 8).map(g => g.key + " " + g.rows.length + " (" + g.stat.ypp + " yds allowed)").join("; "));
+    if (d.press.length)
+        L.push(" Pressure/blitz: " + d.press.slice(0, 6).map(g => g.key + " " + g.rows.length + (g.dd.length ? " (mostly " + gpTopTxt(g.dd) + ")" : "")).join("; "));
+    d.dd.forEach(g => L.push("  " + g.key + " (" + g.rows.length + "): " + (g.front.length ? "fronts " + gpTopTxt(g.front) : "front not tagged") + (g.cov.length ? "; coverage " + gpTopTxt(g.cov) : "") + "; blitz " + g.blitz));
+    if (d.vsForm.length)
+        L.push(" Versus formations: " + d.vsForm.slice(0, 8).filter(g => g.front.length || g.cov.length).map(g => g.key + " → " + [gpTopTxt(g.front), gpTopTxt(g.cov)].filter(Boolean).join(" / ")).join("; "));
+    if (rep.special.n)
+        L.push("", "SPECIAL TEAMS: " + rep.special.types.map(g => g.key + " " + g.rows.length + (g.kick !== "–" ? " (avg kick " + g.kick + ")" : "") + (g.ret !== "–" ? " (avg return " + g.ret + ")" : "")).join("; "));
+    return L.join("\n");
+}
+const gpHash36 = (s) => { let h = 5381; for (let i = 0; i < s.length; i++)
+    h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(36); };
+const gpScoutView = { open: false, team: null, sel: null, side: "opp", tab: "off" };
+const gpScoutRows = {}; // "<team>|<game>|<data version>" → rows, so reopening is instant and costs no reads
+let gpScoutCssDone = false;
+function gpScoutCss() {
+    if (gpScoutCssDone || typeof document === "undefined")
+        return;
+    gpScoutCssDone = true;
+    const st = document.createElement("style");
+    st.id = "gp-scout-print";
+    st.textContent = "@media print{@page{margin:12mm}html,body{background:#fff!important;height:auto!important;overflow:visible!important}body>*:not(.gp-scout){display:none!important}" +
+        ".gp-scout{position:static!important;inset:auto!important;background:#fff!important;display:block!important;padding:0!important}.gp-scout *{color:#000!important;background:transparent!important;border-color:#bbb!important;box-shadow:none!important;text-shadow:none!important}" +
+        ".gp-scout .gp-sr-scroll{overflow:visible!important;height:auto!important;padding:0!important}.gp-sr-noprint{display:none!important}.gp-sr-sec{display:block!important}.gp-sr-row,.gp-sr-tiles{break-inside:avoid}.gp-sr-h{break-after:avoid}}";
+    document.head.appendChild(st);
+}
+function ScoutReport({ onClose, games, clips, startGames, canEdit, onPlayList, S }) {
+    const { B, G, card } = S;
+    const team = gpFilmEnv().team;
+    const same = gpScoutView.team === team && gpScoutView.sel;
+    const [sel, setSel] = useState(() => { const s = {}; (same ? gpScoutView.sel : startGames).forEach(id => { s[id] = true; }); return s; });
+    const [side, setSide] = useState(same ? gpScoutView.side : "opp");
+    const [tab, setTab] = useState(same ? gpScoutView.tab : "off");
+    const ver = (id) => { const g = games.find(x => x.id === id); return team + "|" + id + "|" + (g ? (g.dataAt || g.at || 0) : 0); };
+    const [rowsBy, setRowsBy] = useState(() => { const m = {}; games.forEach(g => { if (gpScoutRows[ver(g.id)])
+        m[g.id] = gpScoutRows[ver(g.id)]; }); return m; });
+    const [ai, setAi] = useState(null);
+    const [aiBusy, setAiBusy] = useState(false);
+    const [aiErr, setAiErr] = useState("");
+    const [angle, setAngle] = useState("");
+    useEffect(() => { gpScoutCss(); }, []);
+    const selIds = games.filter(g => sel[g.id]).map(g => g.id);
+    useEffect(() => { gpScoutView.open = true; gpScoutView.team = team; gpScoutView.sel = selIds; gpScoutView.side = side; gpScoutView.tab = tab; });
+    // every breakdown row for the chosen games (falls back to the data on their clips)
+    useEffect(() => {
+        let dead = false;
+        selIds.filter(id => !rowsBy[id]).forEach(id => {
+            gpFilmCall("GET", "/games/" + id + "/rows").then(j => j.rows || []).catch(() => null).then(rows => {
+                if (dead)
+                    return;
+                if (!rows || !rows.length) {
+                    const seen = {};
+                    rows = [];
+                    clips.filter(c => c.game === id && c.play != null && c.data).sort((a, b) => a.play - b.play).forEach(c => { if (!seen[c.play]) {
+                        seen[c.play] = 1;
+                        rows.push({ play: c.play, data: c.data });
+                    } });
+                }
+                gpScoutRows[ver(id)] = rows;
+                setRowsBy(m => ({ ...m, [id]: rows }));
+            });
+        });
+        return () => { dead = true; };
+    }, [selIds.join(",")]);
+    const ready = selIds.length > 0 && selIds.every(id => rowsBy[id]);
+    const all = ready ? selIds.reduce((a, id) => a.concat(rowsBy[id].map(r => ({ key: id + "|" + r.play, data: r.data || {} }))), []) : [];
+    const rep = ready ? gpScoutCompute(all, side) : null;
+    const angles = [];
+    clips.forEach(c => { if (c.angle && selIds.indexOf(c.game) !== -1 && angles.indexOf(c.angle) === -1)
+        angles.push(c.angle); });
+    angles.sort(gpNatCmp);
+    const clipFor = {};
+    clips.forEach(c => { if (!c.game || c.play == null || selIds.indexOf(c.game) === -1)
+        return; const k = c.game + "|" + c.play; const cur = clipFor[k]; if (!cur || (angle && c.angle === angle && cur.angle !== angle))
+        clipFor[k] = c; });
+    const play = (rows) => { const list = rows.map(r => clipFor[r.key]).filter(Boolean); if (list.length)
+        onPlayList(list); };
+    const gameNames = games.filter(g => sel[g.id]).map(g => g.name);
+    const label = side === "self" ? "Self-scout" : "Opponent";
+    const sig = all.length + ":" + all.reduce((a, r) => a + Object.keys(r.data).length, 0);
+    const aiKey = "r-" + side + "-" + gpHash36(selIds.slice().sort().join(",") + "|" + sig);
+    useEffect(() => {
+        if (!ready)
+            return;
+        let dead = false;
+        setAi(null);
+        setAiErr("");
+        gpFilmCall("GET", "/ai/report?key=" + aiKey).then(j => { if (!dead)
+            setAi(j.report); }).catch(() => { });
+        return () => { dead = true; };
+    }, [aiKey, ready]);
+    const writeAi = async () => {
+        setAiBusy(true);
+        setAiErr("");
+        try {
+            const j = await gpFilmCall("POST", "/ai/report", JSON.stringify({ key: aiKey, facts: gpScoutFacts(rep, side === "self" ? "our own team (self-scout)" : "the opponent", gameNames, side === "self") }));
+            setAi(j.report);
+        }
+        catch (e) {
+            setAiErr(String(e.message || e));
+        }
+        setAiBusy(false);
+    };
+    const T = { fontFamily: "'Bebas Neue',sans-serif", letterSpacing: "0.08em" };
+    const h2 = { ...T, fontSize: 17, color: "#5eead4", margin: "18px 0 8px" };
+    const muted = { fontSize: 11.5, color: "rgba(255,255,255,0.5)", lineHeight: 1.5 };
+    const tile = (k, v) => React.createElement("div", { key: k, style: { flex: "1 1 92px", minWidth: 92, padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.03)" } },
+        React.createElement("div", { style: { fontSize: 20, fontWeight: 800, color: "#f1f5f9" } }, v),
+        React.createElement("div", { style: { fontSize: 10.5, color: "rgba(255,255,255,0.5)", letterSpacing: "0.05em" } }, k));
+    const tiles = (s, extra) => React.createElement("div", { className: "gp-sr-tiles", style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+        tile("SNAPS", s.n),
+        tile("RUN", s.runPct),
+        tile("PASS", s.passPct),
+        tile("YDS / PLAY", s.ypp),
+        tile("SUCCESS", s.succ),
+        tile("EXPLOSIVE", s.expl),
+        extra || null);
+    const row = (key, title, line, rows, sub) => {
+        const n = rows.filter(r => clipFor[r.key]).length;
+        return (React.createElement("div", { key: key, className: "gp-sr-row", style: { display: "flex", gap: 10, alignItems: "center", padding: "9px 0", borderTop: "1px solid rgba(255,255,255,0.07)" } },
+            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#f1f5f9" } },
+                    title,
+                    " ",
+                    React.createElement("span", { className: "mono", style: { fontSize: 11.5, fontWeight: 400, color: "rgba(255,255,255,0.5)" } },
+                        "\u00B7 ",
+                        rows.length)),
+                React.createElement("div", { style: { fontSize: 12.5, color: "#99f6e4", lineHeight: 1.45, marginTop: 2 } }, line),
+                sub && React.createElement("div", { style: { fontSize: 12, color: "rgba(255,255,255,0.62)", lineHeight: 1.45, marginTop: 2 } }, sub)),
+            n > 0 && React.createElement("button", { className: "gp-sr-noprint", style: { ...B, minHeight: 40, padding: "0 10px", fontSize: 13, flexShrink: 0 }, onClick: () => play(rows), "aria-label": "Play " + n + " clips: " + title },
+                "\u25B6 ",
+                n)));
+    };
+    const sl = (s) => "Run " + s.runPct + " · Pass " + s.passPct + " · " + s.ypp + " yds · success " + s.succ + (s.expl ? " · " + s.expl + " explosive" : "");
+    const block = (title, items, note) => (items && items.length) || note ? (React.createElement("div", { style: { marginTop: 6 } },
+        React.createElement("div", { className: "gp-sr-h", style: h2 }, title),
+        note && React.createElement("div", { style: { ...muted, marginBottom: 4, color: (items && items.length) ? "rgba(255,255,255,0.5)" : "#fcd34d" } }, note),
+        items)) : null;
+    const tagNote = (have, n, what) => (have < n ? what + " tagged on " + have + " of " + n + " snaps — tag more in Hudl, then ⬇ UPDATE BREAKDOWN." : null);
+    const off = rep && rep.offense, def = rep && rep.defense, sp = rep && rep.special;
+    const offSec = rep && (React.createElement("div", { className: "gp-sr-sec", style: { display: tab === "off" ? "block" : "none" } },
+        React.createElement("div", { className: "gp-sr-h", style: { ...h2, fontSize: 20, color: "#fcd34d" } },
+            side === "self" ? "OUR OFFENSE" : "THEIR OFFENSE",
+            " ",
+            React.createElement("span", { style: { fontSize: 13, color: "rgba(255,255,255,0.5)" } },
+                "(",
+                side === "self" ? "O" : "D",
+                " snaps)")),
+        off.n ? tiles(off.stat) : React.createElement("div", { style: muted },
+            "No ",
+            side === "self" ? "O" : "D",
+            " snaps in these games."),
+        block("By down & distance", off.dd.map((g, i) => row("dd" + i, g.key, sl(g.stat), g.rows, [g.form.length ? "Forms: " + gpTopTxt(g.form) : "", g.play.length ? "Plays: " + gpTopTxt(g.play) : ""].filter(Boolean).join(" · ")))),
+        block("Formations", off.forms.map((g, i) => row("f" + i, g.key, gpPct(g.rows.length, off.n) + " of snaps · " + sl(g.stat), g.rows, [g.play.length ? "Plays: " + gpTopTxt(g.play) : "", g.dirs.length ? "Dir: " + gpTopTxt(g.dirs) : "", g.pers.length ? "Pers: " + gpTopTxt(g.pers) : ""].filter(Boolean).join(" · "))), tagNote(off.tagged.form, off.n, "Formation")),
+        block("Plays", off.plays.map((g, i) => row("p" + i, g.key, g.rows.length + " called · " + g.stat.ypp + " yds · success " + g.stat.succ + (g.stat.expl ? " · " + g.stat.expl + " explosive" : ""), g.rows, [g.form.length ? "From: " + gpTopTxt(g.form) : "", g.dd.length ? "Most on " + g.dd[0].v : ""].filter(Boolean).join(" · "))), tagNote(off.tagged.play, off.n, "Play")),
+        block("Field zone", off.zones.map((g, i) => row("z" + i, g.key, sl(g.stat), g.rows, [g.form.length ? "Forms: " + gpTopTxt(g.form) : "", g.play.length ? "Plays: " + gpTopTxt(g.play) : ""].filter(Boolean).join(" · ")))),
+        block("Hash & direction", off.hash.map((g, i) => row("h" + i, g.key, sl(g.stat), g.rows, [g.side.length ? gpTopTxt(g.side) : "", g.form.length ? "Form: " + gpTopTxt(g.form) : ""].filter(Boolean).join(" · ")))),
+        off.extras.map((x, xi) => React.createElement("div", { key: "x" + xi }, block(x.label, x.groups.map((g, i) => row("x" + xi + "-" + i, g.key, sl(g.stat), g.rows)))))));
+    const defSec = rep && (React.createElement("div", { className: "gp-sr-sec", style: { display: tab === "def" ? "block" : "none" } },
+        React.createElement("div", { className: "gp-sr-h", style: { ...h2, fontSize: 20, color: "#fcd34d" } },
+            side === "self" ? "OUR DEFENSE" : "THEIR DEFENSE",
+            " ",
+            React.createElement("span", { style: { fontSize: 13, color: "rgba(255,255,255,0.5)" } },
+                "(",
+                side === "self" ? "D" : "O",
+                " snaps)")),
+        def.n ? React.createElement("div", { className: "gp-sr-tiles", style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            tile("SNAPS", def.n),
+            tile("YDS ALLOWED", def.stat.ypp),
+            tile("OFF SUCCESS", def.stat.succ),
+            tile("BLITZ", def.blitz),
+            tile("RUN FACED", def.stat.runPct)) : React.createElement("div", { style: muted },
+            "No ",
+            side === "self" ? "D" : "O",
+            " snaps in these games."),
+        def.n > 0 && (def.tagged.front < def.n || def.tagged.cov < def.n) && React.createElement("div", { style: { ...muted, marginTop: 8 } },
+            "Front tagged on ",
+            def.tagged.front,
+            " of ",
+            def.n,
+            " snaps, coverage on ",
+            def.tagged.cov,
+            ". Percentages below are of tagged snaps."),
+        block("Fronts", def.fronts.length ? null : [], def.n && !def.fronts.length ? "No fronts tagged on these " + def.n + " snaps yet — tag DEF FRONT / COVERAGE in Hudl, then ⬇ UPDATE BREAKDOWN." : null),
+        block("Fronts", def.fronts.map((g, i) => row("fr" + i, g.key, gpPct(g.rows.length, def.tagged.front) + " of tagged · " + g.stat.ypp + " yds allowed · success vs " + g.stat.succ, g.rows, g.cov.length ? "With: " + gpTopTxt(g.cov) : ""))),
+        block("Coverages", def.covs.map((g, i) => row("cv" + i, g.key, gpPct(g.rows.length, def.tagged.cov) + " of tagged · " + g.stat.ypp + " yds allowed · success vs " + g.stat.succ, g.rows, g.front.length ? "With: " + gpTopTxt(g.front) : ""))),
+        block("Pressure & blitz", def.press.map((g, i) => row("pr" + i, g.key, g.stat.ypp + " yds allowed · success vs " + g.stat.succ, g.rows, g.dd.length ? "Mostly " + gpTopTxt(g.dd) : ""))),
+        block("By down & distance", def.dd.map((g, i) => row("dd" + i, g.key, [g.front.length ? "Front: " + gpTopTxt(g.front) : "Front not tagged", g.cov.length ? "Cov: " + gpTopTxt(g.cov) : ""].filter(Boolean).join(" · "), g.rows, "Blitz " + g.blitz + " · " + g.stat.ypp + " yds allowed"))),
+        block("Versus formations", def.vsForm.filter(g => g.front.length || g.cov.length).map((g, i) => row("vf" + i, "vs " + g.key, [g.front.length ? "Front: " + gpTopTxt(g.front) : "", g.cov.length ? "Cov: " + gpTopTxt(g.cov) : ""].filter(Boolean).join(" · "), g.rows, g.stat.ypp + " yds allowed")))));
+    const stSec = rep && (React.createElement("div", { className: "gp-sr-sec", style: { display: tab === "st" ? "block" : "none" } },
+        React.createElement("div", { className: "gp-sr-h", style: { ...h2, fontSize: 20, color: "#fcd34d" } },
+            "SPECIAL TEAMS ",
+            React.createElement("span", { style: { fontSize: 13, color: "rgba(255,255,255,0.5)" } }, "(K snaps, both teams)")),
+        sp.n ? sp.types.map((g, i) => row("st" + i, g.key, [g.kick !== "–" ? "Avg kick " + g.kick : "", g.ret !== "–" ? "Avg return " + g.ret : ""].filter(Boolean).join(" · ") || "—", g.rows, g.result.length ? "Results: " + gpTopTxt(g.result) : "")) : React.createElement("div", { style: muted }, "No kicking plays tagged.")));
+    const aiText = ai && ai.text ? ai.text.split("\n").map(s => s.trim()).filter(Boolean) : [];
+    return (React.createElement("div", { className: "gp-scout", style: { position: "fixed", inset: 0, zIndex: 7200, background: "#0a0a14", display: "flex", flexDirection: "column", fontFamily: "system-ui,sans-serif", paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" } },
+        React.createElement("div", { className: "gp-sr-noprint", style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", paddingTop: "max(10px, env(safe-area-inset-top))", borderBottom: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 } },
+            React.createElement("span", { style: { ...T, fontSize: 17, color: "#5eead4", flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, "\uD83D\uDCCA SCOUTING REPORT"),
+            React.createElement("button", { style: { ...B, flexShrink: 0 }, disabled: !rep, onClick: () => { try {
+                    window.print();
+                }
+                catch (e) { } } }, "\uD83D\uDDA8 PRINT"),
+            React.createElement("button", { "aria-label": "Close report", onClick: () => { gpScoutView.open = false; onClose(); }, style: { ...B, width: 44, minWidth: 44, padding: 0, fontSize: 18, flexShrink: 0 } }, "\u2715")),
+        React.createElement("div", { className: "gp-sr-scroll", style: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "12px 12px", paddingBottom: "max(24px, env(safe-area-inset-bottom))" } },
+            React.createElement("div", { style: { maxWidth: 760, margin: "0 auto" } },
+                React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: "#f1f5f9", lineHeight: 1.25 } }, label === "Opponent" ? "Opponent scouting report" : "Self-scout report"),
+                React.createElement("div", { style: { ...muted, marginTop: 2 } },
+                    gameNames.join(" · ") || "Pick a game",
+                    rep ? " — " + rep.total + " plays from the Hudl breakdown" : ""),
+                React.createElement("div", { className: "gp-sr-noprint", style: { ...card, marginTop: 12 } },
+                    games.length > 1 && React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 } }, games.map(g => (React.createElement("label", { key: g.id, style: { display: "flex", alignItems: "center", gap: 8, minHeight: 40, padding: "0 12px", borderRadius: 10, border: "1px solid " + (sel[g.id] ? "rgba(94,234,212,0.55)" : "rgba(255,255,255,0.14)"), fontSize: 13, color: "#e2e8f0", cursor: "pointer" } },
+                        React.createElement("input", { type: "checkbox", checked: !!sel[g.id], onChange: e => setSel(s => ({ ...s, [g.id]: e.target.checked })), style: { width: 20, height: 20 } }),
+                        g.name)))),
+                    React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+                        React.createElement("button", { style: side === "opp" ? G : B, onClick: () => setSide("opp") }, "OPPONENT"),
+                        React.createElement("button", { style: side === "self" ? G : B, onClick: () => setSide("self") }, "SELF-SCOUT"),
+                        angles.length > 1 && React.createElement("select", { "aria-label": "Video angle", value: angle, onChange: e => setAngle(e.target.value), style: { ...B, fontFamily: "system-ui", fontSize: 14, letterSpacing: 0 } },
+                            React.createElement("option", { value: "" },
+                                "\u25B6 angle: ",
+                                angles[0]),
+                            angles.slice(1).map(a => React.createElement("option", { key: a, value: a },
+                                "\u25B6 angle: ",
+                                a)))),
+                    React.createElement("div", { style: { ...muted, marginTop: 8 } }, side === "self" ? "Your offense = O snaps, your defense = D snaps." : "Their offense = your D snaps, their defense = your O snaps. If this film was tagged from their side, use SELF-SCOUT instead.")),
+                !selIds.length && React.createElement("div", { style: { ...card, ...muted } }, "Pick at least one game."),
+                selIds.length > 0 && !rep && React.createElement("div", { style: { ...card, ...muted } }, "Crunching the breakdown\u2026"),
+                rep && (React.createElement(React.Fragment, null,
+                    React.createElement("div", { style: { ...card, borderColor: "rgba(196,181,253,0.4)" } },
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+                            React.createElement("div", { style: { ...T, fontSize: 16, color: "#c4b5fd", flex: 1 } }, "\u2728 AI KEYS"),
+                            canEdit && React.createElement("button", { className: "gp-sr-noprint", style: ai ? B : G, disabled: aiBusy, onClick: writeAi }, aiBusy ? "WRITING…" : ai ? "↻ REWRITE" : "✨ WRITE AI KEYS")),
+                        aiErr && React.createElement("div", { style: { fontSize: 13, color: "#fca5a5", marginTop: 8, lineHeight: 1.5 } }, aiErr),
+                        !ai && !aiErr && React.createElement("div", { style: { ...muted, marginTop: 6 } }, canEdit ? "Free Cloudflare AI turns the numbers below into coaching points (about 30 reports a day free)." : "Your coach hasn't written AI keys for this report yet."),
+                        aiText.length > 0 && React.createElement("div", { className: "gp-sr-ai", style: { marginTop: 8 } }, aiText.map((ln, i) => /^[-•*]\s*/.test(ln)
+                            ? React.createElement("div", { key: i, style: { fontSize: 13.5, color: "#e2e8f0", lineHeight: 1.5, paddingLeft: 14, textIndent: -10, margin: "3px 0" } },
+                                "\u2022 ",
+                                ln.replace(/^[-•*]\s*/, "").replace(/\*\*/g, ""))
+                            : React.createElement("div", { key: i, style: { ...T, fontSize: 14.5, color: "#ddd6fe", marginTop: i ? 10 : 0 } }, ln.replace(/[#*]/g, "").trim()))),
+                        ai && React.createElement("div", { style: { ...muted, marginTop: 8 } },
+                            "Written by AI (",
+                            String(ai.model || "").split("/").pop(),
+                            ") from these numbers, ",
+                            gpFilmDate(ai.at),
+                            ". Check it against the film.")),
+                    React.createElement("div", { className: "gp-sr-noprint", style: { display: "flex", gap: 6, flexWrap: "wrap", position: "sticky", top: -12, background: "#0a0a14", padding: "8px 0", zIndex: 1 } },
+                        React.createElement("button", { style: tab === "off" ? G : B, onClick: () => setTab("off") },
+                            side === "self" ? "OUR" : "THEIR",
+                            " OFFENSE"),
+                        React.createElement("button", { style: tab === "def" ? G : B, onClick: () => setTab("def") },
+                            side === "self" ? "OUR" : "THEIR",
+                            " DEFENSE"),
+                        React.createElement("button", { style: tab === "st" ? G : B, onClick: () => setTab("st") }, "SPECIAL TEAMS")),
+                    offSec,
+                    defSec,
+                    stSec,
+                    React.createElement("div", { style: { ...muted, marginTop: 18 } }, "Success = 40% of the distance on 1st down, 60% on 2nd, all of it on 3rd/4th. Explosive = run 10+, pass 15+ (or your EXPLOSIVE column). Penalties are left out of run/pass numbers. \u25B6 plays that tendency's clips.")))))));
+}
 function FilmPanel({ active, stacked, players, routes, playName, gradeSessions, onSaveSession, onDeleteSession, onShareResult, playId, plays, canEdit }) {
     const [clips, setClips] = useState([]); // { id, name, url, file? | cloudId? }
     // ☁ TEAM FILM: the team's cloud clip index (fetched quietly when Film opens, so
@@ -4526,7 +4955,7 @@ function FilmPanel({ active, stacked, players, routes, playName, gradeSessions, 
     const [teamLib, setTeamLib] = useState(false);
     const refreshCloud = async () => {
         const j = await gpFilmCall("GET", "/clips");
-        const next = { clips: j.clips || [], games: j.games || [], usedBytes: j.usedBytes || 0, maxBytes: j.maxBytes || 0, canEdit: !!j.canEdit };
+        const next = { clips: j.clips || [], games: j.games || [], usage: j.usage || null, usedBytes: j.usedBytes || 0, maxBytes: j.maxBytes || 0, canEdit: !!j.canEdit };
         setCloud(next);
         return next;
     };
