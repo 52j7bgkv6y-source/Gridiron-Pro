@@ -16,7 +16,12 @@
      always hit the network directly).
    Bump VERSION if you ever need to force old caches out.
    ──────────────────────────────────────────────────────────────────────────── */
-const VERSION = "gridiron-v3";
+const VERSION = "gridiron-v4";
+// v4: each page is cached under its OWN address. v3 stored every navigation
+// as "./", so opening a second page on the site (game.html) would have
+// replaced the cached playbook app. Bumping VERSION also clears any v3 cache
+// that a first visit to the game might have overwritten before this worker
+// took over.
 const APP_CACHE = VERSION + "-app";
 const LIB_CACHE = VERSION + "-lib";
 const NAV_TIMEOUT_MS = 2500;
@@ -76,15 +81,18 @@ self.addEventListener("fetch", (e) => {
 
   // The app page: fresh when online, instant when the network is bad or dead.
   if (req.mode === "navigate") {
+    // The app itself ("/" or "/index.html") keeps the "./" key; any other page
+    // (game.html) gets its own entry.
+    const page = /\/(index\.html)?$/.test(url.pathname) ? "./" : url.pathname;
     e.respondWith((async () => {
       const app = await caches.open(APP_CACHE);
       // The build identity of what we're about to serve, so we can tell whether
       // a late-arriving response is actually a NEW deploy or the same bytes.
-      const before = await app.match("./");
+      const before = await app.match(page);
       let servedStale = false;
       const network = fetch(req, { cache: "no-cache" }).then(async (fresh) => {
         if (fresh && fresh.ok) {
-          await app.put("./", fresh.clone());
+          await app.put(page, fresh.clone());
           // If the page is already showing the OLD copy (we lost the race) and
           // this really is a different build, surface an update prompt instead
           // of silently leaving them a version behind until the next open.
@@ -102,7 +110,7 @@ self.addEventListener("fetch", (e) => {
       const winner = await Promise.race([network.catch(() => null), timer]);
       if (winner) return winner;
       servedStale = true;
-      const cached = (await app.match("./")) || (await app.match(req));
+      const cached = (await app.match(page)) || (await app.match(req));
       if (cached) return cached;
       // First-ever visit on a slow link: nothing cached yet, wait it out.
       try { return await network; } catch (err) { return Response.error(); }
