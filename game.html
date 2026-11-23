@@ -135,7 +135,7 @@ button{font:inherit;color:inherit}
    ═══════════════════════════════════════════════════════════════════════════ */
 (function (root) {
 "use strict";
-const SIM_VERSION = "sim-1.0";
+const SIM_VERSION = "sim-1.1";
 
 // ── Gridiron field geometry (must match the editor) ─────────────────────────
 const G_FW = 480, G_FH = 820, G_EZ = 68;
@@ -594,6 +594,8 @@ function createSim(M, opts) {
         M, rng, t: 0, phase: "presnap", snapT: 0, players: [], byId: new Map(), events: [], frames: [], result: null,
         ball: { state: "dead", holder: null, x: M.ballX, y: 0, z: 0.3, fl: null },
         ballX: M.ballX, ytg: M.ytg, own: 100 - M.ytg,
+        // red zone: the end line is the back of the field, so the defense shrinks to fit (1 = no squeeze)
+        rz: Math.min(1, (M.ytg + 8.5) / 20),
         record: opts.record !== false, user: opts.user || null, knobs: opts.knobs || {},
         flags: { runShown: -1, fakeUntil: -1, thrown: -1, caught: -1, handed: -1, pressureT: -1, scramble: false, rpoGive: null },
         eng: [], plan: null, notes: M.notes.slice(), log: [],
@@ -606,7 +608,7 @@ function createSim(M, opts) {
         const r = ratingsFor(src.role, side === "O" ? offKn : defKn, (opts.ratings && opts.ratings[src.id]) || null);
         const p = {
             id: src.id, label: src.label, role: src.role, side, color: src.color, src,
-            x: M.ballX + src.x, y: src.y, vx: 0, vy: 0, fx: 0, fy: side === "O" ? 1 : -1,
+            x: M.ballX + src.x, y: side === "D" && S.rz < 1 && src.y > 1.5 ? 1.5 + (src.y - 1.5) * S.rz : src.y, vx: 0, vy: 0, fx: 0, fy: side === "O" ? 1 : -1,
             r, maxSpd: (5.6 + r.spd * 0.044) * (1 + rng.gauss() * 0.015), accel: 4.0 + r.acc * 0.065,
             mode: "idle", path: null, eng: null, stunUntil: -1, noEng: new Map(), hist: [], goal: null,
             man: null, zone: null, rushing: false, react: {}, tackleCD: -1, sMul: 1,
@@ -626,7 +628,8 @@ function createSim(M, opts) {
 // Turn a leg list into one absolute polyline (with the rtype of each segment).
 function absPath(S, legs) {
     const pts = [], legOf = [];
-    legs.forEach((l, li) => { l.pts.forEach((q, i) => { if (li > 0 && i === 0) return; pts.push({ x: S.ballX + q.x, y: q.y }); legOf.push(li); }); });
+    const endY = S.ytg + 9.2; // a route drawn past the end line runs along it instead
+    legs.forEach((l, li) => { l.pts.forEach((q, i) => { if (li > 0 && i === 0) return; pts.push({ x: S.ballX + q.x, y: Math.min(q.y, endY) }); legOf.push(li); }); });
     return { pts, legOf };
 }
 
@@ -649,7 +652,7 @@ function setupPlan(S) {
             src.options.forEach(o => {
                 let gi = 0; for (let li = 0; li < o.leg; li++) gi += Math.max(0, p.legs[li].pts.length - (li === 0 ? 0 : 1));
                 gi += (o.leg === 0 ? o.at : Math.max(0, o.at - 1));
-                p.path.opts.push({ at: clamp(gi, 0, ap.pts.length - 1), pts: o.pts.map(q => ({ x: S.ballX + q.x, y: q.y })) });
+                p.path.opts.push({ at: clamp(gi, 0, ap.pts.length - 1), pts: o.pts.map(q => ({ x: S.ballX + q.x, y: Math.min(q.y, S.ytg + 9.2) })) });
             });
         }
     });
@@ -776,8 +779,9 @@ function setupPlan(S) {
 function polyLen(pts) { let L = 0; for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); return L; }
 function toAbsZone(S, z) {
     const deep = z.cy >= 11 || /[⅓½¼]|deep|post|half|third|quarter|middle/i.test(z.label || "");
-    const lm = deep ? clamp(z.cy, 13, 22) : clamp(z.cy, 4.5, 11);
-    return { cx: S.ballX + z.cx, cy: z.cy, lx: clamp(S.ballX + z.cx, 1.5, FIELD_W - 1.5), ly: lm, rx: Math.max(3, z.rx), ry: Math.max(2.5, z.ry), deep, label: z.label || "", rules: z.rules || [] };
+    let lm = deep ? clamp(z.cy, 13, 22) : clamp(z.cy, 4.5, 11), ry = Math.max(2.5, z.ry);
+    if (S.rz < 1) { lm = Math.max(deep ? 5 : 2.5, lm * S.rz); ry = Math.max(2, ry * (0.5 + 0.5 * S.rz)); }
+    return { cx: S.ballX + z.cx, cy: z.cy, lx: clamp(S.ballX + z.cx, 1.5, FIELD_W - 1.5), ly: lm, rx: Math.max(3, z.rx), ry, deep, label: z.label || "", rules: z.rules || [] };
 }
 
 function doSnap(S) {
@@ -1759,7 +1763,7 @@ function resolveCatch(S, fl) {
     const swat = nearDef && nearDef.d.swat && S.t < nearDef.d.swat;
     if (nearDef && (dd < 1.15 || (swat && dd < 1.6)) && (dd < dR - 0.25 || swat)) {
         const d = nearDef.d;
-        const pInt = clamp(0.1 + d.r.bsk * 0.0022 - dd * 0.08 + (swat ? 0.12 : 0), 0.04, 0.5);
+        const pInt = clamp(0.07 + d.r.bsk * 0.0022 - dd * 0.08 + (swat ? 0.12 : 0), 0.04, 0.45);
         if (S.rng() < pInt) { intercept_(S, d); return; }
         B.state = "dead"; S.ev("Broken up by " + d.label, "def"); endPlay(S, "incomplete", "Broken up by " + d.label, { pbu: d.label }); return;
     }
@@ -1782,7 +1786,7 @@ function resolveCatch(S, fl) {
         startCarrier(S, rec, null);
         return;
     }
-    if (contested && S.rng() < clamp(0.12 + nearDef.d.r.bsk * 0.0022, 0.05, 0.35)) { intercept_(S, nearDef.d); return; }
+    if (contested && S.rng() < clamp(0.07 + nearDef.d.r.bsk * 0.0017, 0.04, 0.26)) { intercept_(S, nearDef.d); return; }
     B.state = "dead";
     endPlay(S, "incomplete", contested ? nearDef.d.label + " breaks it up on " + rec.label : rec.label + " drops it", contested ? { pbu: nearDef.d.label } : { drop: rec.label });
 }
@@ -1805,6 +1809,7 @@ function contacts(S) {
     // QB in the pocket with the ball: sack (or he takes off past the line / out of bounds)
     if (c === S.qb && c.mode === "qb") {
         if (c.x < 0 || c.x > FIELD_W) { S.flags.qbScramble = true; endPlay(S, "oob", "QB runs out of bounds", null, c.y); return; }
+        if (c.y < -S.own - 10) { S.flags.qbScramble = true; endPlay(S, "oob", "QB runs out the back of the end zone", null, c.y); return; }
         if (c.y > 0.5 && S.flags.thrown < 0) { S.flags.qbScramble = true; startCarrier(S, c, "QB takes off"); return; }
         for (const d of opp) {
             if (d.eng || d.mode === "down" || S.t < d.stunUntil) continue;
@@ -1822,7 +1827,8 @@ function contacts(S) {
     // touchdown / safety
     if (c.side === "O" && c.y >= S.ytg) { endPlay(S, "td", "TOUCHDOWN " + c.label, null, S.ytg); return; }
     if (c.side === "D" && c.y <= -S.own) { endPlay(S, "td_def", "Pick six by " + c.label, null, c.y); return; }
-    if (c.side === "O" && c.y <= -S.own) { endPlay(S, "safety", "Safety", null, c.y); return; }
+    // his own end zone is only a safety once he is downed there (endPlay checks the spot) or runs out the back
+    if (c.side === "O" && c.y < -S.own - 10) { endPlay(S, "oob", c.label + " runs out the back of the end zone", null, c.y); return; }
     let hits = 0, made = null;
     for (const d of opp) {
         if (d.mode === "down" || S.t < d.stunUntil || S.t < d.tackleCD) continue;
@@ -1870,7 +1876,10 @@ function endPlay(S, how, text, extra, spotY) {
     if (extra) Object.assign(res, extra);
     const c = S.byId.get(S.ball.holder);
     res.how = how; res.text = text; res.t = +(S.t - S.snapT).toFixed(2);
-    if (how === "sack") { res.outcome = "sack"; res.yards = +((spotY != null ? spotY : 0)).toFixed(1); }
+    if (how === "sack") {
+        res.outcome = "sack"; res.yards = +((spotY != null ? spotY : 0)).toFixed(1);
+        if (spotY != null && spotY <= -S.own) { res.safety = true; res.text = text = text + " in the end zone · SAFETY"; }
+    }
     else if (how === "incomplete") { res.outcome = res.throwaway ? "throwaway" : "incomplete"; res.yards = 0; }
     else if (S.flags.turnover >= 0) {
         res.outcome = "int"; res.turnover = true; res.yards = 0;
@@ -1880,7 +1889,9 @@ function endPlay(S, how, text, extra, spotY) {
         const y = spotY != null ? spotY : (c ? c.y : 0);
         res.yards = +Math.min(y, S.ytg).toFixed(1);
         res.td = how === "td" || y >= S.ytg;
-        res.safety = how === "safety";
+        // dead on or behind his own goal line (tackled, out of bounds, out the back) = safety
+        res.safety = how === "safety" || (how !== "td" && y <= -S.own);
+        if (res.safety && how !== "safety") res.text = text = text + " in the end zone · SAFETY";
         res.carrier = c ? c.label : null;
         if (res.kind === "pass" && res.catchY != null) { res.outcome = "complete"; res.yac = +(res.yards - res.catchY).toFixed(1); }
         else { res.outcome = S.flags.qbScramble ? "scramble" : "run"; if (res.kind !== "pass") res.kind = "run"; else res.kind = "scramble"; }
@@ -2121,10 +2132,163 @@ function summarize(reps, M) {
     };
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+//  DRIVES — run a game script (an ordered call sheet) as a real drive:
+//  downs, distance, field position, 4th-down decisions, kicks and turnovers.
+// ════════════════════════════════════════════════════════════════════════════
+const HASH_L = 23.58, HASH_R = 29.75;
+function fgProb(d) { return clamp(0.99 - Math.max(0, d - 22) * 0.016, 0.12, 0.99); }
+function isRunPlay(p) {
+    const bp = (p && p.ballPlan) || {};
+    const st = (bp.steps || []).filter(s => s && !s.fake && s.action !== "snap");
+    if (st.length && (st[0].action === "handoff" || st[0].action === "pitch")) return !bp.rpo;
+    if (st.length) return false;
+    const t = [].concat(p.type || []).join(" ").toLowerCase();
+    if (/run/.test(t) && !/pass/.test(t)) return true;
+    const pass = (p.routes || []).some(r => r && r.rtype === "pass");
+    return !pass && (p.routes || []).some(r => r && r.rtype === "run");
+}
+// Standard success rate: 40% of the distance on 1st, 60% on 2nd, all of it on 3rd/4th.
+function playSuccess(down, dist, gain) { return down === 1 ? gain >= 0.4 * dist : down === 2 ? gain >= 0.6 * dist : gain >= dist; }
+// A middle-of-the-road head coach on 4th down.
+function coachFourth(ballOn, dist) {
+    const fg = 100 - ballOn + 17;
+    if (dist <= 1 && ballOn >= 35) return "go";
+    if (dist <= 2 && ballOn >= 50 && fg > 45) return "go";
+    if (fg <= 52) return "fg";
+    if (ballOn >= 60 && dist <= 4) return "go";
+    return "punt";
+}
+// Flatten a Gridiron script ({periods:[{playIds}]}) or install ({playIds}) into plays.
+function flattenScript(set, plays, side) {
+    if (!set) return [];
+    const byId = new Map((plays || []).filter(p => p && p.id).map(p => [p.id, p]));
+    const ids = Array.isArray(set.periods) ? set.periods.reduce((a, per) => a.concat((per && per.playIds) || []), []) : (set.playIds || []);
+    const ok = (p) => p && Array.isArray(p.players) && p.players.some(q => q && (side === "D" ? q.ptype === "defense" : (q.ptype || "offense") === "offense")) && (side === "D" || (p.routes || []).length) && p.category !== "special" && (side === "D" ? p.category !== "offense" : p.category !== "defense");
+    return ids.map(id => byId.get(id)).filter(ok);
+}
+// cfg: { script:[plays], defense:{ mode:"mix"|"one"|"script", plays:[...] }, startBallOn, hashX,
+//        whenOut:"situational"|"restart"|"end", fourth:"coach"|"go", seed, knobs, record, scriptStart }
+function runDrive(cfg) {
+    const rng = makeRng((cfg.seed >>> 0) || 1);
+    const script = cfg.script || [];
+    const dplays = (cfg.defense && cfg.defense.plays && cfg.defense.plays.length) ? cfg.defense.plays : BUILTIN_DEFENSES.map(builtinDefense);
+    const dmode = (cfg.defense && cfg.defense.mode) || "mix";
+    const start = clamp(cfg.startBallOn != null ? cfg.startBallOn : 25, 1, 99);
+    let ballOn = start, down = 1, dist = Math.min(10, 100 - ballOn);
+    let hashX = cfg.hashX != null ? cfg.hashX : FIELD_W / 2;
+    let slot = cfg.scriptStart || 0, dslot = 0, snaps = 0, time = 0, firstDowns = 0, reachedRZ = ballOn >= 80, pass = 0;
+    const log = [];
+    let result = null, points = 0;
+    const pickDef = () => {
+        if (dmode === "one") return dplays[0];
+        if (dmode === "script") { const p = dplays[dslot % dplays.length]; dslot++; return p; }
+        return dplays[Math.floor(rng() * dplays.length)];
+    };
+    const pickOff = () => {
+        if (!script.length) return null;
+        if (slot >= script.length && cfg.whenOut === "restart") { slot = 0; pass++; }
+        if (slot < script.length) { slot++; return { play: script[slot - 1], slot: slot - 1, restarted: pass > 0 }; }
+        if (cfg.whenOut === "end") return null;
+        // call from the script's own plays by down & distance
+        const runs = script.filter(isRunPlay), passes = script.filter(p => !isRunPlay(p));
+        let pRun = 0.45;
+        if (down === 2) pRun = dist >= 8 ? 0.3 : dist <= 3 ? 0.6 : 0.45;
+        if (down >= 3) pRun = dist >= 6 ? 0.12 : dist <= 2 ? 0.6 : 0.3;
+        if (ballOn >= 95) pRun = 0.55;
+        let pool = rng() < pRun ? runs : passes; if (!pool.length) pool = script;
+        return { play: pool[Math.floor(rng() * pool.length)], slot: -1 };
+    };
+    while (!result && snaps < (cfg.maxPlays || 24)) {
+        if (down === 4 && cfg.fourth !== "go") {
+            const d = coachFourth(ballOn, dist);
+            if (d === "fg") {
+                const yd = Math.round(100 - ballOn + 17), good = rng() < fgProb(yd);
+                log.push({ kind: "fg", down, dist, ballOn, yd, good, text: yd + "-yard field goal " + (good ? "is GOOD" : "is NO GOOD") });
+                result = good ? "FG" : "MISSED FG"; points = good ? 3 : 0; time += 6; break;
+            }
+            if (d === "punt") { log.push({ kind: "punt", down, dist, ballOn, text: "Punt" }); result = "PUNT"; time += 8; break; }
+        }
+        const oc = pickOff();
+        if (!oc) { result = "SCRIPT DONE"; break; }
+        const def = pickDef();
+        const M = buildMatchup(oc.play, def, { ballX: hashX, ytg: 100 - ballOn });
+        const seed = (((cfg.seed >>> 0) * 2654435761) ^ ((snaps + 1) * 40503)) >>> 0 || 1;
+        const S = createSim(M, { seed, record: !!cfg.record, knobs: cfg.knobs, ratings: cfg.ratings });
+        const r = run(S) || { outcome: "none", yards: 0 };
+        snaps++;
+        const entry = { kind: "play", n: snaps, slot: oc.slot, restarted: !!oc.restarted, down, dist, ballOn, hashX, off: oc.play, def, r, seed, S: cfg.record ? S : null, M: cfg.record ? M : null };
+        let gain = 0, running = true;
+        if (r.outcome === "int") {
+            entry.gain = 0; entry.success = false; log.push(entry);
+            result = r.defTD ? "PICK SIX" : "INT"; points = r.defTD ? -7 : 0; break;
+        }
+        if (r.safety) { entry.gain = -ballOn; entry.success = false; log.push(entry); result = "SAFETY"; points = -2; break; }
+        gain = r.outcome === "incomplete" || r.outcome === "throwaway" ? 0 : (r.yards || 0);
+        if (r.outcome === "incomplete" || r.outcome === "throwaway" || r.how === "oob") running = false;
+        entry.gain = gain; entry.success = playSuccess(down, dist, gain) || !!r.td;
+        time += Math.max(3, (S.endT || S.t) - S.snapT) + (running ? 25 : 0);
+        if (r.td) { log.push(entry); result = "TD"; points = 7; ballOn = 100; break; }
+        ballOn = clamp(ballOn + gain, 0.5, 99.5);
+        if (ballOn >= 80) reachedRZ = true;
+        if (r.outcome !== "incomplete" && r.outcome !== "throwaway") hashX = clamp(S.ball.x, HASH_L, HASH_R);
+        if (gain >= dist) { down = 1; dist = Math.min(10, 100 - ballOn); firstDowns++; entry.firstDown = true; }
+        else { down++; dist = Math.max(0.5, dist - gain); }
+        log.push(entry);
+        if (down > 4) { result = "DOWNS"; break; }
+    }
+    if (!result) result = "END";
+    const endBallOn = result === "TD" ? 100 : ballOn;
+    return { seed: cfg.seed, plays: log, result, points, startBallOn: start, endBallOn, yards: +(endBallOn - start).toFixed(1), snaps, time: Math.round(time), firstDowns, reachedRZ, scriptUsed: pass > 0 ? script.length : Math.min(slot, script.length), restarts: pass, threeOut: result === "PUNT" && snaps <= 3 && firstDowns === 0 };
+}
+function summarizeDrives(drives, script) {
+    const n = drives.length || 1;
+    const cnt = (f) => drives.filter(f).length;
+    const outcomes = {};
+    drives.forEach(d => { outcomes[d.result] = (outcomes[d.result] || 0) + 1; });
+    const slots = (script || []).map((p, i) => ({ slot: i, name: p.name || "Untitled", called: 0, gain: 0, succ: 0, fd: 0 }));
+    const adlib = {};
+    const stalls = { "3rd & short (1–2)": 0, "3rd & medium (3–6)": 0, "3rd & long (7+)": 0, "Turnover": 0, "Other": 0 };
+    drives.forEach(d => {
+        d.plays.forEach(e => {
+            if (e.kind !== "play") return;
+            const row = e.slot >= 0 && !e.restarted ? slots[e.slot] : (adlib[e.off.name || "?"] = adlib[e.off.name || "?"] || { name: e.off.name || "Untitled", called: 0, gain: 0, succ: 0, fd: 0 });
+            if (!row) return;
+            row.called++; row.gain += e.gain || 0; if (e.success) row.succ++; if (e.firstDown || (e.r && e.r.td)) row.fd++;
+        });
+        if (d.result === "PUNT" || d.result === "FG" || d.result === "MISSED FG" || d.result === "DOWNS") {
+            const third = d.plays.filter(e => e.kind === "play" && e.down === 3).pop();
+            if (!third) stalls.Other++;
+            else if (third.dist <= 2) stalls["3rd & short (1–2)"]++;
+            else if (third.dist <= 6) stalls["3rd & medium (3–6)"]++;
+            else stalls["3rd & long (7+)"]++;
+        } else if (d.result === "INT" || d.result === "PICK SIX") stalls.Turnover++;
+    });
+    const pick = (f, sort) => { const L = drives.filter(f); if (sort) L.sort(sort); return L.length ? L[0].seed : null; };
+    const rz = drives.filter(d => d.reachedRZ);
+    return {
+        n, ptsPerDrive: drives.reduce((a, d) => a + d.points, 0) / n, outcomes,
+        tdPct: cnt(d => d.result === "TD") / n, fgPct: cnt(d => d.result === "FG") / n, puntPct: cnt(d => d.result === "PUNT") / n,
+        toPct: cnt(d => d.result === "INT" || d.result === "PICK SIX" || d.result === "DOWNS" || d.result === "SAFETY") / n,
+        threeOut: cnt(d => d.threeOut) / n, avgPlays: drives.reduce((a, d) => a + d.snaps, 0) / n,
+        avgYards: drives.reduce((a, d) => a + d.yards, 0) / n, avgTime: drives.reduce((a, d) => a + d.time, 0) / n,
+        avgFirstDowns: drives.reduce((a, d) => a + d.firstDowns, 0) / n,
+        rzPct: rz.length / n, rzTD: rz.length ? rz.filter(d => d.result === "TD").length / rz.length : null,
+        slots: slots.map(s => ({ ...s, avg: s.called ? s.gain / s.called : null, rate: s.called ? s.succ / s.called : null, reachPct: s.called / n })),
+        adlib: Object.values(adlib).map(s => ({ ...s, avg: s.gain / s.called, rate: s.succ / s.called })).sort((a, b) => b.called - a.called),
+        stalls,
+        samples: {
+            td: pick(d => d.result === "TD", (a, b) => b.snaps - a.snaps), threeOut: pick(d => d.threeOut), turnover: pick(d => d.result === "INT" || d.result === "PICK SIX" || d.result === "DOWNS"),
+            fg: pick(d => d.result === "FG"), longest: pick(() => true, (a, b) => b.snaps - a.snaps),
+        },
+    };
+}
+
 root.GridironSimEngine = {
     SIM_VERSION, DT, FIELD_W, G: { FW: G_FW, FH: G_FH, EZ: G_EZ, YPY, XPY, LOS_Y: G_LOS_Y, BALL_X: G_BALL_X },
     buildMatchup, createSim, step, run, runBatch, summarize, builtinDefense, BUILTIN_DEFENSES,
     userThrow, userMove, evalTarget, predict, ratingsFor, ROLE_BASE, STAT_KEYS, extractSide, structureOf,
+    runDrive, summarizeDrives, flattenScript, isRunPlay, coachFourth, fgProb, playSuccess, HASH_L, HASH_R,
 };
 })(typeof window !== "undefined" ? window : globalThis);
 </script>
