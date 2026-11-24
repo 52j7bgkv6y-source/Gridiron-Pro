@@ -13,7 +13,7 @@
 /* Build stamp. Bump this string on every deploy: it is shown on the boot
    splash and exposed as window.__gpBuild, so you can confirm at a glance
    which build a phone or tablet is actually running. */
-window.__gpBuild = "2026-07-19g";
+window.__gpBuild = "2026-07-19h";
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js").catch(function () {});
@@ -290,7 +290,7 @@ if ("serviceWorker" in navigator) {
    ═══════════════════════════════════════════════════════════════════════════ */
 (function (root) {
 "use strict";
-const SIM_VERSION = "sim-1.1";
+const SIM_VERSION = "sim-1.2";
 
 // ── Gridiron field geometry (must match the editor) ─────────────────────────
 const G_FW = 480, G_FH = 820, G_EZ = 68;
@@ -332,17 +332,35 @@ function distPtSeg(px, py, ax, ay, bx, by) {
 // 0–100 like a video game. Every player gets his position's base, then the
 // unit "talent" knob (−30…+30) shifts the whole unit.
 const STAT_KEYS = ["spd", "acc", "agi", "str", "cth", "rr", "elu", "pbk", "rbk", "prs", "bsh", "tak", "man", "zcv", "bsk", "thp", "tha", "awr"];
+// High school varsity (sim-1.2): slower than college, less accurate QBs who read
+// slower, more drops, weaker tackling and coverage, less consistent blocking.
 const ROLE_BASE = {
-    QB: { spd: 70, acc: 74, agi: 70, str: 60, cth: 45, rr: 40, elu: 62, pbk: 30, rbk: 30, tak: 30, thp: 82, tha: 80, awr: 78 },
-    HB: { spd: 87, acc: 88, agi: 86, str: 66, cth: 66, rr: 58, elu: 82, pbk: 56, rbk: 46, tak: 35, thp: 40, tha: 35, awr: 66 },
-    FB: { spd: 76, acc: 78, agi: 70, str: 80, cth: 62, rr: 45, elu: 56, pbk: 70, rbk: 74, tak: 45, awr: 66 },
-    WR: { spd: 89, acc: 87, agi: 86, str: 55, cth: 80, rr: 80, elu: 76, pbk: 34, rbk: 46, tak: 35, awr: 70 },
-    TE: { spd: 78, acc: 78, agi: 72, str: 72, cth: 74, rr: 66, elu: 60, pbk: 64, rbk: 68, tak: 40, awr: 68 },
-    OL: { spd: 52, acc: 62, agi: 52, str: 86, cth: 20, rr: 10, elu: 20, pbk: 76, rbk: 76, tak: 40, awr: 72 },
-    DL: { spd: 68, acc: 76, agi: 64, str: 86, prs: 76, bsh: 76, tak: 74, man: 25, zcv: 35, bsk: 35, awr: 70 },
-    LB: { spd: 80, acc: 82, agi: 76, str: 74, prs: 62, bsh: 70, tak: 78, man: 62, zcv: 68, bsk: 55, awr: 72 },
-    DB: { spd: 89, acc: 88, agi: 86, str: 58, cth: 55, prs: 46, bsh: 48, tak: 66, man: 78, zcv: 75, bsk: 68, awr: 72 },
-    K: { spd: 62, acc: 64, agi: 60, str: 50, cth: 40, elu: 40, tak: 30, thp: 70, tha: 60, awr: 60 },
+    QB: { spd: 64, acc: 66, agi: 62, str: 52, cth: 40, rr: 35, elu: 58, pbk: 26, rbk: 26, tak: 26, thp: 60, tha: 58, awr: 55 },
+    HB: { spd: 80, acc: 80, agi: 76, str: 58, cth: 55, rr: 45, elu: 72, pbk: 44, rbk: 40, tak: 30, thp: 30, tha: 30, awr: 52 },
+    FB: { spd: 68, acc: 70, agi: 60, str: 70, cth: 50, rr: 35, elu: 48, pbk: 56, rbk: 60, tak: 40, awr: 52 },
+    WR: { spd: 82, acc: 80, agi: 76, str: 46, cth: 64, rr: 60, elu: 66, pbk: 26, rbk: 36, tak: 30, awr: 54 },
+    TE: { spd: 70, acc: 70, agi: 62, str: 62, cth: 58, rr: 50, elu: 52, pbk: 52, rbk: 56, tak: 35, awr: 52 },
+    OL: { spd: 42, acc: 54, agi: 42, str: 72, cth: 15, rr: 10, elu: 15, pbk: 58, rbk: 60, tak: 35, awr: 56 },
+    DL: { spd: 60, acc: 68, agi: 56, str: 72, prs: 58, bsh: 58, tak: 58, man: 20, zcv: 28, bsk: 28, awr: 54 },
+    LB: { spd: 72, acc: 74, agi: 66, str: 62, prs: 50, bsh: 54, tak: 60, man: 48, zcv: 50, bsk: 42, awr: 54 },
+    DB: { spd: 82, acc: 80, agi: 76, str: 48, cth: 46, prs: 38, bsh: 38, tak: 52, man: 58, zcv: 56, bsk: 52, awr: 54 },
+    K: { spd: 56, acc: 58, agi: 52, str: 42, cth: 34, elu: 34, tak: 25, thp: 55, tha: 50, awr: 50 },
+};
+// Level of play: the knobs that separate a high school game from a college or pro one.
+const LEVEL = {
+    name: "High school varsity",
+    throwErr: 1.22,      // ball placement scatter vs a college QB
+    readNoise: 1.8,      // how often he misjudges a window
+    catchBase: 0.95,     // a clean, on-target ball is caught this often by an average (70) hand
+    tackleBase: 0.9,     // a squared-up tackle by an average tackler on an average runner
+    shedNearBack: 2.2,   // how much faster a blocked defender gets off when the back is on him
+    runShed: 2.1,        // seconds an even run block holds, on average
+    runQuickWin: 0.09,   // chance a defender wins a run block right away
+    passShed: 2.9,       // seconds an even pass block holds, on average
+    intMul: 1.35,        // a ball that's broken up or contested gets picked this much more often
+    fumble: 0.021,       // fumbles per tackle on an even hit (more on big hits and gang tackles)
+    stripSack: 0.12,     // share of sacks where the ball comes out
+    fumbleLost: 0.5,     // share of fumbles the defense recovers
 };
 const KNOB_OF_ROLE = { QB: "qb", OL: "ol", WR: "skill", TE: "skill", HB: "skill", FB: "skill", K: "skill", DL: "dl", LB: "lb", DB: "db" };
 function ratingsFor(role, knobs, over) {
@@ -534,7 +552,7 @@ function extractSide(play, side) {
     return {
         side, players: out, zones, man, look: other, ballX: ctx.ballX / XPY, ytg: (ctx.losY - G_EZ) / YPY,
         ballPlan: side === "O" ? { snapTo: bp.snapTo || null, steps: (bp.steps || []).map(s => ({ ...s, toPoint: s.toPoint ? mapPt(s.toPoint, ctx, "O") : null })), reads: bp.reads || {}, dropback: bp.dropback || null, rpo: !!bp.rpo, olEligible: !!bp.olEligible, noSnap: !!bp.noSnap } : null,
-        name: play.name || "", id: play.id, category: play.category,
+        name: play.name || "", id: play.id, category: play.category, manCall: !!play.manCall,
     };
 }
 
@@ -649,6 +667,8 @@ function alignDefense(D, O, notes) {
     const covered = new Map();
     D.man.forEach(m => {
         let tgt = null;
+        // built-in looks link man by receiver number ("__L1" = #1 on the left)
+        if (!m.toKey && String(m.to || "").startsWith("__")) m.toKey = m.to.slice(2);
         if (m.toKey) tgt = findByKey(SO, m.toKey);
         if (!tgt) { const same = O.players.find(p => p.id === m.to); if (same) tgt = same; }
         if (tgt && !covered.has(tgt.id)) { m.target = tgt.id; covered.set(tgt.id, m.from); }
@@ -657,7 +677,7 @@ function alignDefense(D, O, notes) {
     const dropped = D.man.filter(m => !m.target);
     D.man = D.man.filter(m => m.target);
     dropped.forEach(m => { const d = D.players.find(p => p.id === m.from); if (d && !D.zones.some(z => z.owner === d.id)) D.zones.push({ owner: d.id, cx: d.x, cy: Math.max(d.y, 6), rx: 6, ry: 4, label: "ROBBER", rules: [] }); });
-    if (D.man.length >= 3) {
+    if (D.man.length >= 3 || (D.manCall && D.man.length)) {
         const elig = [...SO.left, ...SO.right, ...SO.back].filter(r => !covered.has(r.id));
         const blitzers = new Set(D.players.filter(d => d.legs.some(l => l.rtype === "showBlitz" || l.rtype === "hideBlitz")).map(d => d.id));
         elig.forEach(r => {
@@ -695,16 +715,39 @@ function builtinDefense(name) {
         // man is linked by the alignment step's man check (no look drawn)
         cov.push({ id: "m1", ctype: "man", fromId: "cb1", toId: "__L1", mode: "trail" }, { id: "m2", ctype: "man", fromId: "cb2", toId: "__R1", mode: "trail" });
         if (name === "Cover 1") cov.push(Zc("s2", "POST", 0, 19, 20, 14));
-        else routes.push({ id: "b1", rtype: "showBlitz", ownerId: "s2", points: [{ x: G_BALL_X + 6.5 * XPY, y: G_LOS_Y - 16.5 * YPY }, { x: G_BALL_X + 3.2 * XPY, y: G_LOS_Y + 1 * YPY }] });
+        else {
+            cov.push({ id: "m3", ctype: "man", fromId: "s1", toId: "__B1", mode: "trail" }); players.find(p => p.id === "s1").y = G_LOS_Y - 9 * YPY;
+            routes.push({ id: "b1", rtype: "showBlitz", ownerId: "s2", points: [{ x: G_BALL_X + 6.5 * XPY, y: G_LOS_Y - 16.5 * YPY }, { x: G_BALL_X + 3.2 * XPY, y: G_LOS_Y + 1 * YPY }] });
+        }
         routes.push({ id: "b2", rtype: "showBlitz", ownerId: "lb2", points: [{ x: G_BALL_X, y: G_LOS_Y - 9.4 * YPY }, { x: G_BALL_X - 1.2 * XPY, y: G_LOS_Y + 1 * YPY }] });
     }
-    return { id: "builtin:" + name, name: name + " (built-in)", category: "defense", players, routes, coverages: cov, ballX: G_BALL_X, losY: G_LOS_Y, builtin: true };
+    return { id: "builtin:" + name, name: name + " (built-in)", category: "defense", players, routes, coverages: cov, ballX: G_BALL_X, losY: G_LOS_Y, builtin: true, manCall: name === "Cover 1" || name === "Cover 0" };
 }
 const BUILTIN_DEFENSES = ["Cover 1", "Cover 2", "Cover 3", "Cover 4", "Cover 0"];
 
 // ── Matchup ─────────────────────────────────────────────────────────────────
 // buildMatchup(offPlay, defPlay) → everything the sim needs, plus notes that
 // explain what the import had to adjust.
+// On a high school hash the short side is only ~18 yards wide: squeeze what was drawn
+// out wide on that side (and its routes) so nobody lines up out of bounds.
+function fitToField(players, ballX, gap) {
+    [-1, 1].forEach(sd => {
+        const room = (sd < 0 ? ballX : FIELD_W - ballX) - gap;
+        const wide = players.filter(p => p.x * sd > 4);
+        if (!wide.length) return;
+        const far = Math.max.apply(null, wide.map(p => p.x * sd));
+        if (far <= room) return;
+        const k = Math.max(0.15, (room - 4) / (far - 4));
+        wide.forEach(p => {
+            const nx = sd * (4 + (p.x * sd - 4) * k), dx = nx - p.x;
+            p.x = nx;
+            const sh = q => { q.x += dx; };
+            (p.legs || []).forEach(l => l.pts.forEach(sh));
+            if (p.pre) p.pre.pts.forEach(sh);
+            (p.options || []).forEach(o => o.pts.forEach(sh));
+        });
+    });
+}
 function buildMatchup(offPlay, defPlay, opts) {
     opts = opts || {};
     const notes = [];
@@ -722,6 +765,9 @@ function buildMatchup(offPlay, defPlay, opts) {
     O.players.forEach(p => { if (p.role === "QB" && p !== snap) p.role = "HB"; });
     if (!O.players.length) notes.push("The offense play has no offensive players.");
     if (!D.players.length) notes.push("The defense play has no defenders.");
+    const ballX = clamp(opts.ballX != null ? opts.ballX : O.ballX, 1, FIELD_W - 1);
+    const ytg = clamp(opts.ytg != null ? opts.ytg : O.ytg, 0.5, 99.5);
+    if (opts.ballX != null) { fitToField(O.players, ballX, 4.5); O.ballX = ballX; }
     if (D.players.length && !D.zones.length && !D.man.length) notes.push("This defense has no zones or man coverage drawn, so its defenders play generic spots (deep for corners and safeties, underneath for the rest). Use AUTO-COVER or draw man links for a real coverage.");
     if (!same && D.players.length && O.players.length) alignDefense(D, O, notes);
     else D.man.forEach(m => { m.target = m.to; });
@@ -731,8 +777,7 @@ function buildMatchup(offPlay, defPlay, opts) {
         D.man.forEach(m => { if (String(m.to).startsWith("__")) { const t = findByKey(SO, m.to.slice(2)); m.target = t ? t.id : null; } });
         D.man = D.man.filter(m => m.target);
     }
-    const ballX = clamp(opts.ballX != null ? opts.ballX : O.ballX, 1, FIELD_W - 1);
-    const ytg = clamp(opts.ytg != null ? opts.ytg : O.ytg, 0.5, 99.5);
+    if (opts.ballX != null) fitToField(D.players, ballX, 3.0);
     return {
         version: SIM_VERSION, offName: O.name, defName: D.name, offId: O.id, defId: D.id,
         O, D, ballX, ytg, notes, special: offPlay.category === "special" || defPlay.category === "special",
@@ -751,6 +796,7 @@ function createSim(M, opts) {
         ballX: M.ballX, ytg: M.ytg, own: 100 - M.ytg,
         // red zone: the end line is the back of the field, so the defense shrinks to fit (1 = no squeeze)
         rz: Math.min(1, (M.ytg + 8.5) / 20),
+        noise: opts.noise != null ? opts.noise : 5,
         record: opts.record !== false, user: opts.user || null, knobs: opts.knobs || {},
         flags: { runShown: -1, fakeUntil: -1, thrown: -1, caught: -1, handed: -1, pressureT: -1, scramble: false, rpoGive: null },
         eng: [], plan: null, notes: M.notes.slice(), log: [],
@@ -761,6 +807,8 @@ function createSim(M, opts) {
     const defKn = { dl: (S.knobs.dl || 0), lb: (S.knobs.lb || 0), db: (S.knobs.db || 0) };
     const mk = (src, side) => {
         const r = ratingsFor(src.role, side === "O" ? offKn : defKn, (opts.ratings && opts.ratings[src.id]) || null);
+        // game-day variance: each kid is a bit better or worse than his position's base on this snap
+        if (S.noise > 0) { const o = rng.gauss() * S.noise; STAT_KEYS.forEach(k => { r[k] = clamp(r[k] + o + rng.gauss() * 2, 1, 99); }); }
         const p = {
             id: src.id, label: src.label, role: src.role, side, color: src.color, src,
             x: M.ballX + src.x, y: side === "D" && S.rz < 1 && src.y > 1.5 ? 1.5 + (src.y - 1.5) * S.rz : src.y, vx: 0, vy: 0, fx: 0, fy: side === "O" ? 1 : -1,
@@ -1290,7 +1338,7 @@ function aiQB(S, p) {
     // hot read: a free rusher before the drop finishes
     const early = !Q.dropDone && freeRushers(S, p, 5).length > 0 && held > 0.25;
     // which reads are live
-    const reads = S.reads.filter(r => r.mode === "route" || r.mode === "check");
+    const reads = S.reads.filter(r => r.mode === "route" || (r.mode === "check" && r.y > -0.3));
     if (!reads.length) {
         if (held > 2.6 || pressured) qbThrowAway(S, p, "no receivers out");
         return;
@@ -1299,11 +1347,14 @@ function aiQB(S, p) {
     const canEval = Q.dropDone || held > plan.dropT * 0.7 || early;
     if (!canEval) return;
     if (Q.readT < 0) Q.readT = S.t;
+    // a high school QB needs a beat at the top of his drop to see it (less with experience)
+    if (Q.seeT == null) Q.seeT = S.t + clamp(0.08 + (78 - p.r.awr) * 0.012 + S.rng() * 0.18, 0.05, 0.75);
+    if (!early && !pressured && S.t < Q.seeT) return;
     // advance the progression
     if (S.t - Q.readT > lookDur && Q.readI < reads.length - 1) { Q.readI++; Q.readT = S.t; }
     const cur = reads[Math.min(Q.readI, reads.length - 1)];
     Q.look = cur.id;
-    const noise = () => S.rng.gauss() * 0.13 * (1.35 - p.r.awr / 100);
+    const noise = () => S.rng.gauss() * 0.13 * (1.35 - p.r.awr / 100) * LEVEL.readNoise;
     // a soft trigger: clearly open → he lets it go within a beat; a tight
     // window → sometimes he rips it, sometimes he holds (where picks come from)
     const tryRec = (r, thr) => {
@@ -1316,6 +1367,8 @@ function aiQB(S, p) {
     if (held > 2.4) thr -= (held - 2.4) * 0.18;
     if (pressured) thr = Math.min(thr, -0.02);
     if (lastRead) thr = Math.min(thr, 0.05);
+    // what a throw is worth: an open man downfield beats an open checkdown
+    const worth = (x) => x.margin + clamp((x.P.y - 4) * 0.01, -0.07, 0.12);
     // timing: a spot throw goes when its receiver can reach the spot as the ball does
     let e = null;
     if (early) {
@@ -1331,7 +1384,8 @@ function aiQB(S, p) {
     if (!Q.pvT || S.t - Q.pvT >= 0.15) {
         Q.pvT = S.t;
         const lookN = norm(cur.x - p.x, cur.y - p.y);
-        const shellRead = Q.dropDone && S.t - Q.readT < 0.45 && Q.readI === 0;
+        // reading the whole field off the coverage shell takes an experienced QB
+        const shellRead = p.r.awr >= 68 && Q.dropDone && S.t - Q.readT < 0.45 && Q.readI === 0;
         let best = null;
         reads.forEach((r, i) => {
             if (r === cur) return;
@@ -1340,15 +1394,15 @@ function aiQB(S, p) {
             const next = i === Q.readI + 1;
             if (!next && ang > 0.6 && !shellRead) return;
             const x = evalTarget(S, p, r); x.margin += noise();
-            const need = thr + (next ? 0.12 : shellRead && ang > 0.6 ? 0.2 : 0.28);
-            if (x.margin >= need && (!best || x.margin > best.margin)) best = { ...x, r };
+            const need = thr + (next ? 0.12 : shellRead && ang > 0.6 ? 0.2 : 0.28) + (x.P.y < 2 ? 0.08 : 0);
+            if (x.margin >= need && (!best || worth(x) > worth(best))) best = { ...x, r };
         });
         if (best && S.rng() < 0.7) { qbThrow(S, p, best.r, best); return; }
     }
     if (pressured || held > 3.2) {
         // scan everyone quickly when the pocket is collapsing
         let best = null;
-        reads.forEach(r => { const x = evalTarget(S, p, r); x.margin += noise(); if (!best || x.margin > best.margin) best = { ...x, r }; });
+        reads.forEach(r => { const x = evalTarget(S, p, r); x.margin += noise(); if (!best || worth(x) > worth(best)) best = { ...x, r }; });
         if (best && best.margin > (pressured ? -0.12 : -0.04) && S.rng() < 0.35) { qbThrow(S, p, best.r, best); return; }
         if (Q.outside && (pressured || held > 3.8)) { qbThrowAway(S, p, "under pressure"); return; }
         // run for it if there is grass in front
@@ -1369,13 +1423,39 @@ function qbExchange(S, p, step) {
         if (t > 0.28 && to) { tossBall(S, p, to, step); step.done = true; S.stepIdx++; p.ex = null; }
         return;
     }
-    // handoff: meet the carrier at the mesh
+    // handoff: meet the carrier where his drawn path passes closest to the QB
     if (!to) { step.done = true; S.stepIdx++; p.ex = null; return; }
-    const mesh = { x: lerp(p.x, to.x, 0.5), y: Math.min(lerp(p.y, to.y, 0.5), -0.8) };
+    if (!p.ex.mesh) {
+        // the first spot on the back's path that the QB can reach as soon as the back does
+        // (under center he opens and steps back to meet him; in the gun they mesh side by side)
+        let best = null, near = null;
+        const pts = to.path && to.path.pts && to.path.pts.length > 1 ? to.path.pts : null;
+        if (pts) {
+            let along = 0;
+            const vB = to.maxSpd * 0.85, vQ = p.maxSpd * 0.6;
+            for (let i = Math.max(1, to.path.idx || 1); i < pts.length && !best; i++) {
+                const a = i === Math.max(1, to.path.idx || 1) ? { x: to.x, y: to.y } : pts[i - 1], b = pts[i];
+                const L = Math.hypot(b.x - a.x, b.y - a.y);
+                for (let u = 0; u <= L && !best; u += 0.25) {
+                    const q = { x: a.x + (b.x - a.x) * (L ? u / L : 0), y: a.y + (b.y - a.y) * (L ? u / L : 0) };
+                    if (q.y > -0.8) break;
+                    const dq = Math.hypot(q.x - p.x, q.y - p.y);
+                    if (!near || dq < near.d) near = { x: q.x, y: q.y, d: dq };
+                    const tB = 0.25 + (along + u) / vB, tQ = 0.12 + Math.max(0, dq - 0.9) / vQ;
+                    if (tQ <= tB && dq < 4.5) best = { x: q.x, y: q.y, d: dq };
+                }
+                along += L;
+            }
+        }
+        p.ex.mesh = best || (near && near.d < 6 ? near : null);
+    }
+    const mesh = p.ex.mesh || { x: lerp(p.x, to.x, 0.5), y: Math.min(lerp(p.y, to.y, 0.5), -0.8) };
     if (p.path && p.legs[0] && p.legs[0].rtype === "run" && !p.path.done) { const tg = routeTarget(S, p); if (tg) steer(S, p, tg.x, tg.y, 0.55); else steer(S, p, mesh.x, mesh.y, 0.45); }
-    else steer(S, p, mesh.x, mesh.y, 0.45, 0.4);
+    else steer(S, p, mesh.x, mesh.y, p.ex.mesh ? 0.7 : 0.45, 0.4);
     const d = Math.hypot(to.x - p.x, to.y - p.y);
-    if (d < 1.25 || t > 1.4) {
+    // he rides the back through the mesh: hand it off as the back goes by
+    const passing = d < 2.0 && t > 0.35 && ((to.x - p.x) * to.vx + (to.y - p.y) * to.vy) > 0;
+    if (d < 1.25 || passing || t > 1.2) {
         if (step.fake) {
             if (!p.ex.fakeT) { p.ex.fakeT = S.t; S.flags.fakeUntil = S.t + 0.55; S.flags.runLook = S.t; S.ev("Play-action fake to " + to.label, "off"); }
             if (S.t - p.ex.fakeT > 0.28) { step.done = true; S.stepIdx++; p.ex = null; }
@@ -1398,7 +1478,7 @@ function tossBall(S, from, to, step) {
 function qbThrow(S, p, rec, e) {
     const pressured = freeRushers(S, p, 2.4).length > 0;
     const moving = Math.hypot(p.vx, p.vy) > 2.5;
-    const sig = (0.3 + e.dist * 0.04) * (1.6 - p.r.tha / 100) * (pressured ? 1.55 : 1) * (moving ? 1.3 : 1);
+    const sig = (0.3 + e.dist * 0.04) * (1.6 - p.r.tha / 100) * LEVEL.throwErr * (pressured ? 1.55 : 1) * (moving ? 1.3 : 1);
     const ex = S.rng.gauss() * sig, ey = S.rng.gauss() * sig * 0.9;
     const x1 = clamp(e.P.x + ex, -2, FIELD_W + 2), y1 = e.P.y + ey;
     const dist = Math.hypot(x1 - p.x, y1 - p.y);
@@ -1434,7 +1514,9 @@ function startCarrier(S, p, why) {
     S.carrier = p.id;
     if (why) S.ev(why, "off");
     // offense turns into blockers for him; defense pursues
-    S.off.forEach(o => { if (o !== p && (o.mode === "route" || o.mode === "pro" || o.mode === "check" || o.mode === "fake" || o.mode === "qb")) { if (o.mode !== "qb" || S.kind !== "run") o.mode = "lead"; } });
+    // (after a catch, the other receivers need a moment to see it and turn around)
+    const late = S.flags.thrown >= 0 || S.flags.qbScramble;
+    S.off.forEach(o => { if (o !== p && (o.mode === "route" || o.mode === "pro" || o.mode === "check" || o.mode === "fake" || o.mode === "qb")) { if (o.mode !== "qb" || S.kind !== "run") { if (late && o.mode === "route") o.leadAt = S.t + 0.45 + S.rng() * 0.5; o.mode = "lead"; } } });
 }
 function goalDir(S, p) { return p.side === "O" ? 1 : -1; }
 function aiCarrier(S, p) {
@@ -1447,7 +1529,7 @@ function aiCarrier(S, p) {
             const n = norm(tg.x - p.x, tg.y - p.y);
             const probe = { x: p.x + n.x * 2.2, y: p.y + n.y * 2.2 };
             let clog = 0;
-            S.def.forEach(d => { const k = Math.hypot(d.x - probe.x, d.y - probe.y); if (k < 1.6 && !d.eng) clog++; });
+            S.def.forEach(d => { const k = Math.hypot(d.x - probe.x, d.y - probe.y); if (k < 1.6) clog += d.eng ? (d.eng.b.length > 1 ? 0.35 : 0.5) : 1; });
             if (clog < 1 || S.rng() < 0.3) { steer(S, p, tg.x, tg.y, 0.96, 0.2); return; }
         }
         C.pathDone = true;
@@ -1527,7 +1609,11 @@ function aiPassPro(S, p) {
     if (!best && !isOL && S.t - S.snapT > 1.0 && p.role !== "OL") {
         p.mode = "check";
         const side = p.x < S.ballX ? -1 : 1;
-        p.path = { pts: [{ x: p.x, y: p.y }, { x: clamp(p.x + side * 5, 2, FIELD_W - 2), y: 1.5 }, { x: clamp(p.x + side * 7, 2, FIELD_W - 2), y: 3 }], legOf: [0, 0, 0], idx: 1, done: false, opts: [] };
+        // release outside the end man on the line, not through his rush lane
+        let edge = p.x + side * 5;
+        S.def.forEach(d => { if (d.y < 2.5 && (d.x - S.ballX) * side > 0 && Math.abs(d.x - S.ballX) < 12) edge = side > 0 ? Math.max(edge, d.x + 2.5) : Math.min(edge, d.x - 2.5); });
+        const x1 = clamp(edge, 2, FIELD_W - 2);
+        p.path = { pts: [{ x: p.x, y: p.y }, { x: x1, y: 1.0 }, { x: clamp(x1 + side * 3, 2, FIELD_W - 2), y: 3 }], legOf: [0, 0, 0], idx: 1, done: false, opts: [] };
         if (S.reads.indexOf(p) < 0) S.reads.push(p);
         S.ev(p.label + " checks and releases to the flat", "off");
         return;
@@ -1576,6 +1662,7 @@ function aiLead(S, p) {
     // after the catch / on a scramble: find someone to block for the carrier
     if (p.eng) return;
     const c = S.byId.get(S.carrier); if (!c) { steer(S, p, p.x, p.y, 0.3); return; }
+    if (p.leadAt && S.t < p.leadAt) { steer(S, p, p.x + p.vx * 0.25, p.y + p.vy * 0.25, 0.5); return; }
     let best = null, bs = Infinity;
     S.def.forEach(d => {
         if (d.eng || d.mode === "down") return;
@@ -1587,7 +1674,8 @@ function aiLead(S, p) {
     if (!best) { steer(S, p, lerp(p.x, c.x, 0.35), c.y + 2, 0.75); return; }
     const n = norm(c.x - best.x, c.y - best.y);
     steer(S, p, best.x + n.x * 0.8, best.y + n.y * 0.8, 0.95, 0.2);
-    if (Math.hypot(best.x - p.x, best.y - p.y) < 1.1) engage(S, p, best, "run");
+    // a block in space (receiver on a defender) is a stalk block: it doesn't hold long
+    if (Math.hypot(best.x - p.x, best.y - p.y) < 1.1) engage(S, p, best, p.role === "OL" ? "run" : "stalk");
 }
 function nearestDef(S, p, within, front) {
     let best = null, bd = within;
@@ -1600,7 +1688,7 @@ function engage(S, b, d, kind) {
     const diff = kind === "pass" ? ((d.r.prs + d.r.str * 0.3) - (b.r.pbk + b.r.str * 0.3)) : ((d.r.bsh + d.r.str * 0.3) - (b.r.rbk + b.r.str * 0.3));
     const e = { d, b: [b], kind, t0: S.t, prog: 0, diff, mult: Math.exp(S.rng.gauss() * 0.4) };
     // a quick win (swim, rip, a missed punch)
-    if (S.rng() < (kind === "run" ? 0.12 : 0.035) * Math.exp(diff / 18)) e.prog = 0.8;
+    if (S.rng() < (kind === "stalk" ? 0.25 : kind === "run" ? LEVEL.runQuickWin : 0.035) * Math.exp(diff / 18)) e.prog = 0.8;
     d.eng = e; b.eng = e; S.eng.push(e);
 }
 function updateEngagements(S, dt) {
@@ -1626,10 +1714,10 @@ function updateEngagements(S, dt) {
         d.x = cx - n.x * 0.42; d.y = cy - n.y * 0.42;
         e.b.forEach((b, i) => { const px = -n.y, py = n.x; const off = e.b.length > 1 ? (i === 0 ? -0.45 : 0.45) : 0; b.x = cx + n.x * 0.42 + px * off; b.y = cy + n.y * 0.42 + py * off; b.vx = n.x * push; b.vy = n.y * push; b.fx = -n.x; b.fy = -n.y; });
         d.vx = n.x * push; d.vy = n.y * push; d.fx = n.x; d.fy = n.y;
-        const base = e.kind === "pass" ? 1 / 3.3 : 1 / 1.5;
+        const base = e.kind === "pass" ? 1 / LEVEL.passShed : e.kind === "stalk" ? 1 / 0.7 : 1 / LEVEL.runShed;
         let rate = base * Math.exp(e.diff / 22) * (e.b.length > 1 ? 0.28 : 1) * e.mult * (0.7 + S.rng() * 0.6);
         // the back hits his gap: a run defender comes off the block to make the play
-        if (car && e.kind === "run" && Math.hypot(car.x - d.x, car.y - d.y) < 1.9) rate *= 3;
+        if (car && e.kind !== "pass" && Math.hypot(car.x - d.x, car.y - d.y) < 1.9) rate *= LEVEL.shedNearBack;
         e.prog += rate * dt;
         // the carrier runs past an engaged defender: arm tackle chance handled in contacts
         if (e.prog >= 1) { release(S, e, true); return false; }
@@ -1660,6 +1748,8 @@ function aiDefense(S, d) {
         // a run: each defender reacts on his own clock (after a catch: right away)
         if (d.runAt == null) d.runAt = S.t + (S.flags.thrown >= 0 ? 0.05 + S.rng() * 0.1 : runKeyDelay(S, d));
         if (S.t >= d.runAt || Math.hypot(car.x - d.x, car.y - d.y) < 4) { aiRunFit(S, d, car); return; }
+        // the ball is caught: everybody rallies (nobody drifts back to his zone)
+        if (S.flags.caught >= 0) { aiPursue(S, d, car); return; }
     }
     if (car && car.side === "D") { aiPursue(S, d, car); return; }
     // run look at the snap (OL fire out, backfield flow): fit toward the runner
@@ -1669,7 +1759,7 @@ function aiDefense(S, d) {
         if (rb && S.t >= d.runAt && !d.rushing) { aiRunFit(S, d, rb); return; }
     }
     // play-action: underneath defenders step downhill while the fake is on
-    if (S.flags.fakeUntil > S.t && (d.role === "LB" || (d.role === "DB" && d.src.y < 9)) && d.assign !== "rush" && d.assign !== "man") {
+    if (S.flags.fakeUntil > S.t && (d.role === "LB" || (d.role === "DB" && d.src.y < 9)) && d.assign !== "rush" && d.assign !== "man" && !(d.zone && d.zone.deep)) {
         if (d.biteUntil == null) d.biteUntil = S.flags.fakeUntil + (100 - d.r.awr) * 0.006 + S.rng() * 0.2;
     }
     if (d.biteUntil && S.t < d.biteUntil) { steer(S, d, lerp(d.x, S.ballX, 0.3), Math.max(d.y - 2, 1.0), 0.55); return; }
@@ -1764,7 +1854,7 @@ function aiZone(S, d) {
     S.elig.forEach(r => {
         if (r.mode !== "route" && r.mode !== "check" && r.mode !== "carrier") return;
         const px = r.x + r.vx * 0.45, py = r.y + r.vy * 0.45;
-        const ex = (px - Z.lx) / (Z.rx * 1.3 + 1.5), ey = (py - (Z.deep ? Math.max(Z.ly - 6, 8) : Z.ly)) / (Z.ry * 1.3 + 1.5);
+        const ex = (px - Z.lx) / (Z.rx * (Z.deep ? 1.3 : 1.6) + (Z.deep ? 1.5 : 3)), ey = (py - (Z.deep ? Math.max(Z.ly - 6, 8) : Z.ly)) / (Z.ry * 1.3 + 1.5);
         if (ex * ex + ey * ey > 1.25 && !(Z.deep && py > Z.ly - 4 && Math.abs(px - Z.lx) < Z.rx + 2)) return;
         let sc = Z.deep ? py : -Math.hypot(px - Z.lx, py - Z.ly);
         if (qb && qb.qb && qb.qb.look === r.id) sc += 3;
@@ -1818,7 +1908,7 @@ function aiZone(S, d) {
         }
     }
     const g = smooth(tx, ty, 0.3);
-    steer(S, d, g.x, g.y, (!dropDone && d.y < g.y - 1) ? 0.78 : 0.9, 0.6);
+    steer(S, d, g.x, g.y, (!dropDone && d.y < g.y - 1) ? 0.72 : 0.8, 0.6);
 }
 function zoneMatch(S, d, r, react) {
     const pts = r.path ? r.path.pts : [{ x: r.x, y: r.y }];
@@ -1871,6 +1961,13 @@ function aiRunFit(S, d, car) {
 function aiPursue(S, d, car) {
     d.rushing = false;
     const ip = intercept(S, d, car);
+    // goal-side leverage: a defender already downfield of the carrier keeps him in front
+    // (aims at the near side of the carrier's path instead of where he was heading a moment ago)
+    const gd = goalDir(S, car), ahead = (d.y - car.y) * gd, dist = Math.hypot(car.x - d.x, car.y - d.y);
+    if (ahead > 0.6 && dist > 1.6 && !d.badAngle) {
+        const keep = Math.min(ahead * 0.6, 2.2);
+        if ((ip.y - car.y) * gd < keep) ip.y = car.y + gd * keep;
+    }
     // set the edge: the outside man keeps outside leverage
     if (car.side === "O" && Math.abs(d.x - S.ballX) > Math.abs(car.x - S.ballX) + 1 && car.y < 3 && d.role !== "DB") ip.x += Math.sign(d.x - S.ballX) * 1.0;
     steer(S, d, ip.x, ip.y, 1, 0.05);
@@ -1918,7 +2015,7 @@ function resolveCatch(S, fl) {
     const swat = nearDef && nearDef.d.swat && S.t < nearDef.d.swat;
     if (nearDef && (dd < 1.15 || (swat && dd < 1.6)) && (dd < dR - 0.25 || swat)) {
         const d = nearDef.d;
-        const pInt = clamp(0.07 + d.r.bsk * 0.0022 - dd * 0.08 + (swat ? 0.12 : 0), 0.04, 0.45);
+        const pInt = clamp((0.07 + d.r.bsk * 0.0022 - dd * 0.08 + (swat ? 0.12 : 0)) * LEVEL.intMul, 0.04, 0.5);
         if (S.rng() < pInt) { intercept_(S, d); return; }
         B.state = "dead"; S.ev("Broken up by " + d.label, "def"); endPlay(S, "incomplete", "Broken up by " + d.label, { pbu: d.label }); return;
     }
@@ -1929,7 +2026,7 @@ function resolveCatch(S, fl) {
         }
         B.state = "dead"; endPlay(S, "incomplete", rec ? "Off target to " + rec.label : "Incomplete"); return;
     }
-    let pc = 0.88 + (rec.r.cth - 70) * 0.004 - Math.pow(dR / 1.45, 2) * 0.28;
+    let pc = LEVEL.catchBase + (rec.r.cth - 70) * 0.004 - Math.pow(dR / 1.45, 2) * 0.28;
     let contested = false;
     if (dd < 1.4) { contested = true; pc -= (1.4 - dd) / 1.4 * (0.5 + (nearDef.d.r.bsk - rec.r.cth) * 0.004); }
     pc = clamp(pc, 0.04, 0.97);
@@ -1941,7 +2038,7 @@ function resolveCatch(S, fl) {
         startCarrier(S, rec, null);
         return;
     }
-    if (contested && S.rng() < clamp(0.07 + nearDef.d.r.bsk * 0.0017, 0.04, 0.26)) { intercept_(S, nearDef.d); return; }
+    if (contested && S.rng() < clamp((0.07 + nearDef.d.r.bsk * 0.0017) * LEVEL.intMul, 0.04, 0.3)) { intercept_(S, nearDef.d); return; }
     B.state = "dead";
     endPlay(S, "incomplete", contested ? nearDef.d.label + " breaks it up on " + rec.label : rec.label + " drops it", contested ? { pbu: nearDef.d.label } : { drop: rec.label });
 }
@@ -1970,7 +2067,11 @@ function contacts(S) {
             if (d.eng || d.mode === "down" || S.t < d.stunUntil) continue;
             if (Math.hypot(d.x - c.x, d.y - c.y) < 1.05 && S.t > d.tackleCD) {
                 const pS = clamp(0.8 + (d.r.prs * 0.5 + d.r.tak * 0.5 - (c.r.elu + c.r.agi) / 2) * 0.004, 0.45, 0.95);
-                if (S.rng() < pS) { S.res = { kind: "sack", sackBy: d.label, tThrow: null }; S.ev("SACK by " + d.label, "def"); endPlay(S, "sack", "Sacked by " + d.label, null, c.y); return; }
+                if (S.rng() < pS) {
+                    S.res = { kind: "sack", sackBy: d.label, tThrow: null }; S.ev("SACK by " + d.label, "def");
+                    if (S.rng() < LEVEL.stripSack) { fumble(S, c, d, c.y, "Sacked by " + d.label, true); return; }
+                    endPlay(S, "sack", "Sacked by " + d.label, null, c.y); return;
+                }
                 d.stunUntil = S.t + 0.55; d.tackleCD = S.t + 0.8; S.ev("QB slips the sack from " + d.label, "off");
             }
         }
@@ -2009,20 +2110,45 @@ function contacts(S) {
         hits++;
         const juke = c.juke && S.t < c.juke ? 0.18 : 0;
         const user = c.userMove && S.t < c.userMove.until ? c.userMove.bonus : 0;
-        let pT = 0.86 + (d.r.tak - c.r.elu) * 0.005 + (d.r.str - c.r.str) * 0.0015 - juke - user + (d.dive && S.t < d.dive ? 0.12 : 0);
-        if (d.eng) pT = 0.25 + d.r.bsh * 0.003;
+        let pT = LEVEL.tackleBase + (d.r.tak - c.r.elu) * 0.005 + (d.r.str - c.r.str) * 0.0015 - juke - user + (d.dive && S.t < d.dive ? 0.12 : 0);
+        // squared up in front of him is the easy tackle; chasing from behind, or at a runner at full speed, is not
+        const gdc = goalDir(S, c), ahead = (d.y - c.y) * gdc, cs = Math.hypot(c.vx, c.vy);
+        if (ahead > 0.25) pT += 0.06;
+        else if (ahead < -0.35 && cs > 4) pT -= 0.1;
+        pT -= clamp((cs - 6) * 0.02, 0, 0.05);
+        // a blocked defender can only reach out and grab him (less with two on him)
+        if (d.eng) pT = d.eng.b.length > 1 ? 0.12 + d.r.bsh * 0.0015 : 0.18 + d.r.bsh * 0.003;
         if (hits > 1) pT += 0.15;
         pT = clamp(pT, 0.12, 0.97);
         if (S.rng() < pT) { made = d; break; }
-        d.stunUntil = S.t + 0.6; d.tackleCD = S.t + 1.0; c.sMul = 0.78; c.slowUntil = S.t + 0.35;
+        d.stunUntil = S.t + 0.6; d.tackleCD = S.t + 1.0; c.sMul = 0.62; c.slowUntil = S.t + 0.45;
         S.ev(c.label + " breaks a tackle from " + d.label, c.side === "O" ? "off" : "def");
     }
     if (made) {
         const gd = goalDir(S, c);
         const fwd = (c.r.str > made.r.str ? 0.9 : 0.45) * (0.4 + S.rng() * 0.8) * (Math.max(0, c.vy * gd) > 3 ? 1 : 0.4);
-        endPlay(S, "tackle", "Tackled by " + made.label, { tackler: made.label }, c.y + gd * fwd);
+        const spot = c.y + gd * fwd;
+        // ball security: a big hit or a second man in on him knocks it loose more often
+        if (c.side === "O" && S.rng() < clamp(LEVEL.fumble * Math.exp((made.r.str - c.r.str) / 40 + (hits > 1 ? 0.45 : 0) + Math.max(0, Math.hypot(c.vx, c.vy) - 6) * 0.06), 0.003, 0.1)) {
+            fumble(S, c, made, spot, "Tackled by " + made.label); return;
+        }
+        endPlay(S, "tackle", "Tackled by " + made.label, { tackler: made.label }, spot);
     }
     if (c.slowUntil && S.t > c.slowUntil) c.sMul = 1;
+}
+// The ball comes out: a pile at the spot; the defense recovers about half of them.
+// (No scoop-and-score runs; a defensive recovery in the offense's end zone is a TD.)
+function fumble(S, c, hitter, spot, text, sack) {
+    const lost = S.rng() < LEVEL.fumbleLost;
+    let rec = c;
+    if (lost) {
+        let bd = Infinity; rec = hitter;
+        S.def.forEach(d => { if (d.mode === "down") return; const k = Math.hypot(d.x - c.x, d.y - c.y) + (d === hitter ? 0.6 : 0) + S.rng() * 1.2; if (k < bd) { bd = k; rec = d; } });
+    }
+    S.ev("FUMBLE! " + (lost ? rec.label + " recovers" : c.label + " falls on it"), lost ? "def" : "off");
+    const extra = { fumble: true, fumbleLost: lost, fumbleBy: c.label, recoveredBy: rec.label };
+    if (!sack) extra.tackler = hitter.label;
+    endPlay(S, sack ? "sack" : "tackle", text + " · FUMBLE, " + (lost ? "recovered by " + rec.label : (c.label + " falls on it")), extra, spot);
 }
 function endPlay(S, how, text, extra, spotY) {
     if (S.phase === "dead") return;
@@ -2053,6 +2179,12 @@ function endPlay(S, how, text, extra, spotY) {
         if (S.flags.qbScramble) res.kind = "scramble";
     }
     if (res.kind === "run" && S.carrierId) res.carrier = res.carrier || (S.byId.get(S.carrierId) || {}).label;
+    if (res.fumbleLost) {
+        res.turnover = true;
+        res.fumbleSpot = +(spotY != null ? spotY : 0).toFixed(1);
+        // recovered in the offense's own end zone: touchdown defense, not a safety
+        if (res.fumbleSpot <= -S.own) { res.defTD = true; res.safety = false; res.text += " in the end zone · TOUCHDOWN"; }
+    }
     res.pressure = S.flags.pressureT >= 0;
     res.pressureBy = S.flags.pressureBy || null;
     res.playKind = S.kind;
@@ -2272,6 +2404,7 @@ function summarize(reps, M) {
         compPct: att.length ? comp.length / Math.max(1, att.length) : 0, att: att.length,
         ypa: att.length ? att.reduce((a, r) => a + (r.turnover ? 0 : (r.yards || 0)), 0) / att.length : 0,
         sackPct: sacks.length / n, intPct: ints.length / n, tdPct: by(r => r.td) / n,
+        fumblePct: by(r => r.fumble) / n, fumLostPct: by(r => r.fumbleLost) / n, toPct: by(r => r.turnover) / n,
         explosive: by(r => !r.turnover && (r.yards || 0) >= 15) / n, stuff: by(r => !r.turnover && (r.yards || 0) <= 0 && r.outcome !== "incomplete" && r.outcome !== "throwaway") / n,
         pressurePct: by(r => r.pressure) / n, avgTimeToThrow: avgT,
         runAvg: runs.length ? runs.reduce((a, r) => a + (r.yards || 0), 0) / runs.length : null, runs: runs.length,
@@ -2281,7 +2414,7 @@ function summarize(reps, M) {
         samples: {
             best: (reps.slice().sort((a, b) => (b.turnover ? -99 : b.yards || 0) - (a.turnover ? -99 : a.yards || 0))[0] || {}).seed,
             sack: pick(r => r.outcome === "sack"), int: pick(r => r.outcome === "int"), incomplete: pick(r => r.outcome === "incomplete"),
-            complete: pick(r => r.outcome === "complete"), td: pick(r => r.td), stuff: pick(r => !r.turnover && (r.yards || 0) <= 0),
+            complete: pick(r => r.outcome === "complete"), td: pick(r => r.td), fumble: pick(r => r.fumbleLost), stuff: pick(r => !r.turnover && (r.yards || 0) <= 0),
         },
         reps,
     };
@@ -2291,8 +2424,10 @@ function summarize(reps, M) {
 //  DRIVES — run a game script (an ordered call sheet) as a real drive:
 //  downs, distance, field position, 4th-down decisions, kicks and turnovers.
 // ════════════════════════════════════════════════════════════════════════════
-const HASH_L = 23.58, HASH_R = 29.75;
-function fgProb(d) { return clamp(0.99 - Math.max(0, d - 22) * 0.016, 0.12, 0.99); }
+// High school (NFHS) hash marks split the field in thirds: 53'4" from each sideline.
+const HASH_L = FIELD_W / 3, HASH_R = FIELD_W * 2 / 3;
+// A high school kicker: ~90% on a PAT (20 yd), ~75% from 30, ~40% from 40, ~11% from 50.
+function fgProb(d) { return clamp(0.95 / (1 + Math.exp((d - 38) / 6)), 0.02, 0.95); }
 function isRunPlay(p) {
     const bp = (p && p.ballPlan) || {};
     const st = (bp.steps || []).filter(s => s && !s.fake && s.action !== "snap");
@@ -2305,13 +2440,15 @@ function isRunPlay(p) {
 }
 // Standard success rate: 40% of the distance on 1st, 60% on 2nd, all of it on 3rd/4th.
 function playSuccess(down, dist, gain) { return down === 1 ? gain >= 0.4 * dist : down === 2 ? gain >= 0.6 * dist : gain >= dist; }
-// A middle-of-the-road head coach on 4th down.
+// A typical high school head coach on 4th down. Field goals are a coin flip past ~35
+// yards and punts net under 30, so he goes for it far more often in plus territory.
 function coachFourth(ballOn, dist) {
-    const fg = 100 - ballOn + 17;
-    if (dist <= 1 && ballOn >= 35) return "go";
-    if (dist <= 2 && ballOn >= 50 && fg > 45) return "go";
-    if (fg <= 52) return "fg";
-    if (ballOn >= 60 && dist <= 4) return "go";
+    const kick = 100 - ballOn + 17;
+    if (dist <= 1 && ballOn >= 40) return "go";          // 4th & 1 from his own 40 on
+    if (ballOn >= 50 && dist <= 3) return "go";          // short yardage in plus territory
+    if (kick <= 35) return dist <= 2 ? "go" : "fg";      // the opponent's 18 and in: kick unless it's short
+    if (ballOn >= 70) return "go";                       // inside the 30, outside kicking range: go
+    if (ballOn >= 62 && dist <= 6) return "go";          // the 38 to the 31: go if it's makeable
     return "punt";
 }
 // Flatten a Gridiron script ({periods:[{playIds}]}) or install ({playIds}) into plays.
@@ -2347,10 +2484,11 @@ function runDrive(cfg) {
         if (cfg.whenOut === "end") return null;
         // call from the script's own plays by down & distance
         const runs = script.filter(isRunPlay), passes = script.filter(p => !isRunPlay(p));
-        let pRun = 0.45;
-        if (down === 2) pRun = dist >= 8 ? 0.3 : dist <= 3 ? 0.6 : 0.45;
-        if (down >= 3) pRun = dist >= 6 ? 0.12 : dist <= 2 ? 0.6 : 0.3;
-        if (ballOn >= 95) pRun = 0.55;
+        // a high school play caller: run-first (about 60/40), still throwing on 3rd & long
+        let pRun = 0.6;
+        if (down === 2) pRun = dist >= 8 ? 0.42 : dist <= 3 ? 0.72 : 0.58;
+        if (down >= 3) pRun = dist >= 6 ? 0.18 : dist <= 2 ? 0.75 : 0.4;
+        if (ballOn >= 95) pRun = 0.65;
         let pool = rng() < pRun ? runs : passes; if (!pool.length) pool = script;
         return { play: pool[Math.floor(rng() * pool.length)], slot: -1 };
     };
@@ -2377,6 +2515,10 @@ function runDrive(cfg) {
         if (r.outcome === "int") {
             entry.gain = 0; entry.success = false; log.push(entry);
             result = r.defTD ? "PICK SIX" : "INT"; points = r.defTD ? -7 : 0; break;
+        }
+        if (r.fumbleLost) {
+            entry.gain = r.fumbleSpot != null ? r.fumbleSpot : (r.yards || 0); entry.success = false; log.push(entry);
+            result = r.defTD ? "FUMBLE TD" : "FUMBLE"; points = r.defTD ? -7 : 0; break;
         }
         if (r.safety) { entry.gain = -ballOn; entry.success = false; log.push(entry); result = "SAFETY"; points = -2; break; }
         gain = r.outcome === "incomplete" || r.outcome === "throwaway" ? 0 : (r.yards || 0);
@@ -2417,14 +2559,14 @@ function summarizeDrives(drives, script) {
             else if (third.dist <= 2) stalls["3rd & short (1–2)"]++;
             else if (third.dist <= 6) stalls["3rd & medium (3–6)"]++;
             else stalls["3rd & long (7+)"]++;
-        } else if (d.result === "INT" || d.result === "PICK SIX") stalls.Turnover++;
+        } else if (d.result === "INT" || d.result === "PICK SIX" || d.result === "FUMBLE" || d.result === "FUMBLE TD") stalls.Turnover++;
     });
     const pick = (f, sort) => { const L = drives.filter(f); if (sort) L.sort(sort); return L.length ? L[0].seed : null; };
     const rz = drives.filter(d => d.reachedRZ);
     return {
         n, ptsPerDrive: drives.reduce((a, d) => a + d.points, 0) / n, outcomes,
         tdPct: cnt(d => d.result === "TD") / n, fgPct: cnt(d => d.result === "FG") / n, puntPct: cnt(d => d.result === "PUNT") / n,
-        toPct: cnt(d => d.result === "INT" || d.result === "PICK SIX" || d.result === "DOWNS" || d.result === "SAFETY") / n,
+        toPct: cnt(d => d.result === "INT" || d.result === "PICK SIX" || d.result === "FUMBLE" || d.result === "FUMBLE TD" || d.result === "DOWNS" || d.result === "SAFETY") / n,
         threeOut: cnt(d => d.threeOut) / n, avgPlays: drives.reduce((a, d) => a + d.snaps, 0) / n,
         avgYards: drives.reduce((a, d) => a + d.yards, 0) / n, avgTime: drives.reduce((a, d) => a + d.time, 0) / n,
         avgFirstDowns: drives.reduce((a, d) => a + d.firstDowns, 0) / n,
@@ -2433,7 +2575,7 @@ function summarizeDrives(drives, script) {
         adlib: Object.values(adlib).map(s => ({ ...s, avg: s.gain / s.called, rate: s.succ / s.called })).sort((a, b) => b.called - a.called),
         stalls,
         samples: {
-            td: pick(d => d.result === "TD", (a, b) => b.snaps - a.snaps), threeOut: pick(d => d.threeOut), turnover: pick(d => d.result === "INT" || d.result === "PICK SIX" || d.result === "DOWNS"),
+            td: pick(d => d.result === "TD", (a, b) => b.snaps - a.snaps), threeOut: pick(d => d.threeOut), turnover: pick(d => d.result === "INT" || d.result === "PICK SIX" || d.result === "FUMBLE" || d.result === "FUMBLE TD" || d.result === "DOWNS"),
             fg: pick(d => d.result === "FG"), longest: pick(() => true, (a, b) => b.snaps - a.snaps),
         },
     };
@@ -2442,7 +2584,7 @@ function summarizeDrives(drives, script) {
 root.GridironSimEngine = {
     SIM_VERSION, DT, FIELD_W, G: { FW: G_FW, FH: G_FH, EZ: G_EZ, YPY, XPY, LOS_Y: G_LOS_Y, BALL_X: G_BALL_X },
     buildMatchup, createSim, step, run, runBatch, summarize, builtinDefense, BUILTIN_DEFENSES,
-    userThrow, userMove, evalTarget, predict, ratingsFor, ROLE_BASE, STAT_KEYS, extractSide, structureOf,
+    userThrow, userMove, evalTarget, predict, ratingsFor, ROLE_BASE, STAT_KEYS, extractSide, structureOf, LEVEL,
     runDrive, summarizeDrives, flattenScript, isRunPlay, coachFourth, fgProb, playSuccess, HASH_L, HASH_R,
 };
 })(typeof window !== "undefined" ? window : globalThis);
@@ -2615,13 +2757,13 @@ function open(ctx) {
       <label>WHEN THE SCRIPT RUNS OUT<select class="gps-dsel" data-k="dout"><option value="situational">Call from it by situation</option><option value="restart">Start it over</option><option value="end">End the drive</option></select></label>
       <label>4TH DOWN<select class="gps-dsel" data-k="d4"><option value="coach">Punt / kick / go</option><option value="go">Always go for it</option></select></label>
     </div>
-    <div class="gps-note" data-k="d4note" style="margin-top:6px">Coach's 4th-down rule: go for it on 4th &amp; 1 from his own 35 on, and on 4th &amp; 2 from midfield to the opponent's 28; kick a field goal from 52 yards in (about 99% inside 22 yards, 67% from 42, 51% from 52); go on 4th &amp; 4 or less at the opponent's 36–40; otherwise punt.</div>
+    <div class="gps-note" data-k="d4note" style="margin-top:6px">High school coach's 4th-down rule: go for it on 4th &amp; 1 from his own 40 on, on 4th &amp; 3 or less past midfield, from the opponent's 38–31 on 4th &amp; 6 or less, and on anything inside the 30 that's too far to kick. Field goal from the 18 in (about 90% for a PAT-length kick, 75% from 30 yards, 40% from 40). Otherwise punt.</div>
     <div class="gps-trans" style="margin-top:10px"><button class="gps-btn" data-k="drun">▶ RUN THE DRIVE</button><button class="gps-btn ghost" data-k="d100">100 DRIVES</button><button class="gps-btn ghost" data-k="d300">300 DRIVES</button></div>
     <div class="gps-prog"><div data-k="dprog"></div></div>
     <div data-k="dres"></div>
     <div data-k="dbatch"></div>
    </div>
-    <div class="gps-h">Talent (how good each unit is)</div>
+    <div class="gps-h">Talent · 0 = an average high school varsity unit</div>
     <div data-k="knobs"></div>
     <div class="gps-h">What the sim did with your plays</div>
     <div class="gps-note" data-k="notes"></div>
@@ -2660,6 +2802,7 @@ function open(ctx) {
         if (st.M.special) notes.unshift("Special teams plays aren't simulated yet — the sim runs offense vs defense.");
         if (o.play === d.play) notes.unshift("Offense and defense both come from the play on the field, exactly as drawn.");
         else notes.unshift("The defense was re-aligned to this formation by receiver number (#1/#2/#3 each side).");
+        notes.push("Players are high school varsity: slower reads and less accurate throws than college, more drops, missed tackles and fumbles. Use the talent sliders for a better or weaker unit.");
         $("notes").innerHTML = notes.map(n => "• " + esc(n)).join("<br>");
         rep(1);
     }
@@ -2683,9 +2826,10 @@ function open(ctx) {
         else if (r.outcome === "sack") { head = "SACK · " + yd(r.yards); sub = r.text + (r.pressureBy ? ` · first pressure: ${r.pressureBy}` : ""); }
         else if (r.outcome === "run" || r.outcome === "scramble") { head = (r.outcome === "scramble" ? "QB SCRAMBLE · " : "RUN · ") + (r.carrier || "") + " " + yd(r.yards) + (r.td ? " · TD" : ""); sub = r.text || ""; }
         else if (r.text) head = r.text;
+        if (r.fumble) { head += r.fumbleLost ? " · FUMBLE, LOST" : " · FUMBLE, kept"; sub = (r.fumbleLost ? "Recovered by " + (r.recoveredBy || "the defense") + (r.defTD ? " in the end zone for a TD" : "") : (r.fumbleBy || "He") + " fell on it") + (sub ? " · " + sub : ""); }
         if (r.safety) head += " · SAFETY";
         $("res").textContent = head; $("resub").textContent = sub + (sub ? " · " : "") + "rep #" + st.seed;
-        $("res").style.color = r.td ? "#fbbf24" : (r.outcome === "int" || r.outcome === "sack") ? "#fca5a5" : r.outcome === "complete" || (r.yards || 0) >= 4 ? "#86efac" : "#e8efe6";
+        $("res").style.color = r.fumbleLost ? "#fca5a5" : r.td ? "#fbbf24" : (r.outcome === "int" || r.outcome === "sack") ? "#fca5a5" : r.outcome === "complete" || (r.yards || 0) >= 4 ? "#86efac" : "#e8efe6";
         const log = $("log"); log.innerHTML = "";
         S.events.forEach(e => {
             const d = document.createElement("div"); d.className = e.kind || "";
@@ -2714,10 +2858,10 @@ function open(ctx) {
         const tiles = [
             ["Avg gain", (b.avgYds).toFixed(1) + " yd"], ["Success", pct(b.success)], ["Explosive 15+", pct(b.explosive)],
             passy ? ["Completion", pct(b.compPct)] : ["Run avg", b.runAvg != null ? b.runAvg.toFixed(1) : "–"], passy ? ["Yds / att", b.ypa.toFixed(1)] : ["Stuffed ≤0", pct(b.stuff)], ["TD", pct(b.tdPct)],
-            ["Sack", pct(b.sackPct)], ["INT", pct(b.intPct)], ["Pressure", pct(b.pressurePct)],
+            ["Sack", pct(b.sackPct)], ["Turnover", pct(b.toPct)], ["Pressure", pct(b.pressurePct)],
         ];
         let h = `<div class="gps-grid" style="margin-top:8px">${tiles.map(([k, v]) => `<div class="gps-stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("")}</div>`;
-        if (passy && b.avgTimeToThrow) h += `<div class="gps-note">Average time to throw ${b.avgTimeToThrow.toFixed(2)}s · ${b.n} reps · success = 4+ yards.</div>`;
+        h += `<div class="gps-note">Turnovers: ${pct(b.intPct)} intercepted, ${pct(b.fumLostPct)} fumbles lost (${pct(b.fumblePct)} fumbled).${passy && b.avgTimeToThrow ? ` Average time to throw ${b.avgTimeToThrow.toFixed(2)}s.` : ""} ${b.n} reps · success = 4+ yards.</div>`;
         // yards histogram, −5 … 30+
         const bins = new Array(12).fill(0);
         b.reps.forEach(r => { const y = r.turnover ? -99 : (r.yards || 0); const i = y <= -99 ? 0 : clamp(Math.floor((y + 5) / 3) + 1, 1, 11); bins[i]++; });
@@ -2731,7 +2875,7 @@ function open(ctx) {
         }
         if (b.pressureBy.length) h += `<div class="gps-note" style="margin-top:6px">First pressure most often from ${b.pressureBy.slice(0, 3).map(p => esc(p.label) + " (" + pct(p.pct) + ")").join(", ")}.</div>`;
         const smp = b.samples;
-        const chips = [["Best play", smp.best], ["A sack", smp.sack], ["An INT", smp.int], ["An incompletion", smp.incomplete], ["A stuff", smp.stuff], ["A TD", smp.td]].filter(c => c[1] != null);
+        const chips = [["Best play", smp.best], ["A sack", smp.sack], ["An INT", smp.int], ["A fumble", smp.fumble], ["An incompletion", smp.incomplete], ["A stuff", smp.stuff], ["A TD", smp.td]].filter(c => c[1] != null);
         h += `<div class="gps-h">Show me…</div><div class="gps-chips">${chips.map(c => `<button class="gps-btn ghost" data-seed="${c[1]}">${c[0]}</button>`).join("")}</div>`;
         const box = $("batch"); box.innerHTML = h;
         box.querySelectorAll("[data-seed]").forEach(bt => { bt.onclick = () => rep(+bt.dataset.seed); });
@@ -2783,7 +2927,7 @@ function open(ctx) {
             g.globalAlpha = 1;
         }
         g.strokeStyle = "rgba(255,255,255,.4)";
-        for (let yy = Math.ceil(y0); yy < Math.min(y1, gl); yy++) { [23.58, 29.75].forEach(hx => { g.beginPath(); g.moveTo(X(hx - 0.4), Y(yy)); g.lineTo(X(hx + 0.4), Y(yy)); g.stroke(); }); }
+        for (let yy = Math.ceil(y0); yy < Math.min(y1, gl); yy++) { [E.HASH_L, E.HASH_R].forEach(hx => { g.beginPath(); g.moveTo(X(hx - 0.4), Y(yy)); g.lineTo(X(hx + 0.4), Y(yy)); g.stroke(); }); }
         g.strokeStyle = "rgba(255,255,255,.8)"; g.lineWidth = 2; g.strokeRect(X(0), Y(Math.min(y1, gl + 10)), FIELD_W * sc, (Math.min(y1, gl + 10) - y0) * sc);
         // LOS + line to gain
         g.lineWidth = 2.5; g.strokeStyle = "rgba(59,130,246,.9)"; g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(FIELD_W), Y(0)); g.stroke();
@@ -2888,8 +3032,8 @@ function open(ctx) {
     dStart.value = "25";
     const downTxt = (d, dist, on) => ["1st", "2nd", "3rd", "4th"][d - 1] + " & " + (on + dist >= 99.5 ? "Goal" : Math.max(1, Math.round(dist)));
     const spotTxt = (on) => { const b = Math.round(on); return b < 50 ? "OWN " + b : b === 50 ? "MID" : "OPP " + (100 - b); };
-    const RESULT_NAME = { TD: "TOUCHDOWN", FG: "FIELD GOAL", "MISSED FG": "MISSED FIELD GOAL", PUNT: "PUNT", INT: "INTERCEPTION", "PICK SIX": "PICK SIX", DOWNS: "TURNOVER ON DOWNS", SAFETY: "SAFETY", "SCRIPT DONE": "SCRIPT FINISHED", END: "DRIVE STOPPED" };
-    const RESULT_COL = { TD: "#fbbf24", FG: "#86efac", "MISSED FG": "#fca5a5", PUNT: "#cbd5e1", INT: "#f87171", "PICK SIX": "#dc2626", DOWNS: "#fb923c", SAFETY: "#c084fc", "SCRIPT DONE": "#7dd3fc", END: "#94a3b8" };
+    const RESULT_NAME = { TD: "TOUCHDOWN", FG: "FIELD GOAL", "MISSED FG": "MISSED FIELD GOAL", PUNT: "PUNT", INT: "INTERCEPTION", "PICK SIX": "PICK SIX", FUMBLE: "FUMBLE LOST", "FUMBLE TD": "FUMBLE RETURNED FOR TD", DOWNS: "TURNOVER ON DOWNS", SAFETY: "SAFETY", "SCRIPT DONE": "SCRIPT FINISHED", END: "DRIVE STOPPED" };
+    const RESULT_COL = { TD: "#fbbf24", FG: "#86efac", "MISSED FG": "#fca5a5", PUNT: "#cbd5e1", INT: "#f87171", "PICK SIX": "#dc2626", FUMBLE: "#f472b6", "FUMBLE TD": "#be185d", DOWNS: "#fb923c", SAFETY: "#c084fc", "SCRIPT DONE": "#7dd3fc", END: "#94a3b8" };
     function scriptPlays() {
         if (dS.value === "custom") return custom.map(id => offList.find(p => p.id === id)).filter(Boolean);
         if (dS.value === "book") return offList;
@@ -2908,7 +3052,7 @@ function open(ctx) {
         const L = scriptPlays(), box = $("dlist"), isCustom = dS.value === "custom";
         $("dadd").style.display = isCustom ? "flex" : "none";
         $("dout").disabled = dS.value === "book";
-        if (dS.value === "book") { const nr = L.filter(E.isRunPlay).length; box.innerHTML = `<div class="gps-note" style="padding:6px">No script: every snap the coach picks run or pass by down &amp; distance (more runs on short yardage and at the goal line, more passes on 3rd &amp; long), then a play of that kind from your ${L.length} offensive plays (${nr} run, ${L.length - nr} pass).</div>`; return; }
+        if (dS.value === "book") { const nr = L.filter(E.isRunPlay).length; box.innerHTML = `<div class="gps-note" style="padding:6px">No script: every snap a high school play caller picks run or pass by down &amp; distance (run-first, about 60/40; more runs on short yardage and at the goal line, more passes on 3rd &amp; long), then a play of that kind from your ${L.length} offensive plays (${nr} run, ${L.length - nr} pass).</div>`; return; }
         if (!L.length) { box.innerHTML = `<div class="gps-note" style="padding:6px">${isCustom ? "Add plays below in the order you'd call them." : "This script has no offensive plays."}${!scriptsO.length ? " No Gridiron scripts with offensive plays yet — build a list here, or make one in Gridiron's SCRIPTS." : ""}</div>`; return; }
         box.innerHTML = L.map((p, i) => `<div class="it"><span class="n">${i + 1}</span><span class="nm">${esc(p.name || "Untitled")}</span><span class="tg">${E.isRunPlay(p) ? "RUN" : "PASS"}</span>${isCustom ? `<button data-up="${i}">↑</button><button data-x="${i}">✕</button>` : ""}</div>`).join("");
         box.querySelectorAll("[data-up]").forEach(b => b.onclick = () => { const i = +b.dataset.up; if (i > 0) { [custom[i - 1], custom[i]] = [custom[i], custom[i - 1]]; saveCustom(); renderScriptList(); driveSetupChanged(); } });
@@ -2925,7 +3069,8 @@ function open(ctx) {
         const L = ["Every snap the defense is re-aligned to the formation it sees (by receiver number, #1/#2/#3 each side) and set at the real spot on the field. Inside the 12 it squeezes to fit in front of the end line, and routes drawn past the end line run along it."];
         if (bare.length) L.push("No zones or man coverage drawn on " + bare.join(", ") + ", so those defenders play generic spots. Use AUTO-COVER or draw man links for a real coverage.");
         noPlan.forEach(n => L.push("No ball plan on " + n));
-        L.push("Not simulated: penalties, fumbles, and returns. A punt, field goal try, turnover or failed 4th down ends the drive.");
+        L.push("Players are high school varsity: slower reads and less accurate throws than college, more drops, missed tackles and fumbles, and high school hash marks (the field in thirds).");
+        L.push("Not simulated: penalties and returns. A punt, field goal try, turnover or failed 4th down ends the drive.");
         $("notes").innerHTML = L.map(n => "• " + esc(n)).join("<br>");
     }
     function driveSetupChanged() { st.dbatch = null; $("dbatch").innerHTML = ""; $("dprog").style.width = "0"; runOneDrive(1); }
@@ -2965,6 +3110,7 @@ function open(ctx) {
             case "run": t = (r.carrier || "Run") + " " + (r.safety ? "" : ys) + (r.td ? " · TD" : ""); break;
             default: t = r.text || "—";
         }
+        if (r.fumble) t += r.fumbleLost ? " · FUMBLE, lost to " + (r.recoveredBy || "the defense") : " · fumbled, kept it";
         return t.trim() + (r.safety ? " in the end zone · SAFETY" : "");
     }
     function chartHTML(D) {
@@ -2974,7 +3120,7 @@ function open(ctx) {
             if (e.kind !== "play") return;
             const a = e.ballOn, b = Math.max(0, Math.min(100, e.ballOn + (e.gain || 0)));
             const l = Math.min(a, b), w = Math.max(0.6, Math.abs(b - a));
-            h += `<div style="left:${X(l)}%;width:${w * 0.92}%;background:${e.r && e.r.outcome === "int" ? "#ef4444" : e.success ? "#86efac" : "#fca5a5"};opacity:.9"></div>`;
+            h += `<div style="left:${X(l)}%;width:${w * 0.92}%;background:${e.r && (e.r.outcome === "int" || e.r.fumbleLost) ? "#ef4444" : e.success ? "#86efac" : "#fca5a5"};opacity:.9"></div>`;
         });
         h += `<div class="mk" style="left:${X(D.startBallOn)}%"></div><div class="mk" style="left:${X(Math.min(100, D.endBallOn))}%;background:#fbbf24"></div></div>`;
         return h;
@@ -3019,8 +3165,8 @@ function open(ctx) {
             ["Plays / drive", b.avgPlays.toFixed(1)], ["Yards / drive", b.avgYards.toFixed(1)], ["Time / drive", mm + ":" + ss],
         ];
         let h = `<div class="gps-h">${b.n} drives from ${spotTxt(+dStart.value)}</div><div class="gps-grid">${tiles.map(([k, v]) => `<div class="gps-stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("")}</div>`;
-        h += `<div class="gps-note">${b.avgFirstDowns.toFixed(1)} first downs per drive · reached the red zone on ${pct(b.rzPct)} of drives${b.rzTD != null ? `, scored a TD on ${pct(b.rzTD)} of those trips` : ""}. Touchdowns count 7, field goals 3, a pick six −7.</div>`;
-        const order = ["TD", "FG", "MISSED FG", "PUNT", "DOWNS", "INT", "PICK SIX", "SAFETY", "SCRIPT DONE", "END"];
+        h += `<div class="gps-note">${b.avgFirstDowns.toFixed(1)} first downs per drive · reached the red zone on ${pct(b.rzPct)} of drives${b.rzTD != null ? `, scored a TD on ${pct(b.rzTD)} of those trips` : ""}. Touchdowns count 7, field goals 3, a defensive TD −7, a safety −2.</div>`;
+        const order = ["TD", "FG", "MISSED FG", "PUNT", "DOWNS", "INT", "PICK SIX", "FUMBLE", "FUMBLE TD", "SAFETY", "SCRIPT DONE", "END"];
         h += `<div class="gps-h">How drives ended</div><div class="gps-stack">${order.filter(k => b.outcomes[k]).map(k => `<div title="${RESULT_NAME[k]}: ${b.outcomes[k]}" style="flex:${b.outcomes[k]};background:${RESULT_COL[k]}"></div>`).join("")}</div>
           <div class="gps-legend">${order.filter(k => b.outcomes[k]).map(k => `<span><i style="background:${RESULT_COL[k]}"></i>${RESULT_NAME[k].toLowerCase()} ${pct(b.outcomes[k] / b.n)}</span>`).join("")}</div>`;
         const stallTot = Object.values(b.stalls).reduce((a, v) => a + v, 0);
